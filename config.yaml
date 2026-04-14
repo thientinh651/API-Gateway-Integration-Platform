@@ -1,0 +1,5 @@
+routes:
+  - path: "/google"
+    target: "https://www.google.com"
+  - path: "/my-api"
+    target: "http://localhost:5000"
