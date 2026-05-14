@@ -1,5 +1,23 @@
 routes:
-  - path: "/google"
-    target: "https://www.google.com"
+  - path: "/test"
+    target: "https://httpbin.org"
   - path: "/my-api"
     target: "http://localhost:5000"
+
+# Data-plane API keys (MVP). If empty -> no auth on proxied routes.
+api_keys:
+  - "demo-key-1"
+
+# Rate limiting (MVP) - not enabled by default yet.
+rate_limit:
+  enabled: true
+  rps: 10
+  burst: 20
+
+# Optional extensions (not implemented yet)
+transform:
+  enabled: false
+retry:
+  enabled: false
+queue:
+  enabled: false
