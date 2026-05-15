@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import { Plus } from 'lucide-react';
 import { toast } from 'sonner';
+import { createClientKey } from '../../../lib/api';
+import { setTestClientKey } from '../../../lib/proxyTryStorage';
+import { Link } from 'react-router';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -11,29 +14,20 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '../../components/ui/dialog';
-import type { ApiKeyRow } from './apiKeyTypes';
-
-function generateKeyString() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let key = 'avaso_';
-  for (let i = 0; i < 40; i++) {
-    key += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return key;
-}
 
 type Props = {
-  onAdd: (row: ApiKeyRow) => void;
+  onKeysChanged: () => void;
 };
 
-export function CreateApiKeyDialog({ onAdd }: Props) {
+export function CreateApiKeyDialog({ onKeysChanged }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [generatedKey, setGeneratedKey] = useState('');
-  const [formData, setFormData] = useState({ name: '', rateLimit: '100' });
+  const [name, setName] = useState('');
+  const [pending, setPending] = useState(false);
 
   const reset = () => {
     setGeneratedKey('');
-    setFormData({ name: '', rateLimit: '100' });
+    setName('');
   };
 
   const handleOpenChange = (open: boolean) => {
@@ -41,19 +35,18 @@ export function CreateApiKeyDialog({ onAdd }: Props) {
     if (!open) reset();
   };
 
-  const handleCreate = () => {
-    const fullKey = generateKeyString();
-    const newKey: ApiKeyRow = {
-      id: Date.now().toString(),
-      name: formData.name,
-      key: `${fullKey.slice(0, 6)}***************************${fullKey.slice(-6)}`,
-      isActive: true,
-      createdAt: new Date().toISOString().split('T')[0],
-      rateLimitPerMinute: parseInt(formData.rateLimit, 10),
-    };
-    onAdd(newKey);
-    setGeneratedKey(fullKey);
-    toast.success('API Key đã được tạo thành công');
+  const handleCreate = async () => {
+    setPending(true);
+    try {
+      const res = await createClientKey(name.trim());
+      setGeneratedKey(res.api_key);
+      onKeysChanged();
+      toast.success('API key đã tạo — copy ngay, không xem lại được');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPending(false);
+    }
   };
 
   const handleCopy = (key: string) => {
@@ -79,26 +72,17 @@ export function CreateApiKeyDialog({ onAdd }: Props) {
               <Label className="text-foreground">Tên</Label>
               <Input
                 placeholder="Production App"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                className="bg-input border-border text-foreground"
-              />
-            </div>
-            <div>
-              <Label className="text-foreground">Rate Limit (req/min)</Label>
-              <Input
-                type="number"
-                value={formData.rateLimit}
-                onChange={(e) => setFormData({ ...formData, rateLimit: e.target.value })}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
                 className="bg-input border-border text-foreground"
               />
             </div>
             <Button
-              onClick={handleCreate}
+              onClick={() => void handleCreate()}
               className="w-full bg-primary hover:bg-primary/90"
-              disabled={!formData.name}
+              disabled={!name.trim() || pending}
             >
-              Generate Key
+              {pending ? 'Đang tạo…' : 'Tạo trên gateway'}
             </Button>
           </div>
         ) : (
@@ -106,7 +90,7 @@ export function CreateApiKeyDialog({ onAdd }: Props) {
             <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-lg">
               <p className="text-amber-400 text-sm font-medium mb-2">Lưu ý quan trọng</p>
               <p className="text-xs text-muted-foreground">
-                Đây là lần duy nhất bạn có thể thấy API key đầy đủ. Sao chép và lưu an toàn.
+                Đây là lần duy nhất bạn thấy plaintext. Gateway chỉ lưu SHA-256 trong SQLite.
               </p>
             </div>
             <div>
@@ -122,7 +106,22 @@ export function CreateApiKeyDialog({ onAdd }: Props) {
                 </Button>
               </div>
             </div>
-            <Button onClick={() => handleOpenChange(false)} className="w-full" variant="outline">
+            <Button
+              type="button"
+              className="w-full bg-primary/90 hover:bg-primary"
+              onClick={() => {
+                setTestClientKey(generatedKey);
+                toast.success('Đã lưu key cho trang Thử gọi Proxy.');
+              }}
+            >
+              Lưu cho Thử Proxy
+            </Button>
+            <Button asChild variant="outline" className="w-full border-border">
+              <Link to="/proxy-try" onClick={() => handleOpenChange(false)}>
+                Đi tới Thử gọi Proxy
+              </Link>
+            </Button>
+            <Button onClick={() => handleOpenChange(false)} className="w-full" variant="ghost">
               Đóng
             </Button>
           </div>

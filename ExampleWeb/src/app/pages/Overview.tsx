@@ -4,15 +4,19 @@ import { StatsCard } from '../components/dashboard/StatsCard';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Zap, Route, Key, Clock } from 'lucide-react';
-import { fetchGatewayRoutes } from '../../lib/api';
+import { ApiClientError, fetchGatewayRoutes } from '../../lib/api';
+import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import type { GatewayRouteRow } from '../../lib/gatewayRoutes';
+import { OverviewGuest } from './OverviewGuest';
 
-export function Overview() {
+function OverviewAdmin() {
+  const { user } = useAdminAuth();
   const [routes, setRoutes] = useState<GatewayRouteRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [uptime, setUptime] = useState('00:00:00');
 
   const loadRoutes = useCallback(async () => {
+    if (!user) return;
     setLoadError(null);
     try {
       const data = await fetchGatewayRoutes();
@@ -20,9 +24,10 @@ export function Overview() {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setLoadError(msg);
-      toast.error('Không tải được /api/routes');
+      const status = e instanceof ApiClientError ? e.status : 0;
+      if (status !== 401) toast.error('Không tải được danh sách route');
     }
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     void loadRoutes();
@@ -89,7 +94,7 @@ export function Overview() {
           <Card className="rounded-2xl overflow-hidden bg-card/80 backdrop-blur-sm border-border">
             <div className="p-6 border-b border-border flex justify-between items-center">
               <h3 className="font-bold text-white text-sm uppercase tracking-wider">
-                Danh sách Route (config.yaml)
+                Danh sách Route (SQLite)
               </h3>
               <Button onClick={() => void loadRoutes()} className="bg-primary hover:bg-primary/90">
                 Reload
@@ -108,8 +113,8 @@ export function Overview() {
                 </thead>
                 <tbody className="text-sm">
                   {routes.length > 0 ? (
-                    routes.map((route, index) => (
-                      <tr key={`${route.path}-${index}`} className="border-b border-border/50">
+                    routes.map((route) => (
+                      <tr key={route.id} className="border-b border-border/50">
                         <td className="px-6 py-4 text-slate-300">{route.path}</td>
                         <td className="px-6 py-4 text-slate-400">{route.target}</td>
                       </tr>
@@ -153,4 +158,16 @@ export function Overview() {
       </div>
     </>
   );
+}
+
+export function Overview() {
+  const { user, loading } = useAdminAuth();
+
+  if (loading) {
+    return <p className="text-sm text-muted-foreground">Đang tải…</p>;
+  }
+
+  if (!user) return <OverviewGuest />;
+
+  return <OverviewAdmin />;
 }

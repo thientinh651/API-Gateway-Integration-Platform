@@ -1,8 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
-
-const SESSION_KEY = 'gw_session';
-const USER_KEY = 'gw_user';
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '../ui/alert-dialog';
+import { Button } from '../ui/button';
+import { adminLogout } from '../../../lib/api';
+import { useAdminAuth } from '../../../contexts/AdminAuthContext';
 
 function initials(name: string) {
   const p = name.trim().split(/\s+/).filter(Boolean);
@@ -13,25 +21,25 @@ function initials(name: string) {
 export function Header() {
   const loc = useLocation();
   const navigate = useNavigate();
-  const [user, setUser] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (sessionStorage.getItem(SESSION_KEY) === '1') {
-      setUser(sessionStorage.getItem(USER_KEY));
-    } else {
-      setUser(null);
-    }
-  }, [loc.pathname]);
+  const { user, clearUser } = useAdminAuth();
+  const [logoutOpen, setLogoutOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
 
   const hostLine = useMemo(() => {
     if (!user) return '';
     return typeof window !== 'undefined' ? window.location.host : '';
   }, [user, loc.pathname]);
 
-  const logout = () => {
-    sessionStorage.removeItem(SESSION_KEY);
-    sessionStorage.removeItem(USER_KEY);
-    setUser(null);
+  const logout = async () => {
+    setLoggingOut(true);
+    try {
+      await adminLogout();
+    } catch {
+      /* vẫn thoát UI */
+    }
+    setLoggingOut(false);
+    setLogoutOpen(false);
+    clearUser();
     navigate('/login');
   };
 
@@ -44,29 +52,54 @@ export function Header() {
         {user ? (
           <>
             <div className="text-right mr-2">
-              <p className="text-xs font-bold text-white">{user}</p>
+              <p className="text-xs font-bold text-white">{user.username}</p>
               {hostLine ? (
                 <p className="text-[10px] text-muted-foreground">{hostLine}</p>
               ) : null}
             </div>
             <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-primary to-amber-400 flex items-center justify-center text-white font-bold text-xs">
-              {initials(user)}
+              {initials(user.username)}
             </div>
             <button
               type="button"
-              onClick={logout}
               className="text-xs text-muted-foreground hover:text-primary transition"
+              onClick={() => setLogoutOpen(true)}
             >
               Thoát
             </button>
+            <AlertDialog open={logoutOpen} onOpenChange={(open) => !loggingOut && setLogoutOpen(open)}>
+              <AlertDialogContent className="z-[100]">
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Đăng xuất?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Bạn có chắc muốn thoát khỏi phiên quản trị?
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={loggingOut}
+                    onClick={() => setLogoutOpen(false)}
+                  >
+                    Hủy
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    disabled={loggingOut}
+                    onClick={() => void logout()}
+                  >
+                    {loggingOut ? 'Đang thoát…' : 'Đăng xuất'}
+                  </Button>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </>
         ) : (
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-muted-foreground">Chưa đăng nhập</span>
-            <Link to="/login" className="text-xs font-medium text-primary hover:underline">
-              Đăng nhập
-            </Link>
-          </div>
+          <Button asChild size="sm" variant="outline" className="border-border text-xs h-8">
+            <Link to="/login">Đăng nhập</Link>
+          </Button>
         )}
       </div>
     </header>

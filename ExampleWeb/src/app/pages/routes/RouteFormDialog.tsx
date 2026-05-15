@@ -1,4 +1,3 @@
-import type { Dispatch, SetStateAction } from 'react';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -32,9 +31,16 @@ type Props = {
   onOpenChange: (open: boolean) => void;
   editingRoute: UiRoute | null;
   formData: RouteFormState;
-  setFormData: Dispatch<SetStateAction<RouteFormState>>;
+  setFormData: (next: RouteFormState) => void;
+  fieldErrors?: Record<string, string>;
   onSubmit: () => void;
+  submitDisabled?: boolean;
 };
+
+function FieldError({ message }: { message?: string }) {
+  if (!message) return null;
+  return <p className="text-xs text-destructive mt-1">{message}</p>;
+}
 
 export function RouteFormDialog({
   open,
@@ -42,7 +48,9 @@ export function RouteFormDialog({
   editingRoute,
   formData,
   setFormData,
+  fieldErrors = {},
   onSubmit,
+  submitDisabled,
 }: Props) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -61,7 +69,10 @@ export function RouteFormDialog({
         <div className="space-y-4 mt-4">
           <div>
             <Label className="text-foreground">HTTP Method</Label>
-            <Select value={formData.method} onValueChange={(v) => setFormData((p) => ({ ...p, method: v }))}>
+            <Select
+              value={formData.method}
+              onValueChange={(v) => setFormData({ ...formData, method: v })}
+            >
               <SelectTrigger className="bg-input border-border text-foreground">
                 <SelectValue />
               </SelectTrigger>
@@ -77,20 +88,24 @@ export function RouteFormDialog({
           <div>
             <Label className="text-foreground">Path</Label>
             <Input
-              placeholder="/api/example"
+              placeholder="/v1/api"
               value={formData.path}
-              onChange={(e) => setFormData((p) => ({ ...p, path: e.target.value }))}
-              className="bg-input border-border text-foreground"
+              onChange={(e) => setFormData({ ...formData, path: e.target.value })}
+              aria-invalid={Boolean(fieldErrors.path)}
+              className={`bg-input border-border text-foreground ${fieldErrors.path ? 'border-destructive' : ''}`}
             />
+            <FieldError message={fieldErrors.path} />
           </div>
           <div>
             <Label className="text-foreground">Upstream URL</Label>
             <Input
-              placeholder="http://localhost:3000/endpoint"
+              placeholder="https://httpbin.org"
               value={formData.upstream}
-              onChange={(e) => setFormData((p) => ({ ...p, upstream: e.target.value }))}
-              className="bg-input border-border text-foreground"
+              onChange={(e) => setFormData({ ...formData, upstream: e.target.value })}
+              aria-invalid={Boolean(fieldErrors.target)}
+              className={`bg-input border-border text-foreground ${fieldErrors.target ? 'border-destructive' : ''}`}
             />
+            <FieldError message={fieldErrors.target} />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -98,7 +113,7 @@ export function RouteFormDialog({
               <Input
                 type="number"
                 value={formData.timeout}
-                onChange={(e) => setFormData((p) => ({ ...p, timeout: e.target.value }))}
+                onChange={(e) => setFormData({ ...formData, timeout: e.target.value })}
                 className="bg-input border-border text-foreground"
               />
             </div>
@@ -107,13 +122,17 @@ export function RouteFormDialog({
               <Input
                 type="number"
                 value={formData.rateLimit}
-                onChange={(e) => setFormData((p) => ({ ...p, rateLimit: e.target.value }))}
+                onChange={(e) => setFormData({ ...formData, rateLimit: e.target.value })}
                 className="bg-input border-border text-foreground"
               />
             </div>
           </div>
           <div className="flex gap-3">
-            <Button onClick={onSubmit} className="flex-1 bg-primary hover:bg-primary/90">
+            <Button
+              onClick={onSubmit}
+              disabled={submitDisabled}
+              className="flex-1 bg-primary hover:bg-primary/90"
+            >
               {editingRoute ? 'Cập nhật' : 'Tạo'}
             </Button>
             <Button

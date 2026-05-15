@@ -3,12 +3,13 @@ import { fetchGatewayRoutes } from '../lib/api';
 import { rowsToUiRoutes } from '../lib/gatewayRoutes';
 import type { UiRoute } from '../app/pages/routes/routeTypes';
 
-export function useGatewayRoutes() {
+export function useGatewayRoutes(enabled: boolean) {
   const [routes, setRoutes] = useState<UiRoute[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
+    if (!enabled) return;
     setLoading(true);
     setError(null);
     try {
@@ -19,11 +20,16 @@ export function useGatewayRoutes() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    if (enabled) void reload();
+    else {
+      setRoutes([]);
+      setError(null);
+      setLoading(false);
+    }
+  }, [enabled, reload]);
 
   return { routes, setRoutes, loading, error, reload };
 }

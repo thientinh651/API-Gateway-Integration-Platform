@@ -2,12 +2,14 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
 import { LoginPage } from './app/pages/login/LoginPage';
+import { AdminAuthProvider } from './contexts/AdminAuthContext';
 import { Toaster } from 'sonner';
 import './styles/index.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
+      <AdminAuthProvider>
       <Toaster
         dir="ltr"
         position="top-right"
@@ -20,6 +22,7 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/login.html" element={<Navigate to="/login" replace />} />
         <Route path="*" element={<LoginPage />} />
       </Routes>
+      </AdminAuthProvider>
     </BrowserRouter>
   </StrictMode>
 );

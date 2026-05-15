@@ -4,18 +4,19 @@ import {
   Route,
   Shield,
   FileCode,
+  FlaskConical,
   Settings,
   Users,
   ScrollText,
   FileText,
   Layers,
-  LogIn,
 } from 'lucide-react';
 
 const navItems = [
   { path: '/', icon: LayoutDashboard, label: 'Tổng quan' },
   { path: '/routes', icon: Route, label: 'Quản lý Route' },
   { path: '/auth', icon: Shield, label: 'Bảo mật & Auth' },
+  { path: '/proxy-try', icon: FlaskConical, label: 'Thử gọi Proxy' },
   { path: '/api-docs', icon: FileCode, label: 'Tài liệu API' },
   { path: '/users', icon: Users, label: 'Quản lý Users' },
   { path: '/logs', icon: ScrollText, label: 'Logs' },
@@ -61,20 +62,7 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="p-6 border-t border-border space-y-3">
-        <Link
-          to="/login"
-          className="flex items-center space-x-2 text-xs text-muted-foreground hover:text-primary transition"
-        >
-          <LogIn className="w-4 h-4" />
-          <span>Đăng nhập (/login)</span>
-        </Link>
-        <a
-          href="/login.html"
-          className="block text-[10px] text-muted-foreground/80 hover:text-primary truncate"
-        >
-          Trang riêng: login.html
-        </a>
+      <div className="p-6 border-t border-border">
         <div className="flex items-center space-x-3 text-xs text-muted-foreground">
           <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
           <span>Node: Ubuntu-Avaso-01</span>
