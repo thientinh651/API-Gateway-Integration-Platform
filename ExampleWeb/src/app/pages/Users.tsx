@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -21,119 +21,123 @@ import { Plus, Edit, Trash2, Shield, UserCog, Eye } from 'lucide-react';
 import { toast } from 'sonner';
 import { Switch } from '../components/ui/switch';
 import { Badge } from '../components/ui/badge';
+import { AdminOnly } from '../components/auth/AdminOnly';
+import { useAdminAuth } from '../../contexts/AdminAuthContext';
+import {
+  createAdminUser,
+  deleteAdminUser,
+  fetchAdminUsers,
+  updateAdminUser,
+  type AdminUserRow,
+} from '../../lib/api';
+import { canManageUsers } from '../../lib/rbac';
+import { formatApiErrorToast } from '../../lib/apiClientError';
 
-interface User {
-  id: string;
-  username: string;
-  role: 'Admin' | 'Operator' | 'Viewer';
-  isActive: boolean;
-  createdAt: string;
-  lastLogin?: string;
+function displayRole(role: string): string {
+  const r = role.toLowerCase();
+  if (r === 'admin') return 'Admin';
+  if (r === 'operator') return 'Operator';
+  return 'Viewer';
 }
 
-export function Users() {
-  const [users, setUsers] = useState<User[]>([
-    {
-      id: '1',
-      username: 'admin',
-      role: 'Admin',
-      isActive: true,
-      createdAt: '2026-05-01',
-      lastLogin: '2026-05-14 10:30',
-    },
-    {
-      id: '2',
-      username: 'operator1',
-      role: 'Operator',
-      isActive: true,
-      createdAt: '2026-05-05',
-      lastLogin: '2026-05-14 09:15',
-    },
-    {
-      id: '3',
-      username: 'viewer1',
-      role: 'Viewer',
-      isActive: true,
-      createdAt: '2026-05-10',
-      lastLogin: '2026-05-13 16:45',
-    },
-    {
-      id: '4',
-      username: 'operator2',
-      role: 'Operator',
-      isActive: false,
-      createdAt: '2026-05-12',
-    },
-  ]);
+function apiRole(ui: string): string {
+  return ui.toLowerCase();
+}
 
+function UsersAdmin() {
+  const { user: me } = useAdminAuth();
+  const [users, setUsers] = useState<AdminUserRow[]>([]);
+  const [loading, setLoading] = useState(true);
   const [isOpen, setIsOpen] = useState(false);
-  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [editingUser, setEditingUser] = useState<AdminUserRow | null>(null);
   const [formData, setFormData] = useState({
     username: '',
     password: '',
     role: 'Viewer' as 'Admin' | 'Operator' | 'Viewer',
   });
 
-  const handleCreate = () => {
-    const newUser: User = {
-      id: Date.now().toString(),
-      username: formData.username,
-      role: formData.role,
-      isActive: true,
-      createdAt: new Date().toISOString().split('T')[0],
-    };
-    setUsers([...users, newUser]);
-    setIsOpen(false);
-    resetForm();
-    toast.success('User đã được tạo thành công');
-  };
-
-  const handleUpdate = () => {
-    if (!editingUser) return;
-    setUsers(
-      users.map((u) =>
-        u.id === editingUser.id
-          ? { ...u, username: formData.username, role: formData.role }
-          : u
-      )
-    );
-    setIsOpen(false);
-    setEditingUser(null);
-    resetForm();
-    toast.success('User đã được cập nhật');
-  };
-
-  const handleDelete = (id: string) => {
-    const user = users.find((u) => u.id === id);
-    if (user?.username === 'admin') {
-      toast.error('Không thể xóa tài khoản admin chính');
-      return;
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      setUsers(await fetchAdminUsers());
+    } catch (e) {
+      toast.error(formatApiErrorToast(e));
+    } finally {
+      setLoading(false);
     }
-    setUsers(users.filter((u) => u.id !== id));
-    toast.success('User đã được xóa');
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const handleCreate = async () => {
+    try {
+      await createAdminUser({
+        username: formData.username.trim(),
+        password: formData.password,
+        role: apiRole(formData.role),
+      });
+      await load();
+      setIsOpen(false);
+      resetForm();
+      toast.success('User đã được tạo');
+    } catch (e) {
+      toast.error(formatApiErrorToast(e));
+    }
   };
 
-  const handleEdit = (user: User) => {
+  const handleUpdate = async () => {
+    if (!editingUser) return;
+    try {
+      await updateAdminUser(editingUser.id, {
+        username: formData.username.trim(),
+        role: apiRole(formData.role),
+        is_active: editingUser.is_active,
+        password: formData.password.trim() || undefined,
+      });
+      await load();
+      setIsOpen(false);
+      setEditingUser(null);
+      resetForm();
+      toast.success('User đã được cập nhật');
+    } catch (e) {
+      toast.error(formatApiErrorToast(e));
+    }
+  };
+
+  const handleDelete = async (id: number) => {
+    try {
+      await deleteAdminUser(id);
+      await load();
+      toast.success('User đã được xóa');
+    } catch (e) {
+      toast.error(formatApiErrorToast(e));
+    }
+  };
+
+  const handleEdit = (user: AdminUserRow) => {
     setEditingUser(user);
     setFormData({
       username: user.username,
       password: '',
-      role: user.role,
+      role: displayRole(user.role) as 'Admin' | 'Operator' | 'Viewer',
     });
     setIsOpen(true);
   };
 
-  const handleToggleActive = (id: string) => {
-    const user = users.find((u) => u.id === id);
-    if (user?.username === 'admin') {
-      toast.error('Không thể vô hiệu hóa tài khoản admin chính');
-      return;
+  const handleToggleActive = async (user: AdminUserRow) => {
+    try {
+      await updateAdminUser(user.id, {
+        username: user.username,
+        role: user.role,
+        is_active: !user.is_active,
+      });
+      await load();
+      toast.success(user.is_active ? 'Đã vô hiệu hóa' : 'Đã kích hoạt');
+    } catch (e) {
+      toast.error(formatApiErrorToast(e));
     }
-    setUsers(users.map((u) => (u.id === id ? { ...u, isActive: !u.isActive } : u)));
-    const updatedUser = users.find((u) => u.id === id);
-    toast.success(
-      `User "${updatedUser?.username}" đã được ${updatedUser?.isActive ? 'vô hiệu hóa' : 'kích hoạt'}`
-    );
   };
 
   const resetForm = () => {
@@ -149,30 +153,35 @@ export function Users() {
   };
 
   const getRoleIcon = (role: string) => {
-    switch (role) {
+    switch (displayRole(role)) {
       case 'Admin':
         return <Shield className="w-4 h-4" />;
       case 'Operator':
         return <UserCog className="w-4 h-4" />;
-      case 'Viewer':
-        return <Eye className="w-4 h-4" />;
       default:
-        return null;
+        return <Eye className="w-4 h-4" />;
     }
   };
 
   const getRoleBadgeClass = (role: string) => {
-    switch (role) {
+    switch (displayRole(role)) {
       case 'Admin':
         return 'bg-red-500/10 text-red-400 border-red-500/20';
       case 'Operator':
         return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
-      case 'Viewer':
-        return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
       default:
-        return '';
+        return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
     }
   };
+
+  if (!canManageUsers(me)) {
+    return (
+      <p className="text-muted-foreground">
+        Chỉ role <strong className="text-foreground">admin</strong> quản lý user dashboard. Operator/viewer
+        không truy cập trang này.
+      </p>
+    );
+  }
 
   return (
     <>
@@ -180,7 +189,7 @@ export function Users() {
         <div>
           <h1 className="text-3xl font-bold text-white mb-2">Quản lý Users</h1>
           <p className="text-muted-foreground">
-            Quản lý tài khoản admin và phân quyền RBAC
+            Tài khoản đăng nhập dashboard (Argon2). Khác API key cấp cho phần mềm.
           </p>
         </div>
         <Dialog open={isOpen} onOpenChange={handleDialogClose}>
@@ -204,7 +213,7 @@ export function Users() {
                   value={formData.username}
                   onChange={(e) => setFormData({ ...formData, username: e.target.value })}
                   className="bg-input border-border text-foreground"
-                  disabled={editingUser?.username === 'admin'}
+                  autoComplete="off"
                 />
               </div>
               <div>
@@ -217,6 +226,7 @@ export function Users() {
                   value={formData.password}
                   onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                   className="bg-input border-border text-foreground"
+                  autoComplete="new-password"
                 />
               </div>
               <div>
@@ -226,89 +236,33 @@ export function Users() {
                   onValueChange={(v: 'Admin' | 'Operator' | 'Viewer') =>
                     setFormData({ ...formData, role: v })
                   }
-                  disabled={editingUser?.username === 'admin'}
                 >
                   <SelectTrigger className="bg-input border-border text-foreground">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent className="bg-card border-border">
-                    <SelectItem value="Admin">Admin (Full access)</SelectItem>
-                    <SelectItem value="Operator">Operator (CRUD routes/keys)</SelectItem>
-                    <SelectItem value="Viewer">Viewer (Read only)</SelectItem>
+                    <SelectItem value="Admin">Admin — full</SelectItem>
+                    <SelectItem value="Operator">Operator — key, sửa route (không tạo route)</SelectItem>
+                    <SelectItem value="Viewer">Viewer — chỉ đọc</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
-              <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
-                <p className="text-xs text-amber-400">
-                  <strong>Lưu ý:</strong> Admin có toàn quyền, Operator quản lý routes/keys,
-                  Viewer chỉ xem.
-                </p>
-              </div>
-              <div className="flex gap-3">
-                <Button
-                  onClick={editingUser ? handleUpdate : handleCreate}
-                  className="flex-1 bg-primary hover:bg-primary/90"
-                  disabled={!formData.username || (!editingUser && !formData.password)}
-                >
-                  {editingUser ? 'Cập nhật' : 'Tạo'}
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => handleDialogClose(false)}
-                  className="flex-1 border-border"
-                >
-                  Hủy
-                </Button>
-              </div>
+              <Button
+                onClick={() => void (editingUser ? handleUpdate() : handleCreate())}
+                className="w-full bg-primary hover:bg-primary/90"
+                disabled={!formData.username || (!editingUser && formData.password.length < 6)}
+              >
+                {editingUser ? 'Cập nhật' : 'Tạo'}
+              </Button>
             </div>
           </DialogContent>
         </Dialog>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-        <Card className="p-6 rounded-2xl bg-card/80 backdrop-blur-sm border-border">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-bold text-muted-foreground uppercase tracking-wider">
-              Total Users
-            </h3>
-            <div className="p-2 bg-blue-500/10 rounded-lg">
-              <Shield className="w-5 h-5 text-blue-500" />
-            </div>
-          </div>
-          <p className="text-3xl font-bold text-white">{users.length}</p>
-        </Card>
-        <Card className="p-6 rounded-2xl bg-card/80 backdrop-blur-sm border-border">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-bold text-muted-foreground uppercase tracking-wider">
-              Active
-            </h3>
-            <div className="p-2 bg-emerald-500/10 rounded-lg">
-              <Shield className="w-5 h-5 text-emerald-500" />
-            </div>
-          </div>
-          <p className="text-3xl font-bold text-white">
-            {users.filter((u) => u.isActive).length}
-          </p>
-        </Card>
-        <Card className="p-6 rounded-2xl bg-card/80 backdrop-blur-sm border-border">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-bold text-muted-foreground uppercase tracking-wider">
-              Admins
-            </h3>
-            <div className="p-2 bg-red-500/10 rounded-lg">
-              <Shield className="w-5 h-5 text-red-500" />
-            </div>
-          </div>
-          <p className="text-3xl font-bold text-white">
-            {users.filter((u) => u.role === 'Admin').length}
-          </p>
-        </Card>
-      </div>
-
       <Card className="rounded-2xl overflow-hidden bg-card/80 backdrop-blur-sm border-border">
         <div className="p-6 border-b border-border">
           <h3 className="font-bold text-white text-sm uppercase tracking-wider">
-            Danh sách Users ({users.length})
+            Danh sách Users ({loading ? '…' : users.length})
           </h3>
         </div>
         <div className="overflow-x-auto">
@@ -318,7 +272,6 @@ export function Users() {
                 <th className="px-6 py-4">Username</th>
                 <th className="px-6 py-4">Role</th>
                 <th className="px-6 py-4">Created</th>
-                <th className="px-6 py-4">Last Login</th>
                 <th className="px-6 py-4">Status</th>
                 <th className="px-6 py-4 text-right">Actions</th>
               </tr>
@@ -326,43 +279,22 @@ export function Users() {
             <tbody className="text-sm">
               {users.map((user) => (
                 <tr key={user.id} className="border-b border-border/50 hover:bg-primary/5">
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-2">
-                      <span className="text-slate-300 font-medium">{user.username}</span>
-                      {user.username === 'admin' && (
-                        <Badge className="bg-amber-500/10 text-amber-400 border-amber-500/20 border text-xs">
-                          Primary
-                        </Badge>
-                      )}
-                    </div>
-                  </td>
+                  <td className="px-6 py-4 text-slate-300 font-medium">{user.username}</td>
                   <td className="px-6 py-4">
                     <Badge
                       className={`${getRoleBadgeClass(user.role)} border flex items-center gap-1 w-fit`}
                     >
                       {getRoleIcon(user.role)}
-                      {user.role}
+                      {displayRole(user.role)}
                     </Badge>
                   </td>
-                  <td className="px-6 py-4 text-slate-400">{user.createdAt}</td>
-                  <td className="px-6 py-4 text-slate-400">
-                    {user.lastLogin || 'Never'}
-                  </td>
+                  <td className="px-6 py-4 text-slate-400">{user.created_at}</td>
                   <td className="px-6 py-4">
-                    <div className="flex items-center gap-2">
-                      <Switch
-                        checked={user.isActive}
-                        onCheckedChange={() => handleToggleActive(user.id)}
-                        disabled={user.username === 'admin'}
-                      />
-                      <span
-                        className={`text-xs font-bold ${
-                          user.isActive ? 'text-emerald-400' : 'text-slate-500'
-                        }`}
-                      >
-                        {user.isActive ? 'Active' : 'Inactive'}
-                      </span>
-                    </div>
+                    <Switch
+                      checked={user.is_active}
+                      onCheckedChange={() => void handleToggleActive(user)}
+                      disabled={me?.user_id === user.id}
+                    />
                   </td>
                   <td className="px-6 py-4 text-right">
                     <div className="flex justify-end gap-2">
@@ -370,16 +302,16 @@ export function Users() {
                         variant="ghost"
                         size="sm"
                         onClick={() => handleEdit(user)}
-                        className="text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
+                        className="text-blue-400"
                       >
                         <Edit className="w-4 h-4" />
                       </Button>
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => handleDelete(user.id)}
-                        className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
-                        disabled={user.username === 'admin'}
+                        onClick={() => void handleDelete(user.id)}
+                        className="text-red-400"
+                        disabled={me?.user_id === user.id}
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>
@@ -392,5 +324,13 @@ export function Users() {
         </div>
       </Card>
     </>
+  );
+}
+
+export function Users() {
+  return (
+    <AdminOnly title="Quản lý Users" description="Đăng nhập admin để quản lý tài khoản dashboard.">
+      <UsersAdmin />
+    </AdminOnly>
   );
 }

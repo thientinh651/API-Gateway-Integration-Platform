@@ -10,6 +10,7 @@ import {
   ScrollText,
   FileText,
   Layers,
+  Plug,
 } from 'lucide-react';
 
 const navItems = [
@@ -18,6 +19,7 @@ const navItems = [
   { path: '/auth', icon: Shield, label: 'Bảo mật & Auth' },
   { path: '/proxy-try', icon: FlaskConical, label: 'Thử gọi Proxy' },
   { path: '/api-docs', icon: FileCode, label: 'Tài liệu API' },
+  { path: '/integrations', icon: Plug, label: 'Tích hợp' },
   { path: '/users', icon: Users, label: 'Quản lý Users' },
   { path: '/logs', icon: ScrollText, label: 'Logs' },
   { path: '/audit', icon: FileText, label: 'Audit Logs' },
@@ -30,14 +32,18 @@ export function Sidebar() {
   return (
     <aside className="w-64 border-r border-border bg-slate-950 flex-shrink-0 hidden lg:flex flex-col">
       <div className="p-6">
-        <div className="flex items-center space-x-3">
+        <a
+          href="https://thientinh.io.vn"
+          rel="noopener noreferrer"
+          className="flex items-center space-x-3 rounded-lg outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring hover:opacity-90 transition-opacity"
+        >
           <div className="bg-primary p-2 rounded-lg shadow-lg shadow-primary/20">
             <Layers className="w-5 h-5 text-white" />
           </div>
           <span className="text-lg font-bold text-white tracking-tight italic">
             AVASO <span className="text-primary">GW</span>
           </span>
-        </div>
+        </a>
       </div>
 
       <nav className="flex-grow px-4 space-y-2 mt-4">

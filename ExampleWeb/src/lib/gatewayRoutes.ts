@@ -1,12 +1,17 @@
-export type GatewayRouteRow = { id: number; path: string; target: string };
+export type GatewayRouteRow = {
+  id: number;
+  path: string;
+  target: string;
+  timeout_secs: number;
+  rate_limit_per_min: number;
+};
 
 export function rowsToUiRoutes(rows: GatewayRouteRow[]) {
   return rows.map((r) => ({
     id: String(r.id),
-    method: '*',
     path: r.path,
     upstream: r.target,
-    timeout: 30,
-    rateLimit: 100,
+    timeout: r.timeout_secs,
+    rateLimit: r.rate_limit_per_min,
   }));
 }

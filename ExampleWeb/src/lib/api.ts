@@ -14,7 +14,12 @@ export function apiUrl(path: string): string {
   return o ? `${o}${p}` : p;
 }
 
-export type AdminMe = { username: string };
+export type AdminMe = {
+  username: string;
+  role?: string;
+  tenant_id?: number;
+  user_id?: number;
+};
 
 export async function adminMe(): Promise<AdminMe> {
   return fetchJson<AdminMe>('/api/me');
@@ -26,7 +31,12 @@ export async function adminLogin(body: { username: string; password: string }): 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  return { username: j.username };
+  return {
+    username: j.username,
+    role: (j as { role?: string }).role,
+    tenant_id: (j as { tenant_id?: number }).tenant_id,
+    user_id: (j as { user_id?: number }).user_id,
+  };
 }
 
 export async function adminLogout(): Promise<void> {
@@ -73,7 +83,14 @@ export function fetchGatewayRoutes(): Promise<GatewayRouteRow[]> {
   return fetchJson<GatewayRouteRow[]>('/api/routes');
 }
 
-export async function createGatewayRoute(body: { path: string; target: string }): Promise<GatewayRouteRow> {
+export type RouteWriteBody = {
+  path: string;
+  target: string;
+  timeout_secs: number;
+  rate_limit_per_min: number;
+};
+
+export async function createGatewayRoute(body: RouteWriteBody): Promise<GatewayRouteRow> {
   return fetchJson<GatewayRouteRow>('/api/routes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -83,7 +100,7 @@ export async function createGatewayRoute(body: { path: string; target: string })
 
 export async function updateGatewayRoute(
   id: number,
-  body: { path: string; target: string }
+  body: RouteWriteBody
 ): Promise<GatewayRouteRow> {
   return fetchJson<GatewayRouteRow>(`/api/routes/${id}`, {
     method: 'PUT',
@@ -96,20 +113,128 @@ export async function deleteGatewayRoute(id: number): Promise<void> {
   return fetchOk(`/api/routes/${id}`, { method: 'DELETE' });
 }
 
-export type ClientKeyMeta = { id: number; name: string };
+export type ClientKeyMeta = {
+  id: number;
+  name: string;
+  api_key: string | null;
+  auth_mode: string;
+  integration_type: string;
+  tenant_id: number;
+};
 
 export function fetchClientKeys(): Promise<ClientKeyMeta[]> {
   return fetchJson<ClientKeyMeta[]>('/api/client-keys');
 }
 
-export type CreateClientKeyResponse = { id: number; name: string; api_key: string };
+export type CreateClientKeyResponse = {
+  id: number;
+  name: string;
+  api_key: string;
+  secret_key: string;
+  auth: string;
+  integration_type?: string;
+  tenant_id?: number;
+  purpose?: string;
+};
 
-export async function createClientKey(name: string): Promise<CreateClientKeyResponse> {
+export async function createClientKey(
+  name: string,
+  integrationType: string
+): Promise<CreateClientKeyResponse> {
   return fetchJson<CreateClientKeyResponse>('/api/client-keys', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, integration_type: integrationType }),
   });
+}
+
+export type AdminUserRow = {
+  id: number;
+  username: string;
+  role: string;
+  tenant_id: number;
+  is_active: boolean;
+  created_at: string;
+};
+
+export function fetchAdminUsers(): Promise<AdminUserRow[]> {
+  return fetchJson<AdminUserRow[]>('/api/users');
+}
+
+export async function createAdminUser(body: {
+  username: string;
+  password: string;
+  role: string;
+}): Promise<AdminUserRow> {
+  return fetchJson<AdminUserRow>('/api/users', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateAdminUser(
+  id: number,
+  body: {
+    username: string;
+    role: string;
+    is_active: boolean;
+    password?: string;
+  }
+): Promise<AdminUserRow> {
+  return fetchJson<AdminUserRow>(`/api/users/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteAdminUser(id: number): Promise<void> {
+  return fetchOk(`/api/users/${id}`, { method: 'DELETE' });
+}
+
+export type AuditLogRow = {
+  id: number;
+  tenant_id: number;
+  actor: string;
+  role: string;
+  action: string;
+  resource: string;
+  result: string;
+  source_ip: string | null;
+  details: string | null;
+  created_at: string;
+};
+
+export function fetchAuditLogs(): Promise<AuditLogRow[]> {
+  return fetchJson<AuditLogRow[]>('/api/audit-logs');
+}
+
+export type IntegrationRow = {
+  id: number;
+  provider: string;
+  status: string;
+  last_sync_at: string | null;
+  last_error: string | null;
+  updated_at: string;
+  label: string;
+  available: boolean;
+};
+
+export function fetchIntegrations(): Promise<IntegrationRow[]> {
+  return fetchJson<IntegrationRow[]>('/api/integrations');
+}
+
+export function salesforceConnectUrl(): string {
+  return apiUrl('/api/integrations/salesforce/connect');
+}
+
+export async function salesforceTest(): Promise<{ status: string; limits: unknown }> {
+  return fetchJson<{ status: string; limits: unknown }>('/api/integrations/salesforce/test');
+}
+
+export async function salesforceDisconnect(): Promise<void> {
+  return fetchOk('/api/integrations/salesforce/disconnect', { method: 'POST' });
 }
 
 export async function deleteClientKey(id: number): Promise<void> {

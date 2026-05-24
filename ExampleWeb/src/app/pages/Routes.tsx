@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { toast } from 'sonner';
 import { AdminOnly } from '../components/auth/AdminOnly';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
+import { canWriteRoutes } from '../../lib/rbac';
 import { useGatewayRoutes } from '../../hooks/useGatewayRoutes';
 import {
   ApiClientError,
@@ -15,15 +16,34 @@ import { RoutesTable } from './routes/RoutesTable';
 import type { UiRoute } from './routes/routeTypes';
 
 const emptyForm = (): RouteFormState => ({
-  method: 'GET',
   path: '',
   upstream: '',
   timeout: '30',
   rateLimit: '100',
 });
 
+function parseRouteNumbers(form: RouteFormState): { timeout_secs: number; rate_limit_per_min: number } {
+  const timeout_secs = Number.parseInt(form.timeout.trim(), 10);
+  const rate_limit_per_min = Number.parseInt(form.rateLimit.trim(), 10);
+  return {
+    timeout_secs: Number.isFinite(timeout_secs) ? timeout_secs : NaN,
+    rate_limit_per_min: Number.isFinite(rate_limit_per_min) ? rate_limit_per_min : NaN,
+  };
+}
+
+function routeBodyFromForm(form: RouteFormState) {
+  const { timeout_secs, rate_limit_per_min } = parseRouteNumbers(form);
+  return {
+    path: form.path.trim(),
+    target: form.upstream.trim(),
+    timeout_secs,
+    rate_limit_per_min,
+  };
+}
+
 function RoutesAdmin() {
   const { user } = useAdminAuth();
+  const allowWrite = canWriteRoutes(user);
   const { routes, loading, error, reload } = useGatewayRoutes(!!user);
   const [isOpen, setIsOpen] = useState(false);
   const [editingRoute, setEditingRoute] = useState<UiRoute | null>(null);
@@ -59,10 +79,7 @@ function RoutesAdmin() {
   const handleCreate = async () => {
     setSaving(true);
     try {
-      await createGatewayRoute({
-        path: formData.path.trim(),
-        target: formData.upstream.trim(),
-      });
+      await createGatewayRoute(routeBodyFromForm(formData));
       await reload();
       setIsOpen(false);
       resetForm();
@@ -79,10 +96,7 @@ function RoutesAdmin() {
     if (!editingRoute) return;
     setSaving(true);
     try {
-      await updateGatewayRoute(Number(editingRoute.id), {
-        path: formData.path.trim(),
-        target: formData.upstream.trim(),
-      });
+      await updateGatewayRoute(Number(editingRoute.id), routeBodyFromForm(formData));
       await reload();
       setIsOpen(false);
       setEditingRoute(null);
@@ -109,11 +123,10 @@ function RoutesAdmin() {
   const handleEdit = (route: UiRoute) => {
     setEditingRoute(route);
     setFormData({
-      method: route.method,
       path: route.path,
       upstream: route.upstream,
-      timeout: route.timeout?.toString() || '30',
-      rateLimit: route.rateLimit?.toString() || '100',
+      timeout: String(route.timeout),
+      rateLimit: String(route.rateLimit),
     });
     setIsOpen(true);
   };
@@ -130,16 +143,20 @@ function RoutesAdmin() {
           <h1 className="text-3xl font-bold text-white mb-2">Quản lý Routes</h1>
           <p className="text-muted-foreground">SQLite + reload cache — CRUD qua gateway admin API</p>
         </div>
-        <RouteFormDialog
-          open={isOpen}
-          onOpenChange={handleDialogChange}
-          editingRoute={editingRoute}
-          formData={formData}
-          setFormData={handleFormChange}
-          fieldErrors={fieldErrors}
-          onSubmit={handleSubmit}
-          submitDisabled={saving}
-        />
+        {allowWrite ? (
+          <RouteFormDialog
+            open={isOpen}
+            onOpenChange={handleDialogChange}
+            editingRoute={editingRoute}
+            formData={formData}
+            setFormData={handleFormChange}
+            fieldErrors={fieldErrors}
+            onSubmit={handleSubmit}
+            submitDisabled={saving}
+          />
+        ) : (
+          <p className="text-xs text-muted-foreground">Viewer/Operator: không tạo route mới (chỉ admin).</p>
+        )}
       </div>
 
       <RoutesTable
@@ -147,8 +164,8 @@ function RoutesAdmin() {
         loading={loading}
         error={error}
         onReload={reload}
-        onEdit={handleEdit}
-        onDelete={(id) => void handleDelete(id)}
+        onEdit={allowWrite ? handleEdit : undefined}
+        onDelete={allowWrite ? (id) => void handleDelete(id) : undefined}
       />
     </>
   );

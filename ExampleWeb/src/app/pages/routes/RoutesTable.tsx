@@ -8,8 +8,8 @@ type Props = {
   loading: boolean;
   error: string | null;
   onReload: () => void;
-  onEdit: (route: UiRoute) => void;
-  onDelete: (id: string) => void;
+  onEdit?: (route: UiRoute) => void;
+  onDelete?: (id: string) => void;
 };
 
 export function RoutesTable({ routes, loading, error, onReload, onEdit, onDelete }: Props) {
@@ -35,52 +35,56 @@ export function RoutesTable({ routes, loading, error, onReload, onEdit, onDelete
         <table className="w-full text-left">
           <thead className="bg-slate-900/50 text-[10px] uppercase text-muted-foreground font-bold">
             <tr>
-              <th className="px-6 py-4">Method</th>
               <th className="px-6 py-4">Path</th>
               <th className="px-6 py-4">Upstream</th>
               <th className="px-6 py-4">Timeout</th>
-              <th className="px-6 py-4">Rate Limit</th>
+              <th className="px-6 py-4">Rate limit</th>
               <th className="px-6 py-4 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="text-sm">
             {loading ? (
               <tr className="border-b border-border/50">
-                <td className="px-6 py-4 text-muted-foreground" colSpan={6}>
+                <td className="px-6 py-4 text-muted-foreground" colSpan={5}>
                   Đang tải…
                 </td>
               </tr>
             ) : (
               routes.map((route) => (
                 <tr key={route.id} className="border-b border-border/50 hover:bg-primary/5">
-                  <td className="px-6 py-4">
-                    <span className="px-2 py-1 bg-primary/10 text-primary rounded text-xs font-bold">
-                      {route.method}
-                    </span>
-                  </td>
                   <td className="px-6 py-4 text-slate-300 font-mono text-xs">{route.path}</td>
                   <td className="px-6 py-4 text-slate-400 text-xs">{route.upstream}</td>
                   <td className="px-6 py-4 text-slate-400">{route.timeout}s</td>
-                  <td className="px-6 py-4 text-slate-400">{route.rateLimit}/min</td>
+                  <td className="px-6 py-4 text-slate-400">
+                    {route.rateLimit > 0 ? `${route.rateLimit}/min` : 'config.yaml'}
+                  </td>
                   <td className="px-6 py-4 text-right">
-                    <div className="flex justify-end gap-2">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => onEdit(route)}
-                        className="text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
-                      >
-                        <Edit className="w-4 h-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => onDelete(route.id)}
-                        className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    </div>
+                    {onEdit || onDelete ? (
+                      <div className="flex justify-end gap-2">
+                        {onEdit ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => onEdit(route)}
+                            className="text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
+                          >
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                        ) : null}
+                        {onDelete ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => onDelete(route.id)}
+                            className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
                   </td>
                 </tr>
               ))

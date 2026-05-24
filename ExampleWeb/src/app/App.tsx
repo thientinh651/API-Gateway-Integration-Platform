@@ -10,6 +10,7 @@ import { Settings } from './pages/Settings';
 import { Users } from './pages/Users';
 import { Logs } from './pages/Logs';
 import { AuditLogs } from './pages/AuditLogs';
+import { Integrations } from './pages/Integrations';
 import { ProxyTry } from './pages/ProxyTry';
 import { LoginPage } from './pages/login/LoginPage';
 import { AdminOnly } from './components/auth/AdminOnly';
@@ -33,6 +34,7 @@ export default function App() {
             <Route path="auth" element={<Auth />} />
             <Route path="proxy-try" element={<ProxyTry />} />
             <Route path="api-docs" element={<ApiDocs />} />
+            <Route path="integrations" element={<Integrations />} />
             <Route
               path="users"
               element={

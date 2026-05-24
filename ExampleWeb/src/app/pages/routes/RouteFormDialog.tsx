@@ -1,6 +1,7 @@
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
+import { PasswordManagerTrap } from '../../components/forms/PasswordManagerTrap';
 import {
   Dialog,
   DialogContent,
@@ -8,18 +9,10 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '../../components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../../components/ui/select';
 import { Plus } from 'lucide-react';
 import type { UiRoute } from './routeTypes';
 
 export type RouteFormState = {
-  method: string;
   path: string;
   upstream: string;
   timeout: string;
@@ -66,76 +59,101 @@ export function RouteFormDialog({
             {editingRoute ? 'Chỉnh sửa Route' : 'Tạo Route mới'}
           </DialogTitle>
         </DialogHeader>
-        <div className="space-y-4 mt-4">
+        <form
+          className="space-y-4 mt-4"
+          autoComplete="off"
+          data-1p-ignore
+          data-lpignore="true"
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSubmit();
+          }}
+        >
+          <PasswordManagerTrap />
           <div>
-            <Label className="text-foreground">HTTP Method</Label>
-            <Select
-              value={formData.method}
-              onValueChange={(v) => setFormData({ ...formData, method: v })}
-            >
-              <SelectTrigger className="bg-input border-border text-foreground">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="bg-card border-border">
-                <SelectItem value="GET">GET</SelectItem>
-                <SelectItem value="POST">POST</SelectItem>
-                <SelectItem value="PUT">PUT</SelectItem>
-                <SelectItem value="DELETE">DELETE</SelectItem>
-                <SelectItem value="PATCH">PATCH</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <Label className="text-foreground">Path</Label>
+            <Label htmlFor="route-path" className="text-foreground">
+              Path
+            </Label>
             <Input
+              id="route-path"
+              name="route-path"
+              type="text"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
               placeholder="/v1/api"
               value={formData.path}
               onChange={(e) => setFormData({ ...formData, path: e.target.value })}
               aria-invalid={Boolean(fieldErrors.path)}
-              className={`bg-input border-border text-foreground ${fieldErrors.path ? 'border-destructive' : ''}`}
+              className={`bg-input border-border text-foreground mt-1 ${fieldErrors.path ? 'border-destructive' : ''}`}
             />
             <FieldError message={fieldErrors.path} />
           </div>
           <div>
-            <Label className="text-foreground">Upstream URL</Label>
+            <Label htmlFor="route-upstream" className="text-foreground">
+              Upstream URL
+            </Label>
             <Input
+              id="route-upstream"
+              name="route-upstream"
+              type="url"
+              autoComplete="off"
               placeholder="https://httpbin.org"
               value={formData.upstream}
               onChange={(e) => setFormData({ ...formData, upstream: e.target.value })}
               aria-invalid={Boolean(fieldErrors.target)}
-              className={`bg-input border-border text-foreground ${fieldErrors.target ? 'border-destructive' : ''}`}
+              className={`bg-input border-border text-foreground mt-1 ${fieldErrors.target ? 'border-destructive' : ''}`}
             />
             <FieldError message={fieldErrors.target} />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <Label className="text-foreground">Timeout (s)</Label>
+              <Label htmlFor="route-timeout" className="text-foreground">
+                Timeout (s)
+              </Label>
               <Input
-                type="number"
+                id="route-timeout"
+                name="route-timeout"
+                type="text"
+                inputMode="numeric"
+                autoComplete="off"
                 value={formData.timeout}
                 onChange={(e) => setFormData({ ...formData, timeout: e.target.value })}
-                className="bg-input border-border text-foreground"
+                aria-invalid={Boolean(fieldErrors.timeout_secs)}
+                className={`bg-input border-border text-foreground mt-1 ${fieldErrors.timeout_secs ? 'border-destructive' : ''}`}
               />
+              <FieldError message={fieldErrors.timeout_secs} />
             </div>
             <div>
-              <Label className="text-foreground">Rate Limit (req/min)</Label>
+              <Label htmlFor="route-rate-limit" className="text-foreground">
+                Rate limit (req/min)
+              </Label>
               <Input
-                type="number"
+                id="route-rate-limit"
+                name="route-rate-limit"
+                type="text"
+                inputMode="numeric"
+                autoComplete="off"
                 value={formData.rateLimit}
                 onChange={(e) => setFormData({ ...formData, rateLimit: e.target.value })}
-                className="bg-input border-border text-foreground"
+                aria-invalid={Boolean(fieldErrors.rate_limit_per_min)}
+                className={`bg-input border-border text-foreground mt-1 ${fieldErrors.rate_limit_per_min ? 'border-destructive' : ''}`}
               />
+              <FieldError message={fieldErrors.rate_limit_per_min} />
+              <p className="text-xs text-muted-foreground mt-1">0 = dùng limit toàn cục trong config.yaml</p>
             </div>
           </div>
           <div className="flex gap-3">
             <Button
-              onClick={onSubmit}
+              type="submit"
               disabled={submitDisabled}
               className="flex-1 bg-primary hover:bg-primary/90"
             >
               {editingRoute ? 'Cập nhật' : 'Tạo'}
             </Button>
             <Button
+              type="button"
               variant="outline"
               onClick={() => onOpenChange(false)}
               className="flex-1 border-border"
@@ -143,7 +161,7 @@ export function RouteFormDialog({
               Hủy
             </Button>
           </div>
-        </div>
+        </form>
       </DialogContent>
     </Dialog>
   );

@@ -15,12 +15,13 @@ import { CreateApiKeyDialog } from './auth/CreateApiKeyDialog';
 import type { ApiKeyRow } from './auth/apiKeyTypes';
 
 function metaToRow(m: ClientKeyMeta): ApiKeyRow {
+  const label = m.integration_type && m.integration_type !== 'app' ? ` [${m.integration_type}]` : '';
   return {
     id: String(m.id),
-    name: m.name,
-    key: '(chỉ lưu SHA-256 — không xem lại secret)',
+    name: `${m.name}${label}`,
+    key: m.api_key ?? '(legacy — secret không hiển thị lại)',
     isActive: true,
-    createdAt: '—',
+    createdAt: m.auth_mode,
     rateLimitPerMinute: 0,
   };
 }
@@ -63,7 +64,9 @@ function AuthAdmin() {
       <div className="mb-8 flex justify-between items-center flex-wrap gap-4">
         <div>
           <h1 className="text-3xl font-bold text-white mb-2">Bảo mật & Authentication</h1>
-          <p className="text-muted-foreground">Client keys: DB chỉ hash; plaintext chỉ khi POST tạo</p>
+          <p className="text-muted-foreground">
+            Admin cấp pk/sk cho phần mềm — không phải RSA. Secret chỉ hiện một lần khi tạo.
+          </p>
         </div>
         <CreateApiKeyDialog onKeysChanged={() => void reload()} />
       </div>

@@ -12,8 +12,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../components/ui/select';
-import { describeProxyExpectation, tryDataPlaneRequest, type ProxyTryResult } from '../../lib/proxyTry';
-import { getTestClientKey, setTestClientKey } from '../../lib/proxyTryStorage';
+import {
+  describeProxyExpectation,
+  looksLikeSpaShell,
+  tryDataPlaneRequest,
+  type ProxyTryResult,
+} from '../../lib/proxyTry';
+import {
+  getTestApiKey,
+  getTestSecretKey,
+  setTestHmacKeys,
+} from '../../lib/proxyTryStorage';
 
 const METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as const;
 
@@ -70,18 +79,24 @@ function ResultPanel({
 export function ProxyTry() {
   const [path, setPath] = useState('/v1/api/get');
   const [method, setMethod] = useState<string>('GET');
-  const [clientKey, setClientKey] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [secretKey, setSecretKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ProxyTryResult | null>(null);
   const [lastMode, setLastMode] = useState<'no_key' | 'with_key' | null>(null);
 
   useEffect(() => {
-    setClientKey(getTestClientKey());
+    setApiKey(getTestApiKey());
+    setSecretKey(getTestSecretKey());
   }, []);
 
   const run = async (mode: 'no_key' | 'with_key') => {
-    if (mode === 'with_key' && !clientKey.trim()) {
-      toast.error('Dán client API key (avaso_...) hoặc tạo key ở Bảo mật & Auth.');
+    if (mode === 'with_key' && !apiKey.trim()) {
+      toast.error('Dán API Key (avaso_pk_...) + Secret (avaso_sk_...) hoặc tạo ở Bảo mật & Auth.');
+      return;
+    }
+    if (mode === 'with_key' && apiKey.startsWith('avaso_pk_') && !secretKey.trim()) {
+      toast.error('Key HMAC cần Secret Key (avaso_sk_...) để ký request.');
       return;
     }
     setBusy(true);
@@ -89,14 +104,19 @@ export function ProxyTry() {
       const res = await tryDataPlaneRequest({
         path,
         method,
-        apiKey: mode === 'with_key' ? clientKey : undefined,
+        apiKey: mode === 'with_key' ? apiKey : undefined,
+        secretKey: mode === 'with_key' ? secretKey : undefined,
       });
       setResult(res);
       setLastMode(mode);
-      if (mode === 'no_key' && res.status === 401) {
+      if (looksLikeSpaShell(res)) {
+        toast.warning('Nhận HTML giao diện — path có thể sai (cần /v1/api/...).');
+      } else if (mode === 'no_key' && res.status === 401) {
         toast.success('401 — Từ chối dịch vụ vì thiếu Key API.');
-      } else if (mode === 'with_key' && res.ok) {
+      } else if (mode === 'with_key' && res.ok && res.bodyJson != null) {
         toast.success('Request thành công qua gateway.');
+      } else if (mode === 'with_key' && res.status === 404) {
+        toast.message('404 — không có route hoặc path sai định dạng.');
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
@@ -106,12 +126,12 @@ export function ProxyTry() {
   };
 
   const saveKeyForTab = () => {
-    if (!clientKey.trim()) {
-      toast.error('Nhập key trước khi lưu.');
+    if (!apiKey.trim()) {
+      toast.error('Nhập API Key trước khi lưu.');
       return;
     }
-    setTestClientKey(clientKey.trim());
-    toast.success('Đã lưu key trong tab (sessionStorage) cho lần thử sau.');
+    setTestHmacKeys(apiKey.trim(), secretKey.trim() || null);
+    toast.success('Đã lưu cặp key trong tab (sessionStorage).');
   };
 
   return (
@@ -158,12 +178,21 @@ export function ProxyTry() {
               </div>
             </div>
             <div>
-              <Label className="text-foreground">Client X-API-Key (avaso_...)</Label>
+              <Label className="text-foreground">API Key (avaso_pk_...)</Label>
               <Input
                 type="password"
-                value={clientKey}
-                onChange={(e) => setClientKey(e.target.value)}
-                placeholder="Chỉ dùng khi bấm Gửi có key"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="X-API-Key"
+                className="mt-1 bg-input border-border text-foreground"
+                autoComplete="off"
+              />
+              <Label className="text-foreground mt-3 block">Secret Key (avaso_sk_...)</Label>
+              <Input
+                type="password"
+                value={secretKey}
+                onChange={(e) => setSecretKey(e.target.value)}
+                placeholder="Ký HMAC — chỉ lưu phía client"
                 className="mt-1 bg-input border-border text-foreground"
                 autoComplete="off"
               />
@@ -177,8 +206,9 @@ export function ProxyTry() {
                   size="sm"
                   className="text-muted-foreground"
                   onClick={() => {
-                    setTestClientKey(null);
-                    setClientKey('');
+                    setTestHmacKeys(null, null);
+                    setApiKey('');
+                    setSecretKey('');
                     toast.message('Đã xóa key khỏi tab.');
                   }}
                 >
