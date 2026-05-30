@@ -75,18 +75,19 @@ function AuditLogsAdmin() {
                 <th className="px-6 py-4">Action</th>
                 <th className="px-6 py-4">Resource</th>
                 <th className="px-6 py-4">Kết quả</th>
+                <th className="px-6 py-4">Chi tiết</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-8 text-muted-foreground">
+                  <td colSpan={7} className="px-6 py-8 text-muted-foreground">
                     Đang tải…
                   </td>
                 </tr>
               ) : filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-8 text-muted-foreground">
+                  <td colSpan={7} className="px-6 py-8 text-muted-foreground">
                     Chưa có audit log — thao tác login/CRUD sẽ ghi tự động.
                   </td>
                 </tr>
@@ -113,6 +114,9 @@ function AuditLogsAdmin() {
                         )}
                         {log.result}
                       </Badge>
+                    </td>
+                    <td className="px-6 py-4 text-xs text-muted-foreground max-w-[12rem] truncate">
+                      {log.details ?? '—'}
                     </td>
                   </tr>
                 ))

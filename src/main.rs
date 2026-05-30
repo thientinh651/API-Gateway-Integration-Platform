@@ -1,9 +1,11 @@
 mod admin_auth;
 mod crypto;
 mod db;
+mod dashboard;
+mod gateway_rsa;
 mod integrations;
 
-use admin_auth::{write_audit, AdminCtx};
+use admin_auth::{write_audit, write_audit_event, write_audit_failure, AdminCtx};
 use integrations::OAuthPending;
 use axum::{
     body::Body,
@@ -106,7 +108,7 @@ struct AppConfig {
     routes: Vec<RouteRow>,
     client_credentials: db::ClientCredentials,
     admin_api_key_sha256: String,
-    rate_limit: RateLimitConfig,
+    settings: RuntimeSettings,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -149,6 +151,52 @@ fn default_rl_rps() -> u32 {
 }
 fn default_rl_burst() -> u32 {
     20
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeSettings {
+    rate_limit: RateLimitConfig,
+    enable_metrics: bool,
+    enable_health_check: bool,
+}
+
+impl Default for RuntimeSettings {
+    fn default() -> Self {
+        Self {
+            rate_limit: RateLimitConfig::default(),
+            enable_metrics: true,
+            enable_health_check: true,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct SettingsSystemInfo {
+    version: &'static str,
+    runtime: &'static str,
+    database: &'static str,
+    bind_port: u16,
+    log_format: &'static str,
+    has_admin_api_key: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct SettingsResponse {
+    rate_limit_enabled: bool,
+    rate_limit_rps: u32,
+    rate_limit_burst: u32,
+    enable_metrics: bool,
+    enable_health_check: bool,
+    system_info: SettingsSystemInfo,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateSettingsBody {
+    rate_limit_enabled: bool,
+    rate_limit_rps: u32,
+    rate_limit_burst: u32,
+    enable_metrics: bool,
+    enable_health_check: bool,
 }
 
 const SESSION_COOKIE: &str = "gw_sid";
@@ -253,7 +301,7 @@ fn json_error(status: StatusCode, error: &str, message: &str) -> Response {
         .into_response()
 }
 
-fn json_error_fields(
+pub(crate) fn json_error_fields(
     status: StatusCode,
     error: &str,
     message: &str,
@@ -575,16 +623,163 @@ fn read_yaml_bootstrap(path: &str) -> YamlBootstrap {
         .unwrap_or_default()
 }
 
+fn current_bind_port() -> u16 {
+    std::env::var("PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3000)
+}
+
+fn parse_bool_setting(raw: Option<String>, default: bool) -> bool {
+    match raw.as_deref().map(|s| s.trim().to_ascii_lowercase()) {
+        Some(v) if matches!(v.as_str(), "1" | "true" | "yes" | "on") => true,
+        Some(v) if matches!(v.as_str(), "0" | "false" | "no" | "off") => false,
+        _ => default,
+    }
+}
+
+fn parse_u32_setting(raw: Option<String>, default: u32) -> u32 {
+    raw.and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(default)
+}
+
+async fn load_runtime_settings(
+    pool: &SqlitePool,
+    yaml: &YamlBootstrap,
+) -> Result<RuntimeSettings, sqlx::Error> {
+    let rate_limit_enabled = parse_bool_setting(
+        db::load_setting(pool, "runtime_rate_limit_enabled").await?,
+        yaml.rate_limit.enabled,
+    );
+    let rate_limit_rps = parse_u32_setting(
+        db::load_setting(pool, "runtime_rate_limit_rps").await?,
+        yaml.rate_limit.rps,
+    );
+    let rate_limit_burst = parse_u32_setting(
+        db::load_setting(pool, "runtime_rate_limit_burst").await?,
+        yaml.rate_limit.burst,
+    );
+    let enable_metrics =
+        parse_bool_setting(db::load_setting(pool, "runtime_metrics_enabled").await?, true);
+    let enable_health_check = parse_bool_setting(
+        db::load_setting(pool, "runtime_health_enabled").await?,
+        true,
+    );
+
+    Ok(RuntimeSettings {
+        rate_limit: RateLimitConfig {
+            enabled: rate_limit_enabled,
+            rps: rate_limit_rps,
+            burst: rate_limit_burst,
+        },
+        enable_metrics,
+        enable_health_check,
+    })
+}
+
+async fn persist_runtime_settings(
+    pool: &SqlitePool,
+    body: &UpdateSettingsBody,
+) -> Result<(), sqlx::Error> {
+    db::upsert_setting(
+        pool,
+        "runtime_rate_limit_enabled",
+        if body.rate_limit_enabled { "1" } else { "0" },
+    )
+    .await?;
+    db::upsert_setting(
+        pool,
+        "runtime_rate_limit_rps",
+        &body.rate_limit_rps.to_string(),
+    )
+    .await?;
+    db::upsert_setting(
+        pool,
+        "runtime_rate_limit_burst",
+        &body.rate_limit_burst.to_string(),
+    )
+    .await?;
+    db::upsert_setting(
+        pool,
+        "runtime_metrics_enabled",
+        if body.enable_metrics { "1" } else { "0" },
+    )
+    .await?;
+    db::upsert_setting(
+        pool,
+        "runtime_health_enabled",
+        if body.enable_health_check { "1" } else { "0" },
+    )
+    .await?;
+    Ok(())
+}
+
+fn settings_response_from_config(cfg: &AppConfig) -> SettingsResponse {
+    SettingsResponse {
+        rate_limit_enabled: cfg.settings.rate_limit.enabled,
+        rate_limit_rps: cfg.settings.rate_limit.rps,
+        rate_limit_burst: cfg.settings.rate_limit.burst,
+        enable_metrics: cfg.settings.enable_metrics,
+        enable_health_check: cfg.settings.enable_health_check,
+        system_info: SettingsSystemInfo {
+            version: env!("CARGO_PKG_VERSION"),
+            runtime: "Rust/Tokio",
+            database: "SQLite",
+            bind_port: current_bind_port(),
+            log_format: "tracing JSON",
+            has_admin_api_key: !cfg.admin_api_key_sha256.is_empty(),
+        },
+    }
+}
+
+fn validate_settings_write(body: &UpdateSettingsBody) -> Option<Response> {
+    let mut fields = serde_json::Map::new();
+    if body.rate_limit_enabled && body.rate_limit_rps == 0 {
+        fields.insert(
+            "rate_limit_rps".into(),
+            serde_json::Value::String("Bật rate limit thì RPS phải > 0".into()),
+        );
+    }
+    if body.rate_limit_enabled && body.rate_limit_burst == 0 {
+        fields.insert(
+            "rate_limit_burst".into(),
+            serde_json::Value::String("Bật rate limit thì burst phải > 0".into()),
+        );
+    }
+    if body.rate_limit_rps > 100_000 {
+        fields.insert(
+            "rate_limit_rps".into(),
+            serde_json::Value::String("RPS quá lớn".into()),
+        );
+    }
+    if body.rate_limit_burst > 1_000_000 {
+        fields.insert(
+            "rate_limit_burst".into(),
+            serde_json::Value::String("Burst quá lớn".into()),
+        );
+    }
+    if fields.is_empty() {
+        None
+    } else {
+        Some(json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "Cấu hình hệ thống không hợp lệ",
+            fields,
+        ))
+    }
+}
+
 async fn build_app_config(pool: &SqlitePool) -> Result<AppConfig, sqlx::Error> {
     let yaml = read_yaml_bootstrap("config.yaml");
     let routes = db::load_route_rows(pool).await?;
     let client_credentials = db::load_client_credentials(pool).await?;
     let admin_api_key_sha256 = db::load_admin_hash(pool).await?;
+    let settings = load_runtime_settings(pool, &yaml).await?;
     Ok(AppConfig {
         routes,
         client_credentials,
         admin_api_key_sha256,
-        rate_limit: yaml.rate_limit,
+        settings,
     })
 }
 
@@ -631,6 +826,15 @@ async fn main() {
     integrations::ensure_integration_rows(&pool, 1)
         .await
         .expect("ensure integration rows");
+    db::purge_expired_oauth_pending(&pool)
+        .await
+        .expect("purge expired oauth pending");
+    gateway_rsa::ensure_gateway_rsa_keys(&pool)
+        .await
+        .expect("ensure gateway RSA keypair");
+    gateway_rsa::init_rsa_from_db(&pool)
+        .await
+        .expect("load gateway RSA private key");
 
     let initial = build_app_config(&pool)
         .await
@@ -652,6 +856,10 @@ async fn main() {
         .route("/routes", get(api_routes).post(api_create_route))
         .route("/routes/:id", put(api_update_route).delete(api_delete_route))
         .route("/client-keys", get(api_list_client_keys).post(api_create_client_key))
+        .route(
+            "/client-keys/encrypted",
+            post(api_create_client_key_encrypted),
+        )
         .route("/client-keys/:id", delete(api_delete_client_key))
         .route("/users", get(api_list_users).post(api_create_user))
         .route("/users/:id", put(api_update_user).delete(api_delete_user))
@@ -666,9 +874,39 @@ async fn main() {
             get(api_salesforce_test),
         )
         .route(
+            "/integrations/salesforce/sync",
+            post(api_salesforce_sync),
+        )
+        .route(
             "/integrations/salesforce/disconnect",
             post(api_salesforce_disconnect),
         )
+        .route(
+            "/integrations/salesforce/config",
+            get(api_salesforce_config_get).put(api_salesforce_config_put),
+        )
+        .route("/integrations/zoho/connect", get(api_zoho_connect))
+        .route(
+            "/integrations/zoho/config",
+            get(api_zoho_config_get).put(api_zoho_config_put),
+        )
+        .route("/integrations/zoho/test", get(api_zoho_test))
+        .route("/integrations/zoho/projects", get(api_zoho_projects))
+        .route("/integrations/zoho/tasks", get(api_zoho_tasks))
+        .route(
+            "/integrations/zoho/sync",
+            post(api_zoho_sync),
+        )
+        .route(
+            "/integrations/snapshots",
+            get(api_list_integration_snapshots),
+        )
+        .route(
+            "/integrations/zoho/disconnect",
+            post(api_zoho_disconnect),
+        )
+        .route("/settings", get(api_get_settings).put(api_update_settings))
+        .route("/dashboard/stats", get(api_dashboard_stats))
         .route("/reload-config", post(api_reload_config))
         .layer(middleware::from_fn(rbac_middleware))
         .layer(middleware::from_fn(admin_auth_middleware));
@@ -681,7 +919,9 @@ async fn main() {
         .route(
             "/integrations/salesforce/callback",
             get(api_salesforce_callback),
-        );
+        )
+        .route("/integrations/zoho/callback", get(api_zoho_callback))
+        .route("/crypto/public-key", get(api_gateway_public_key));
 
     let api = Router::new().merge(api_public).merge(api_protected);
 
@@ -713,10 +953,7 @@ async fn main() {
         .route("/metrics", get(metrics_handler))
         .fallback(proxy_or_static);
 
-    let port: u16 = std::env::var("PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(3000);
+    let port = current_bind_port();
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
     let listener = match tokio::net::TcpListener::bind(addr).await {
@@ -742,6 +979,7 @@ async fn main() {
     println!("   GET/POST /api/routes | PUT/DELETE /api/routes/:id");
     println!("   GET/POST /api/client-keys | DELETE /api/client-keys/:id");
     println!("   GET /api/integrations | SF OAuth connect/callback/test");
+    println!("   GET /api/crypto/public-key | POST /api/client-keys/encrypted (RSA envelope)");
     println!("   Data plane prefix (bắt buộc X-API-Key client): {}", data_plane_prefix());
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .await
@@ -821,9 +1059,31 @@ async fn resolve_admin_ctx(headers: &HeaderMap) -> Result<AdminCtx, Response> {
 }
 
 async fn admin_auth_middleware(mut req: Request<Body>, next: Next) -> Result<Response, Response> {
-    let ctx = resolve_admin_ctx(req.headers()).await?;
-    req.extensions_mut().insert(ctx);
-    Ok(next.run(req).await)
+    let path = req.uri().path().to_string();
+    let ip = admin_auth::client_ip(req.headers());
+    match resolve_admin_ctx(req.headers()).await {
+        Ok(ctx) => {
+            req.extensions_mut().insert(ctx);
+            Ok(next.run(req).await)
+        }
+        Err(resp) => {
+            if let Some(st) = STATE.get() {
+                write_audit_event(
+                    &st.pool,
+                    1,
+                    "anonymous",
+                    "-",
+                    "admin_auth",
+                    &path,
+                    "failure",
+                    ip.as_deref(),
+                    Some("unauthorized"),
+                )
+                .await;
+            }
+            Err(resp)
+        }
+    }
 }
 
 async fn rbac_middleware(req: Request<Body>, next: Next) -> Result<Response, Response> {
@@ -838,7 +1098,21 @@ async fn rbac_middleware(req: Request<Body>, next: Next) -> Result<Response, Res
                 "admin context missing",
             )
         })?;
-    if !admin_auth::rbac_allow(req.method(), req.uri().path(), &ctx.role) {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    if !admin_auth::rbac_allow(&method, &path, &ctx.role) {
+        if let Some(st) = STATE.get() {
+            let resource = format!("{} {path}", method.as_str());
+            write_audit_failure(
+                &st.pool,
+                &ctx,
+                "rbac_denied",
+                &resource,
+                admin_auth::client_ip(req.headers()).as_deref(),
+                Some("insufficient_permissions"),
+            )
+            .await;
+        }
         return Err(admin_auth::forbidden_response());
     }
     Ok(next.run(req).await)
@@ -850,9 +1124,10 @@ struct LoginBody {
     password: String,
 }
 
-async fn admin_login(Json(body): Json<LoginBody>) -> impl IntoResponse {
+async fn admin_login(headers: HeaderMap, Json(body): Json<LoginBody>) -> impl IntoResponse {
     let user = body.username.trim();
     let pass = body.password.as_str();
+    let ip = admin_auth::client_ip(&headers);
     let mut fields = serde_json::Map::new();
     if user.is_empty() {
         fields.insert(
@@ -867,6 +1142,20 @@ async fn admin_login(Json(body): Json<LoginBody>) -> impl IntoResponse {
         );
     }
     if !fields.is_empty() {
+        if let Some(st) = STATE.get() {
+            write_audit_event(
+                &st.pool,
+                1,
+                user,
+                "-",
+                "login",
+                "session",
+                "failure",
+                ip.as_deref(),
+                Some("validation_failed"),
+            )
+            .await;
+        }
         return json_error_fields(
             StatusCode::BAD_REQUEST,
             "validation_failed",
@@ -895,6 +1184,18 @@ async fn admin_login(Json(body): Json<LoginBody>) -> impl IntoResponse {
     };
 
     let Some(admin) = row else {
+        write_audit_event(
+            &st.pool,
+            1,
+            user,
+            "-",
+            "login",
+            "session",
+            "failure",
+            ip.as_deref(),
+            Some("invalid_credentials"),
+        )
+        .await;
         fields.insert(
             "username".into(),
             serde_json::Value::String("Sai tên đăng nhập".into()),
@@ -908,6 +1209,16 @@ async fn admin_login(Json(body): Json<LoginBody>) -> impl IntoResponse {
     };
 
     if !db::verify_password(pass, &admin.password_hash) {
+        let ctx = AdminCtx::from_user(&admin);
+        write_audit_failure(
+            &st.pool,
+            &ctx,
+            "login",
+            "session",
+            ip.as_deref(),
+            Some("invalid_credentials"),
+        )
+        .await;
         fields.insert(
             "password".into(),
             serde_json::Value::String("Sai mật khẩu".into()),
@@ -921,6 +1232,16 @@ async fn admin_login(Json(body): Json<LoginBody>) -> impl IntoResponse {
     }
 
     if admin.is_active == 0 {
+        let ctx = AdminCtx::from_user(&admin);
+        write_audit_failure(
+            &st.pool,
+            &ctx,
+            "login",
+            "session",
+            ip.as_deref(),
+            Some("account_disabled"),
+        )
+        .await;
         return json_error(
             StatusCode::FORBIDDEN,
             "forbidden",
@@ -1038,8 +1359,16 @@ async fn admin_logout(headers: HeaderMap) -> impl IntoResponse {
 }
 
 
-async fn health_handler() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "status": "ok" }))
+async fn health_handler() -> Response {
+    let enabled = if let Some(st) = STATE.get() {
+        st.config.read().await.settings.enable_health_check
+    } else {
+        true
+    };
+    if !enabled {
+        return json_error(StatusCode::NOT_FOUND, "disabled", "health endpoint disabled");
+    }
+    Json(serde_json::json!({ "status": "ok" })).into_response()
 }
 
 /// Public: xác minh Nginx → gateway đúng binary (có route /api/*). Không cần auth.
@@ -1051,12 +1380,100 @@ async fn admin_api_ping() -> Json<serde_json::Value> {
     }))
 }
 
-async fn metrics_handler() -> Json<serde_json::Value> {
+async fn metrics_handler() -> Response {
+    let enabled = if let Some(st) = STATE.get() {
+        st.config.read().await.settings.enable_metrics
+    } else {
+        true
+    };
+    if !enabled {
+        return json_error(StatusCode::NOT_FOUND, "disabled", "metrics endpoint disabled");
+    }
     Json(serde_json::json!({
         "status": "ok",
         "service": "avaso-gateway",
         "note": "MVP stub JSON; có thể chuyển Prometheus text khi implement F-06 đầy đủ"
     }))
+    .into_response()
+}
+
+async fn api_get_settings() -> impl IntoResponse {
+    let st = match STATE.get() {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "state not initialized" })),
+            )
+                .into_response();
+        }
+    };
+    let cfg = st.config.read().await.clone();
+    Json(settings_response_from_config(&cfg)).into_response()
+}
+
+async fn api_update_settings(
+    headers: HeaderMap,
+    Extension(ctx): Extension<AdminCtx>,
+    Json(body): Json<UpdateSettingsBody>,
+) -> impl IntoResponse {
+    let ip = admin_auth::client_ip(&headers);
+    if !ctx.is_admin() {
+        if let Some(st) = STATE.get() {
+            write_audit_failure(
+                &st.pool,
+                &ctx,
+                "update_settings",
+                "gateway_settings",
+                ip.as_deref(),
+                Some("admin_only"),
+            )
+            .await;
+        }
+        return admin_auth::forbidden_response();
+    }
+    if let Some(resp) = validate_settings_write(&body) {
+        return resp;
+    }
+    let st = match STATE.get() {
+        Some(s) => s.clone(),
+        None => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "gateway state not initialized",
+            );
+        }
+    };
+
+    if let Err(e) = persist_runtime_settings(&st.pool, &body).await {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "settings_save_failed",
+            &format!("cannot save settings: {e}"),
+        );
+    }
+    if let Err(e) = reload_runtime_config().await {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "reload_failed",
+            &format!("cannot reload settings: {e}"),
+        );
+    }
+
+    write_audit(
+        &st.pool,
+        &ctx,
+        "update_settings",
+        "gateway_settings",
+        "success",
+        ip.as_deref(),
+        Some("rate_limit,metrics,health"),
+    )
+    .await;
+
+    let cfg = st.config.read().await.clone();
+    Json(settings_response_from_config(&cfg)).into_response()
 }
 
 async fn api_reload_config() -> impl IntoResponse {
@@ -1471,6 +1888,161 @@ async fn api_create_client_key(
     }
 }
 
+async fn api_gateway_public_key() -> impl IntoResponse {
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "gateway state not initialized",
+        );
+    };
+    match gateway_rsa::public_key_response(&st.pool).await {
+        Ok(body) => Json(body).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "public_key_unavailable", "message": e })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct EncryptedCreateClientKeyBody {
+    envelope: gateway_rsa::CryptoEnvelope,
+}
+
+async fn api_create_client_key_encrypted(
+    Extension(ctx): Extension<AdminCtx>,
+    Json(body): Json<EncryptedCreateClientKeyBody>,
+) -> impl IntoResponse {
+    let st = match STATE.get() {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "state not initialized" })),
+            )
+                .into_response();
+        }
+    };
+
+    let plain = match gateway_rsa::decrypt_envelope(&body.envelope) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            write_audit_failure(
+                &st.pool,
+                &ctx,
+                "create_client_key_encrypted",
+                "envelope",
+                None,
+                Some("decrypt_failed"),
+            )
+            .await;
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "decrypt_failed",
+                    "message": e
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let parsed: gateway_rsa::EncryptedCreateKeyPlain = match serde_json::from_slice(&plain) {
+        Ok(p) => p,
+        Err(e) => {
+            write_audit_failure(
+                &st.pool,
+                &ctx,
+                "create_client_key_encrypted",
+                "envelope",
+                None,
+                Some("invalid_plaintext_json"),
+            )
+            .await;
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_plaintext_json",
+                    "message": format!("{e}")
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let name = parsed.name.trim().to_string();
+    if name.is_empty() {
+        write_audit_failure(
+            &st.pool,
+            &ctx,
+            "create_client_key_encrypted",
+            "envelope",
+            None,
+            Some("name_required"),
+        )
+        .await;
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "name required in encrypted payload" })),
+        )
+            .into_response();
+    }
+
+    let integration_type = normalize_integration_type(&parsed.integration_type);
+    let api_key = db::random_api_key_id();
+    let secret_key = parsed
+        .secret_key
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| db::random_secret_key());
+
+    match db::insert_client_key_hmac(
+        &st.pool,
+        &name,
+        &api_key,
+        &secret_key,
+        ctx.tenant_id,
+        &integration_type,
+    )
+    .await
+    {
+        Ok(id) => {
+            let _ = reload_runtime_config().await;
+            write_audit(
+                &st.pool,
+                &ctx,
+                "create_client_key_encrypted",
+                &name,
+                "success",
+                None,
+                Some("rsa-envelope"),
+            )
+            .await;
+            let purpose = integration_purpose_label(&integration_type).to_string();
+            (
+                StatusCode::CREATED,
+                Json(CreateClientKeyResponse {
+                    id,
+                    name,
+                    api_key,
+                    secret_key,
+                    auth: "hmac-sha256",
+                    integration_type: integration_type.clone(),
+                    tenant_id: ctx.tenant_id,
+                    purpose,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
 async fn api_delete_client_key(
     Extension(ctx): Extension<AdminCtx>,
     Path(id): Path<i64>,
@@ -1830,9 +2402,24 @@ async fn api_list_integrations(Extension(ctx): Extension<AdminCtx>) -> impl Into
     integrations::api_list_integrations(&ctx).await
 }
 
+async fn audit_admin_denied(ctx: &AdminCtx, resource: &str) -> Response {
+    if let Some(st) = STATE.get() {
+        write_audit_failure(
+            &st.pool,
+            ctx,
+            "admin_only",
+            resource,
+            None,
+            Some("forbidden"),
+        )
+        .await;
+    }
+    admin_auth::forbidden_response()
+}
+
 async fn api_salesforce_connect(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
     if !ctx.is_admin() {
-        return admin_auth::forbidden_response();
+        return audit_admin_denied(&ctx, "integrations/salesforce/connect").await;
     }
     integrations::api_salesforce_connect(&ctx).await
 }
@@ -1846,16 +2433,126 @@ async fn api_salesforce_callback(
 
 async fn api_salesforce_test(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
     if !ctx.is_admin() {
-        return admin_auth::forbidden_response();
+        return audit_admin_denied(&ctx, "integrations/salesforce/test").await;
     }
     integrations::api_salesforce_test(&ctx).await
 }
 
+async fn api_salesforce_sync(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/salesforce/sync").await;
+    }
+    integrations::api_salesforce_sync(&ctx).await
+}
+
 async fn api_salesforce_disconnect(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
     if !ctx.is_admin() {
-        return admin_auth::forbidden_response();
+        return audit_admin_denied(&ctx, "integrations/salesforce/disconnect").await;
     }
     integrations::api_salesforce_disconnect(&ctx).await
+}
+
+async fn api_salesforce_config_get(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/salesforce/config").await;
+    }
+    integrations::api_salesforce_config_get(&ctx).await
+}
+
+async fn api_salesforce_config_put(
+    Extension(ctx): Extension<AdminCtx>,
+    Json(body): Json<integrations::SalesforceProviderConfigWriteBody>,
+) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/salesforce/config").await;
+    }
+    integrations::api_salesforce_config_put(&ctx, body).await
+}
+
+async fn api_zoho_connect(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/zoho/connect").await;
+    }
+    integrations::api_zoho_connect(&ctx).await
+}
+
+async fn api_zoho_callback(
+    headers: HeaderMap,
+    query: axum::extract::Query<integrations::SfCallbackQuery>,
+) -> impl IntoResponse {
+    integrations::api_zoho_callback(headers, query).await
+}
+
+async fn api_zoho_test(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/zoho/test").await;
+    }
+    integrations::api_zoho_test(&ctx).await
+}
+
+async fn api_zoho_config_get(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/zoho/config").await;
+    }
+    integrations::api_zoho_config_get(&ctx).await
+}
+
+async fn api_zoho_config_put(
+    Extension(ctx): Extension<AdminCtx>,
+    Json(body): Json<integrations::ZohoProviderConfigWriteBody>,
+) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/zoho/config").await;
+    }
+    integrations::api_zoho_config_put(&ctx, body).await
+}
+
+async fn api_zoho_projects(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/zoho/projects").await;
+    }
+    integrations::api_zoho_projects(&ctx).await
+}
+
+async fn api_zoho_tasks(
+    Extension(ctx): Extension<AdminCtx>,
+    axum::extract::Query(query): axum::extract::Query<integrations::ZohoTasksQuery>,
+) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/zoho/tasks").await;
+    }
+    integrations::api_zoho_tasks(&ctx, query).await
+}
+
+async fn api_zoho_disconnect(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/zoho/disconnect").await;
+    }
+    integrations::api_zoho_disconnect(&ctx).await
+}
+
+async fn api_zoho_sync(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/zoho/sync").await;
+    }
+    integrations::api_zoho_sync(&ctx).await
+}
+
+async fn api_list_integration_snapshots(
+    Extension(ctx): Extension<AdminCtx>,
+    axum::extract::Query(query): axum::extract::Query<integrations::SnapshotsQuery>,
+) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/snapshots").await;
+    }
+    integrations::api_list_snapshots(&ctx, query).await
+}
+
+async fn api_dashboard_stats(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "dashboard/stats").await;
+    }
+    dashboard::api_dashboard_stats(&ctx).await
 }
 
 async fn proxy_or_static(req: Request<Body>) -> Response {
@@ -1940,6 +2637,33 @@ async fn handle_data_plane_request(
             return json_error(status, reason, msg);
         }
     };
+    if integrations::parse_integration_proxy_path(data_plane_prefix(), &path).is_some() {
+        let ct = parts
+            .headers
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok());
+        let resp = integrations::integration_data_plane_proxy(
+            verified.tenant_id,
+            &method,
+            &path,
+            uri.query(),
+            &body_bytes,
+            ct,
+            data_plane_prefix(),
+        )
+        .await;
+        log_gateway_transaction(
+            "success",
+            "integration_proxy",
+            &method,
+            &path,
+            resp.status().as_u16(),
+            &key,
+            Some("integration_oauth"),
+            0,
+        );
+        return resp;
+    }
     let matched = cfg
         .routes
         .iter()
@@ -2065,11 +2789,11 @@ async fn do_proxy(
     let (rl_active, rl_rps, rl_burst) = if route.rate_limit_per_min > 0 {
         let (rps, burst) = per_min_to_bucket(route.rate_limit_per_min);
         (true, rps, burst)
-    } else if cfg.rate_limit.enabled {
+    } else if cfg.settings.rate_limit.enabled {
         (
             true,
-            cfg.rate_limit.rps as f64,
-            cfg.rate_limit.burst,
+            cfg.settings.rate_limit.rps as f64,
+            cfg.settings.rate_limit.burst,
         )
     } else {
         (false, 0.0, 0)

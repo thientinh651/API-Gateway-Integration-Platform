@@ -67,7 +67,9 @@ pub fn rbac_allow(method: &Method, path: &str, role: &str) -> bool {
         if p == "/integrations" && *method == Method::GET {
             return true;
         }
-        if p == "/integrations/salesforce/test" && *method == Method::GET {
+        if (p == "/integrations/salesforce/test" || p == "/integrations/zoho/test")
+            && *method == Method::GET
+        {
             return role == "admin";
         }
         if p.contains("/connect") || p.contains("/disconnect") || p.contains("/sync") {
@@ -77,6 +79,9 @@ pub fn rbac_allow(method: &Method, path: &str, role: &str) -> bool {
     }
     if *method == Method::GET {
         return true;
+    }
+    if p.starts_with("/settings") {
+        return false;
     }
     if p == "/reload-config" {
         return false;
@@ -103,6 +108,34 @@ pub fn client_ip(headers: &HeaderMap) -> Option<String> {
         })
 }
 
+pub async fn write_audit_event(
+    pool: &SqlitePool,
+    tenant_id: i64,
+    actor: &str,
+    role: &str,
+    action: &str,
+    resource: &str,
+    result: &str,
+    source_ip: Option<&str>,
+    details: Option<&str>,
+) {
+    if let Err(e) = db::insert_audit_log(
+        pool,
+        tenant_id,
+        actor,
+        role,
+        action,
+        resource,
+        result,
+        source_ip,
+        details,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, action, result, "audit log insert failed");
+    }
+}
+
 pub async fn write_audit(
     pool: &SqlitePool,
     ctx: &AdminCtx,
@@ -112,7 +145,7 @@ pub async fn write_audit(
     source_ip: Option<&str>,
     details: Option<&str>,
 ) {
-    if let Err(e) = db::insert_audit_log(
+    write_audit_event(
         pool,
         ctx.tenant_id,
         &ctx.username,
@@ -123,10 +156,18 @@ pub async fn write_audit(
         source_ip,
         details,
     )
-    .await
-    {
-        tracing::warn!(error = %e, action, "audit log insert failed");
-    }
+    .await;
+}
+
+pub async fn write_audit_failure(
+    pool: &SqlitePool,
+    ctx: &AdminCtx,
+    action: &str,
+    resource: &str,
+    source_ip: Option<&str>,
+    details: Option<&str>,
+) {
+    write_audit(pool, ctx, action, resource, "failure", source_ip, details).await;
 }
 
 pub fn resolve_session_ctx(sessions: &dashmap::DashMap<String, AdminSession>, sid: &str) -> Option<AdminCtx> {

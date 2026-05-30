@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -6,51 +6,106 @@ import { Label } from '../components/ui/label';
 import { toast } from 'sonner';
 import { Save, RotateCcw, Server, Database, Shield } from 'lucide-react';
 import { Switch } from '../components/ui/switch';
+import {
+  fetchGatewaySettings,
+  updateGatewaySettings,
+  type GatewaySettings,
+} from '../../lib/api';
+import { formatApiErrorToast } from '../../lib/apiClientError';
+
+type SettingsForm = {
+  rateLimitEnabled: boolean;
+  rateLimitRps: string;
+  rateLimitBurst: string;
+  enableMetrics: boolean;
+  enableHealthCheck: boolean;
+};
+
+function toForm(data: GatewaySettings): SettingsForm {
+  return {
+    rateLimitEnabled: data.rate_limit_enabled,
+    rateLimitRps: String(data.rate_limit_rps),
+    rateLimitBurst: String(data.rate_limit_burst),
+    enableMetrics: data.enable_metrics,
+    enableHealthCheck: data.enable_health_check,
+  };
+}
 
 export function Settings() {
-  const [adminApiKey, setAdminApiKey] = useState('');
-  const [settings, setSettings] = useState({
-    serverPort: '8080',
-    adminPort: '8081',
-    maxConnections: '1000',
-    defaultTimeout: '30',
-    defaultRateLimit: '100',
-    enableMetrics: true,
-    enableHealthCheck: true,
-    logLevel: 'INFO',
-  });
+  const [adminApiKey, setAdminApiKey] = useState(() =>
+    typeof window !== 'undefined' ? window.localStorage.getItem('admin_api_key') ?? '' : ''
+  );
+  const [settings, setSettings] = useState<SettingsForm | null>(null);
+  const [snapshot, setSnapshot] = useState<GatewaySettings | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await fetchGatewaySettings();
+      setSettings(toForm(data));
+      setSnapshot(data);
+    } catch (e) {
+      toast.error(formatApiErrorToast(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const handleSaveApiKey = () => {
-    if (adminApiKey) {
-      localStorage.setItem('admin_api_key', adminApiKey);
-      toast.success('Admin API Key đã được lưu');
-    } else {
+    const key = adminApiKey.trim();
+    if (!key) {
       toast.error('Vui lòng nhập API Key');
+      return;
     }
+    window.localStorage.setItem('admin_api_key', key);
+    setAdminApiKey(key);
+    toast.success('Admin API Key đã được lưu');
   };
 
   const handleClearApiKey = () => {
     setAdminApiKey('');
-    localStorage.removeItem('admin_api_key');
+    window.localStorage.removeItem('admin_api_key');
     toast.success('Admin API Key đã được xóa');
   };
 
-  const handleSaveSettings = () => {
-    toast.success('Cài đặt hệ thống đã được lưu');
+  const handleSaveSettings = async () => {
+    if (!settings) return;
+    const rateLimitRps = Number(settings.rateLimitRps);
+    const rateLimitBurst = Number(settings.rateLimitBurst);
+    if (!Number.isFinite(rateLimitRps) || !Number.isFinite(rateLimitBurst)) {
+      toast.error('Nhập số hợp lệ cho RPS và burst');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const data = await updateGatewaySettings({
+        rate_limit_enabled: settings.rateLimitEnabled,
+        rate_limit_rps: rateLimitRps,
+        rate_limit_burst: rateLimitBurst,
+        enable_metrics: settings.enableMetrics,
+        enable_health_check: settings.enableHealthCheck,
+      });
+      setSettings(toForm(data));
+      setSnapshot(data);
+      toast.success('Đã lưu settings runtime');
+    } catch (e) {
+      toast.error(formatApiErrorToast(e));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleResetSettings = () => {
-    setSettings({
-      serverPort: '8080',
-      adminPort: '8081',
-      maxConnections: '1000',
-      defaultTimeout: '30',
-      defaultRateLimit: '100',
-      enableMetrics: true,
-      enableHealthCheck: true,
-      logLevel: 'INFO',
-    });
-    toast.success('Đã reset về cài đặt mặc định');
+    if (!snapshot) return;
+    setSettings(toForm(snapshot));
+    toast.success('Đã khôi phục giá trị đang lưu');
   };
 
   return (
@@ -58,7 +113,7 @@ export function Settings() {
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-white mb-2">Cài đặt hệ thống</h1>
         <p className="text-muted-foreground">
-          Cấu hình chung cho Avaso Gateway
+          Lưu DB thật. Áp dụng ngay cho global rate limit, <code>/health</code>, <code>/metrics</code>.
         </p>
       </div>
 
@@ -69,50 +124,24 @@ export function Settings() {
               <div className="p-2 bg-blue-500/10 rounded-lg">
                 <Server className="w-5 h-5 text-blue-500" />
               </div>
-              <h3 className="text-lg font-bold text-white">Server Configuration</h3>
+              <h3 className="text-lg font-bold text-white">Gateway Runtime</h3>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label className="text-foreground">Data Plane Port</Label>
-                <Input
-                  value={settings.serverPort}
-                  onChange={(e) =>
-                    setSettings({ ...settings, serverPort: e.target.value })
-                  }
-                  className="bg-input border-border text-foreground"
-                />
+            {loading || !snapshot ? (
+              <p className="text-sm text-muted-foreground">Đang tải cấu hình runtime...</p>
+            ) : (
+              <div className="space-y-4">
+                <div className="rounded-lg bg-background/50 p-3">
+                  <p className="text-sm font-medium text-white">Bind Port</p>
+                  <p className="text-xs text-muted-foreground">
+                    Port process đang listen. Đổi qua biến môi trường <code>PORT</code> rồi restart.
+                  </p>
+                  <div className="mt-2 text-sm font-mono text-slate-200">{snapshot.system_info.bind_port}</div>
+                </div>
+                <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-sm text-amber-100">
+                  Port admin riêng, max connections, timeout mặc định, log level live chưa wired vào runtime này.
+                </div>
               </div>
-              <div>
-                <Label className="text-foreground">Admin Plane Port</Label>
-                <Input
-                  value={settings.adminPort}
-                  onChange={(e) =>
-                    setSettings({ ...settings, adminPort: e.target.value })
-                  }
-                  className="bg-input border-border text-foreground"
-                />
-              </div>
-              <div>
-                <Label className="text-foreground">Max Connections</Label>
-                <Input
-                  value={settings.maxConnections}
-                  onChange={(e) =>
-                    setSettings({ ...settings, maxConnections: e.target.value })
-                  }
-                  className="bg-input border-border text-foreground"
-                />
-              </div>
-              <div>
-                <Label className="text-foreground">Default Timeout (s)</Label>
-                <Input
-                  value={settings.defaultTimeout}
-                  onChange={(e) =>
-                    setSettings({ ...settings, defaultTimeout: e.target.value })
-                  }
-                  className="bg-input border-border text-foreground"
-                />
-              </div>
-            </div>
+            )}
           </Card>
 
           <Card className="rounded-2xl bg-card/80 backdrop-blur-sm border-border p-6">
@@ -122,46 +151,70 @@ export function Settings() {
               </div>
               <h3 className="text-lg font-bold text-white">Security & Rate Limiting</h3>
             </div>
-            <div className="space-y-4">
-              <div>
-                <Label className="text-foreground">Default Rate Limit (req/min)</Label>
-                <Input
-                  value={settings.defaultRateLimit}
-                  onChange={(e) =>
-                    setSettings({ ...settings, defaultRateLimit: e.target.value })
-                  }
-                  className="bg-input border-border text-foreground"
-                />
-              </div>
-              <div className="flex items-center justify-between p-3 rounded-lg bg-background/50">
-                <div>
-                  <p className="text-sm font-medium text-white">Enable Metrics</p>
-                  <p className="text-xs text-muted-foreground">
-                    Bật endpoint /metrics cho Prometheus
-                  </p>
+            {loading || !settings ? (
+              <p className="text-sm text-muted-foreground">Đang tải...</p>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between p-3 rounded-lg bg-background/50">
+                  <div>
+                    <p className="text-sm font-medium text-white">Global Rate Limit</p>
+                    <p className="text-xs text-muted-foreground">
+                      Fallback cho route không set <code>rate_limit_per_min</code>.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={settings.rateLimitEnabled}
+                    onCheckedChange={(checked) => setSettings({ ...settings, rateLimitEnabled: checked })}
+                  />
                 </div>
-                <Switch
-                  checked={settings.enableMetrics}
-                  onCheckedChange={(checked) =>
-                    setSettings({ ...settings, enableMetrics: checked })
-                  }
-                />
-              </div>
-              <div className="flex items-center justify-between p-3 rounded-lg bg-background/50">
-                <div>
-                  <p className="text-sm font-medium text-white">Enable Health Check</p>
-                  <p className="text-xs text-muted-foreground">
-                    Bật endpoint /health
-                  </p>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-foreground">RPS</Label>
+                    <Input
+                      value={settings.rateLimitRps}
+                      onChange={(e) => setSettings({ ...settings, rateLimitRps: e.target.value })}
+                      className="bg-input border-border text-foreground"
+                      disabled={!settings.rateLimitEnabled}
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-foreground">Burst</Label>
+                    <Input
+                      value={settings.rateLimitBurst}
+                      onChange={(e) => setSettings({ ...settings, rateLimitBurst: e.target.value })}
+                      className="bg-input border-border text-foreground"
+                      disabled={!settings.rateLimitEnabled}
+                    />
+                  </div>
                 </div>
-                <Switch
-                  checked={settings.enableHealthCheck}
-                  onCheckedChange={(checked) =>
-                    setSettings({ ...settings, enableHealthCheck: checked })
-                  }
-                />
+                <div className="flex items-center justify-between p-3 rounded-lg bg-background/50">
+                  <div>
+                    <p className="text-sm font-medium text-white">Enable Metrics</p>
+                    <p className="text-xs text-muted-foreground">
+                      Bật/tắt endpoint <code>/metrics</code>.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={settings.enableMetrics}
+                    onCheckedChange={(checked) => setSettings({ ...settings, enableMetrics: checked })}
+                  />
+                </div>
+                <div className="flex items-center justify-between p-3 rounded-lg bg-background/50">
+                  <div>
+                    <p className="text-sm font-medium text-white">Enable Health Check</p>
+                    <p className="text-xs text-muted-foreground">
+                      Bật/tắt endpoint <code>/health</code>.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={settings.enableHealthCheck}
+                    onCheckedChange={(checked) =>
+                      setSettings({ ...settings, enableHealthCheck: checked })
+                    }
+                  />
+                </div>
               </div>
-            </div>
+            )}
           </Card>
 
           <Card className="rounded-2xl bg-card/80 backdrop-blur-sm border-border p-6">
@@ -171,35 +224,26 @@ export function Settings() {
               </div>
               <h3 className="text-lg font-bold text-white">Logging</h3>
             </div>
-            <div>
-              <Label className="text-foreground">Log Level</Label>
-              <select
-                value={settings.logLevel}
-                onChange={(e) =>
-                  setSettings({ ...settings, logLevel: e.target.value })
-                }
-                className="w-full mt-1 px-3 py-2 bg-input border border-border rounded-lg text-foreground"
-              >
-                <option value="DEBUG">DEBUG</option>
-                <option value="INFO">INFO</option>
-                <option value="WARN">WARN</option>
-                <option value="ERROR">ERROR</option>
-              </select>
+            <div className="rounded-lg bg-background/50 p-4 text-sm text-muted-foreground">
+              Gateway ghi structured JSON bằng <code>tracing</code>. Audit log lưu DB ở trang{' '}
+              <span className="text-slate-200">Audit Logs</span>. Transaction log UI thật sẽ nối sau.
             </div>
           </Card>
 
           <div className="flex gap-3">
             <Button
-              onClick={handleSaveSettings}
+              onClick={() => void handleSaveSettings()}
               className="flex-1 bg-primary hover:bg-primary/90"
+              disabled={loading || !settings || saving}
             >
               <Save className="w-4 h-4 mr-2" />
-              Lưu cài đặt
+              {saving ? 'Đang lưu...' : 'Lưu cài đặt'}
             </Button>
             <Button
               onClick={handleResetSettings}
               variant="outline"
               className="flex-1 border-border"
+              disabled={loading || !snapshot || saving}
             >
               <RotateCcw className="w-4 h-4 mr-2" />
               Reset
@@ -211,14 +255,12 @@ export function Settings() {
           <Card className="rounded-2xl bg-card/80 backdrop-blur-sm border-border p-6">
             <h3 className="text-lg font-bold text-white mb-4">Admin API Key</h3>
             <p className="text-xs text-muted-foreground mb-4">
-              Dùng để gọi <code className="text-slate-300">/api/routes</code>. Lưu trong{' '}
-              <code className="text-slate-300">localStorage</code>.
+              Lưu ở <code className="text-slate-300">localStorage</code>. Client admin sẽ tự gửi header{' '}
+              <code className="text-slate-300">x-api-key</code> nếu có.
             </p>
             <div className="space-y-3">
               <div>
-                <Label className="text-foreground text-xs uppercase tracking-wider">
-                  x-api-key
-                </Label>
+                <Label className="text-foreground text-xs uppercase tracking-wider">x-api-key</Label>
                 <Input
                   value={adminApiKey}
                   onChange={(e) => setAdminApiKey(e.target.value)}
@@ -227,51 +269,59 @@ export function Settings() {
                 />
               </div>
               <div className="flex gap-3">
-                <Button
-                  onClick={handleSaveApiKey}
-                  className="flex-1 bg-primary hover:bg-primary/90"
-                >
+                <Button onClick={handleSaveApiKey} className="flex-1 bg-primary hover:bg-primary/90">
                   Save
                 </Button>
-                <Button
-                  onClick={handleClearApiKey}
-                  variant="outline"
-                  className="flex-1 border-border"
-                >
+                <Button onClick={handleClearApiKey} variant="outline" className="flex-1 border-border">
                   Clear
                 </Button>
               </div>
-              {adminApiKey && (
-                <div className="mt-4 text-xs text-emerald-400">
-                  ✓ Key đã được lưu trong localStorage
-                </div>
-              )}
+              {adminApiKey && <div className="mt-4 text-xs text-emerald-400">Key đã lưu trong localStorage</div>}
             </div>
           </Card>
 
           <Card className="rounded-2xl bg-card/80 backdrop-blur-sm border-border p-6 mt-6">
             <h3 className="text-lg font-bold text-white mb-4">System Info</h3>
-            <div className="space-y-3 text-sm">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Version</span>
-                <span className="text-white font-mono">v1.0.0</span>
+            {snapshot ? (
+              <div className="space-y-3 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Version</span>
+                  <span className="text-white font-mono">{snapshot.system_info.version}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Runtime</span>
+                  <span className="text-white font-mono">{snapshot.system_info.runtime}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Database</span>
+                  <span className="text-white font-mono">{snapshot.system_info.database}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Bind Port</span>
+                  <span className="text-white font-mono">{snapshot.system_info.bind_port}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Log Format</span>
+                  <span className="text-white font-mono">{snapshot.system_info.log_format}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Admin API Key Hash</span>
+                  <span className="text-white font-mono">
+                    {snapshot.system_info.has_admin_api_key ? 'configured' : 'missing'}
+                  </span>
+                </div>
               </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Runtime</span>
-                <span className="text-white font-mono">Rust/Tokio</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Database</span>
-                <span className="text-white font-mono">SQLite</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Node</span>
-                <span className="text-white font-mono">Ubuntu-Avaso-01</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Domain</span>
-                <span className="text-white font-mono">thientinh.io.vn</span>
-              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">Chưa tải được thông tin hệ thống.</p>
+            )}
+          </Card>
+
+          <Card className="rounded-2xl bg-card/80 backdrop-blur-sm border-border p-6 mt-6">
+            <h3 className="text-lg font-bold text-white mb-4">Ghi chú</h3>
+            <div className="space-y-3 text-sm text-muted-foreground">
+              <p>Route-specific `rate_limit_per_min` vẫn ưu tiên hơn global fallback này.</p>
+              <p><code>/metrics</code> và <code>/health</code> sẽ trả 404 khi bạn tắt.</p>
+              <p>Port admin riêng, timeout mặc định, max connections, log level live chưa hỗ trợ.</p>
             </div>
           </Card>
         </div>

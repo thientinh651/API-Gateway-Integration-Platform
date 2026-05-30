@@ -12,6 +12,7 @@ import {
 import { ApiKeySummaryCards } from './auth/ApiKeySummaryCards';
 import { ApiKeysDataTable } from './auth/ApiKeysDataTable';
 import { CreateApiKeyDialog } from './auth/CreateApiKeyDialog';
+import { CreateApiKeyRsaDialog } from './auth/CreateApiKeyRsaDialog';
 import type { ApiKeyRow } from './auth/apiKeyTypes';
 
 function metaToRow(m: ClientKeyMeta): ApiKeyRow {
@@ -65,10 +66,15 @@ function AuthAdmin() {
         <div>
           <h1 className="text-3xl font-bold text-white mb-2">Bảo mật & Authentication</h1>
           <p className="text-muted-foreground">
-            Admin cấp pk/sk cho phần mềm — không phải RSA. Secret chỉ hiện một lần khi tạo.
+            Hai cách cấp credential (giống WSO2 đơn giản): (1) HTTPS thường + HMAC; (2){' '}
+            <strong className="text-foreground">RSA public encrypt</strong> → gateway private decrypt
+            khi đăng ký secret.
           </p>
         </div>
-        <CreateApiKeyDialog onKeysChanged={() => void reload()} />
+        <div className="flex flex-wrap gap-2">
+          <CreateApiKeyDialog onKeysChanged={() => void reload()} />
+          <CreateApiKeyRsaDialog onKeysChanged={() => void reload()} />
+        </div>
       </div>
 
       {loadError ? (

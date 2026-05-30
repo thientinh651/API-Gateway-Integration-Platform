@@ -26,3 +26,5 @@ base64 = "0.22"
 hex = "0.4"
 subtle = "2.5"
 urlencoding = "2"
+rsa = { version = "0.9", features = ["sha2", "pem"] }
+pkcs8 = { version = "0.10", features = ["pem"] }

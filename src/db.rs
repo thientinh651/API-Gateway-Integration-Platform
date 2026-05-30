@@ -245,6 +245,25 @@ pub async fn ensure_admin_setting(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     Ok(())
 }
 
+pub async fn load_setting(pool: &SqlitePool, key: &str) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT v FROM gateway_settings WHERE k = ? LIMIT 1")
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+}
+
+pub async fn upsert_setting(pool: &SqlitePool, key: &str, value: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO gateway_settings (k, v) VALUES (?, ?)
+         ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn ensure_default_tenant(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     sqlx::query("INSERT OR IGNORE INTO tenants (name) VALUES ('default')")
         .execute(pool)
@@ -806,6 +825,332 @@ pub async fn clear_integration(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct IntegrationProviderConfigRow {
+    pub id: i64,
+    pub tenant_id: i64,
+    pub provider: String,
+    pub config_encrypted: String,
+    pub updated_by: String,
+    pub updated_at: String,
+}
+
+pub async fn fetch_integration_provider_config(
+    pool: &SqlitePool,
+    tenant_id: i64,
+    provider: &str,
+) -> Result<Option<IntegrationProviderConfigRow>, sqlx::Error> {
+    sqlx::query_as::<_, IntegrationProviderConfigRow>(
+        "SELECT id, tenant_id, provider, config_encrypted, updated_by, updated_at
+         FROM integration_provider_configs
+         WHERE tenant_id = ? AND provider = ? LIMIT 1",
+    )
+    .bind(tenant_id)
+    .bind(provider)
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn upsert_integration_provider_config(
+    pool: &SqlitePool,
+    tenant_id: i64,
+    provider: &str,
+    config_encrypted: &str,
+    updated_by: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO integration_provider_configs (tenant_id, provider, config_encrypted, updated_by, updated_at)
+         VALUES (?, ?, ?, ?, datetime('now'))
+         ON CONFLICT(tenant_id, provider) DO UPDATE SET
+           config_encrypted = excluded.config_encrypted,
+           updated_by = excluded.updated_by,
+           updated_at = datetime('now')",
+    )
+    .bind(tenant_id)
+    .bind(provider)
+    .bind(config_encrypted)
+    .bind(updated_by)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct IntegrationSnapshotRow {
+    pub id: i64,
+    pub tenant_id: i64,
+    pub provider: String,
+    pub entity_type: String,
+    pub payload_json: String,
+    pub record_count: i64,
+    pub fetched_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct IntegrationSnapshotSummary {
+    pub provider: String,
+    pub entity_type: String,
+    pub record_count: i64,
+    pub fetched_at: String,
+}
+
+pub async fn insert_integration_snapshot(
+    pool: &SqlitePool,
+    tenant_id: i64,
+    provider: &str,
+    entity_type: &str,
+    payload_json: &str,
+    record_count: i64,
+) -> Result<i64, sqlx::Error> {
+    let r = sqlx::query(
+        "INSERT INTO integration_snapshots (tenant_id, provider, entity_type, payload_json, record_count, fetched_at)
+         VALUES (?, ?, ?, ?, ?, datetime('now'))",
+    )
+    .bind(tenant_id)
+    .bind(provider)
+    .bind(entity_type)
+    .bind(payload_json)
+    .bind(record_count)
+    .execute(pool)
+    .await?;
+    Ok(r.last_insert_rowid())
+}
+
+/// Keep newest `keep` rows per (tenant, provider, entity_type).
+pub async fn prune_integration_snapshots(
+    pool: &SqlitePool,
+    tenant_id: i64,
+    provider: &str,
+    entity_type: &str,
+    keep: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "DELETE FROM integration_snapshots
+         WHERE tenant_id = ? AND provider = ? AND entity_type = ?
+           AND id NOT IN (
+             SELECT id FROM integration_snapshots
+             WHERE tenant_id = ? AND provider = ? AND entity_type = ?
+             ORDER BY fetched_at DESC, id DESC
+             LIMIT ?
+           )",
+    )
+    .bind(tenant_id)
+    .bind(provider)
+    .bind(entity_type)
+    .bind(tenant_id)
+    .bind(provider)
+    .bind(entity_type)
+    .bind(keep)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn list_integration_snapshot_summaries(
+    pool: &SqlitePool,
+    tenant_id: i64,
+    provider: Option<&str>,
+) -> Result<Vec<IntegrationSnapshotSummary>, sqlx::Error> {
+    let rows = if let Some(p) = provider {
+        sqlx::query_as::<_, IntegrationSnapshotRow>(
+            "SELECT id, tenant_id, provider, entity_type, payload_json, record_count, fetched_at
+             FROM integration_snapshots
+             WHERE tenant_id = ? AND provider = ?
+             ORDER BY fetched_at DESC, id DESC",
+        )
+        .bind(tenant_id)
+        .bind(p)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, IntegrationSnapshotRow>(
+            "SELECT id, tenant_id, provider, entity_type, payload_json, record_count, fetched_at
+             FROM integration_snapshots
+             WHERE tenant_id = ?
+             ORDER BY fetched_at DESC, id DESC",
+        )
+        .bind(tenant_id)
+        .fetch_all(pool)
+        .await?
+    };
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for r in rows {
+        let key = format!("{}:{}", r.provider, r.entity_type);
+        if seen.insert(key) {
+            out.push(IntegrationSnapshotSummary {
+                provider: r.provider,
+                entity_type: r.entity_type,
+                record_count: r.record_count,
+                fetched_at: r.fetched_at,
+            });
+        }
+    }
+    Ok(out)
+}
+
+pub async fn fetch_latest_integration_snapshot(
+    pool: &SqlitePool,
+    tenant_id: i64,
+    provider: &str,
+    entity_type: &str,
+) -> Result<Option<IntegrationSnapshotRow>, sqlx::Error> {
+    sqlx::query_as::<_, IntegrationSnapshotRow>(
+        "SELECT id, tenant_id, provider, entity_type, payload_json, record_count, fetched_at
+         FROM integration_snapshots
+         WHERE tenant_id = ? AND provider = ? AND entity_type = ?
+         ORDER BY fetched_at DESC, id DESC
+         LIMIT 1",
+    )
+    .bind(tenant_id)
+    .bind(provider)
+    .bind(entity_type)
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn touch_integration_last_sync(
+    pool: &SqlitePool,
+    tenant_id: i64,
+    provider: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE integrations SET last_sync_at = datetime('now'), updated_at = datetime('now')
+         WHERE tenant_id = ? AND provider = ?",
+    )
+    .bind(tenant_id)
+    .bind(provider)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct OAuthPendingRow {
+    pub state: String,
+    pub tenant_id: i64,
+    pub provider: String,
+    pub actor: String,
+    pub role: String,
+    pub pkce_verifier: Option<String>,
+    pub expires_at: String,
+}
+
+pub async fn insert_oauth_pending(
+    pool: &SqlitePool,
+    state: &str,
+    tenant_id: i64,
+    provider: &str,
+    actor: &str,
+    role: &str,
+    pkce_verifier: Option<&str>,
+    ttl_secs: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO oauth_pending_states (state, tenant_id, provider, actor, role, pkce_verifier, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, datetime('now', '+' || ? || ' seconds'))",
+    )
+    .bind(state)
+    .bind(tenant_id)
+    .bind(provider)
+    .bind(actor)
+    .bind(role)
+    .bind(pkce_verifier)
+    .bind(ttl_secs)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn take_oauth_pending(
+    pool: &SqlitePool,
+    state: &str,
+    provider: &str,
+) -> Result<Option<OAuthPendingRow>, sqlx::Error> {
+    let row = sqlx::query_as::<_, OAuthPendingRow>(
+        "SELECT state, tenant_id, provider, actor, role, pkce_verifier, expires_at
+         FROM oauth_pending_states
+         WHERE state = ? AND provider = ?
+           AND expires_at > datetime('now')
+         LIMIT 1",
+    )
+    .bind(state)
+    .bind(provider)
+    .fetch_optional(pool)
+    .await?;
+    if row.is_some() {
+        delete_oauth_pending(pool, state, provider).await?;
+    }
+    Ok(row)
+}
+
+pub async fn delete_oauth_pending(
+    pool: &SqlitePool,
+    state: &str,
+    provider: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM oauth_pending_states WHERE state = ? AND provider = ?")
+        .bind(state)
+        .bind(provider)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn purge_expired_oauth_pending(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM oauth_pending_states WHERE expires_at <= datetime('now')")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn count_client_keys_for_tenant(pool: &SqlitePool, tenant_id: i64) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM gateway_client_keys WHERE tenant_id = ?")
+        .bind(tenant_id)
+        .fetch_one(pool)
+        .await
+}
+
+pub async fn audit_counts_24h(pool: &SqlitePool, tenant_id: i64) -> Result<(i64, i64, i64), sqlx::Error> {
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_logs WHERE tenant_id = ? AND created_at >= datetime('now', '-1 day')",
+    )
+    .bind(tenant_id)
+    .fetch_one(pool)
+    .await?;
+    let success: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_logs WHERE tenant_id = ? AND created_at >= datetime('now', '-1 day') AND result = 'success'",
+    )
+    .bind(tenant_id)
+    .fetch_one(pool)
+    .await?;
+    let failure: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_logs WHERE tenant_id = ? AND created_at >= datetime('now', '-1 day') AND result = 'failure'",
+    )
+    .bind(tenant_id)
+    .fetch_one(pool)
+    .await?;
+    Ok((total, success, failure))
+}
+
+pub async fn list_integration_snapshots_recent(
+    pool: &SqlitePool,
+    tenant_id: i64,
+    limit: i64,
+) -> Result<Vec<IntegrationSnapshotRow>, sqlx::Error> {
+    sqlx::query_as::<_, IntegrationSnapshotRow>(
+        "SELECT id, tenant_id, provider, entity_type, payload_json, record_count, fetched_at
+         FROM integration_snapshots
+         WHERE tenant_id = ?
+         ORDER BY fetched_at DESC, id DESC
+         LIMIT ?",
+    )
+    .bind(tenant_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
 }
 
 pub async fn delete_client_key(

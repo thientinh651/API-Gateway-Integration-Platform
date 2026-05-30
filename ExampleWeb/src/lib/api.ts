@@ -45,7 +45,10 @@ export async function adminLogout(): Promise<void> {
 
 function adminHeaders(base?: HeadersInit): Headers {
   const headers = new Headers(base);
-  const key = import.meta.env.VITE_ADMIN_X_API_KEY;
+  const envKey = import.meta.env.VITE_ADMIN_X_API_KEY as string | undefined;
+  const storedKey =
+    typeof window !== 'undefined' ? window.localStorage.getItem('admin_api_key') ?? undefined : undefined;
+  const key = envKey?.trim() || storedKey?.trim();
   if (key && !headers.has('x-api-key')) headers.set('x-api-key', key);
   return headers;
 }
@@ -148,6 +151,40 @@ export async function createClientKey(
   });
 }
 
+export type GatewayPublicKey = {
+  key_id: string;
+  algorithm: string;
+  rsa_padding: string;
+  aes: string;
+  public_key_pem: string;
+  usage: string;
+};
+
+/** Public — partner apps fetch before encrypting sensitive payloads. */
+export function fetchGatewayPublicKey(): Promise<GatewayPublicKey> {
+  return fetch(apiUrl('/api/crypto/public-key')).then(async (r) => {
+    const t = await r.text();
+    if (!r.ok) throw parseApiError(r.status, t);
+    return JSON.parse(t) as GatewayPublicKey;
+  });
+}
+
+export type CryptoEnvelope = {
+  encrypted_aes_key: string;
+  nonce: string;
+  ciphertext: string;
+};
+
+export async function createClientKeyEncrypted(
+  envelope: CryptoEnvelope
+): Promise<CreateClientKeyResponse> {
+  return fetchJson<CreateClientKeyResponse>('/api/client-keys/encrypted', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ envelope }),
+  });
+}
+
 export type AdminUserRow = {
   id: number;
   username: string;
@@ -210,6 +247,42 @@ export function fetchAuditLogs(): Promise<AuditLogRow[]> {
   return fetchJson<AuditLogRow[]>('/api/audit-logs');
 }
 
+export type GatewaySettings = {
+  rate_limit_enabled: boolean;
+  rate_limit_rps: number;
+  rate_limit_burst: number;
+  enable_metrics: boolean;
+  enable_health_check: boolean;
+  system_info: {
+    version: string;
+    runtime: string;
+    database: string;
+    bind_port: number;
+    log_format: string;
+    has_admin_api_key: boolean;
+  };
+};
+
+export type GatewaySettingsWriteBody = {
+  rate_limit_enabled: boolean;
+  rate_limit_rps: number;
+  rate_limit_burst: number;
+  enable_metrics: boolean;
+  enable_health_check: boolean;
+};
+
+export function fetchGatewaySettings(): Promise<GatewaySettings> {
+  return fetchJson<GatewaySettings>('/api/settings');
+}
+
+export function updateGatewaySettings(body: GatewaySettingsWriteBody): Promise<GatewaySettings> {
+  return fetchJson<GatewaySettings>('/api/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
 export type IntegrationRow = {
   id: number;
   provider: string;
@@ -233,8 +306,163 @@ export async function salesforceTest(): Promise<{ status: string; limits: unknow
   return fetchJson<{ status: string; limits: unknown }>('/api/integrations/salesforce/test');
 }
 
+export async function salesforceSync(): Promise<{
+  status: string;
+  summary: { provider: string; opportunity: number; account: number };
+}> {
+  return fetchJson('/api/integrations/salesforce/sync', { method: 'POST' });
+}
+
 export async function salesforceDisconnect(): Promise<void> {
   return fetchOk('/api/integrations/salesforce/disconnect', { method: 'POST' });
+}
+
+export type SalesforceProviderConfigPublic = {
+  client_id: string;
+  redirect_uri: string;
+  login_url: string;
+  has_secret: boolean;
+  secret_masked?: string | null;
+  updated_by?: string | null;
+  updated_at?: string | null;
+};
+
+export type SalesforceProviderConfigWriteBody = {
+  client_id: string;
+  client_secret: string;
+  redirect_uri: string;
+  login_url: string;
+};
+
+export function fetchSfConfig(): Promise<SalesforceProviderConfigPublic> {
+  return fetchJson<SalesforceProviderConfigPublic>('/api/integrations/salesforce/config');
+}
+
+export function updateSfConfig(
+  body: SalesforceProviderConfigWriteBody
+): Promise<SalesforceProviderConfigPublic> {
+  return fetchJson<SalesforceProviderConfigPublic>('/api/integrations/salesforce/config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export function zohoConnectUrl(): string {
+  return apiUrl('/api/integrations/zoho/connect');
+}
+
+export async function zohoTest(): Promise<{
+  status: string;
+  portals: unknown;
+  portal_id?: string | null;
+}> {
+  return fetchJson<{ status: string; portals: unknown; portal_id?: string | null }>(
+    '/api/integrations/zoho/test'
+  );
+}
+
+export async function zohoSync(): Promise<{
+  status: string;
+  summary: { provider: string; portal_id?: string; project: number; task: number };
+}> {
+  return fetchJson('/api/integrations/zoho/sync', { method: 'POST' });
+}
+
+export type IntegrationSnapshotSummary = {
+  provider: string;
+  entity_type: string;
+  record_count: number;
+  fetched_at: string;
+};
+
+export function fetchIntegrationSnapshots(provider?: string): Promise<IntegrationSnapshotSummary[]> {
+  const q = provider ? `?provider=${encodeURIComponent(provider)}` : '';
+  return fetchJson<IntegrationSnapshotSummary[]>(`/api/integrations/snapshots${q}`);
+}
+
+export type DashboardStats = {
+  routes_count: number;
+  client_keys_count: number;
+  audit_24h: { total: number; success: number; failure: number };
+  integrations: IntegrationRow[];
+  snapshot_entities: Array<{
+    provider: string;
+    entity_type: string;
+    label: string;
+    record_count: number;
+    fetched_at: string;
+  }>;
+  snapshot_timeline: Array<{
+    fetched_at: string;
+    provider: string;
+    entity_type: string;
+    record_count: number;
+  }>;
+  salesforce_stages: Array<{ label: string; count: number }>;
+  zoho_project_status: Array<{ label: string; count: number }>;
+  total_snapshot_records: number;
+};
+
+export function fetchDashboardStats(): Promise<DashboardStats> {
+  return fetchJson<DashboardStats>('/api/dashboard/stats');
+}
+
+export async function zohoDisconnect(): Promise<void> {
+  return fetchOk('/api/integrations/zoho/disconnect', { method: 'POST' });
+}
+
+export type ZohoProviderConfigPublic = {
+  client_id: string;
+  redirect_uri: string;
+  accounts_url: string;
+  scopes: string;
+  has_secret: boolean;
+  secret_masked?: string | null;
+  updated_by?: string | null;
+  updated_at?: string | null;
+};
+
+export type ZohoProviderConfigWriteBody = {
+  client_id: string;
+  client_secret: string;
+  redirect_uri: string;
+  accounts_url: string;
+  scopes: string;
+};
+
+export function fetchZohoConfig(): Promise<ZohoProviderConfigPublic> {
+  return fetchJson<ZohoProviderConfigPublic>('/api/integrations/zoho/config');
+}
+
+export function updateZohoConfig(body: ZohoProviderConfigWriteBody): Promise<ZohoProviderConfigPublic> {
+  return fetchJson<ZohoProviderConfigPublic>('/api/integrations/zoho/config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function zohoProjects(): Promise<{
+  status: string;
+  portal_id: string;
+  projects: unknown;
+}> {
+  return fetchJson<{ status: string; portal_id: string; projects: unknown }>(
+    '/api/integrations/zoho/projects'
+  );
+}
+
+export async function zohoTasks(projectId: string): Promise<{
+  status: string;
+  portal_id: string;
+  project_id: string;
+  tasks: unknown;
+}> {
+  const pid = encodeURIComponent(projectId);
+  return fetchJson<{ status: string; portal_id: string; project_id: string; tasks: unknown }>(
+    `/api/integrations/zoho/tasks?project_id=${pid}`
+  );
 }
 
 export async function deleteClientKey(id: number): Promise<void> {

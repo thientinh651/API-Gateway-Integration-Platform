@@ -137,9 +137,15 @@ export function Logs() {
 
   return (
     <>
+      <div className="mb-6 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+        <strong>Dữ liệu mẫu (demo).</strong> Trang này chưa gọi API — chỉ minh họa request qua gateway.
+        Hành động admin (login, CRUD, RBAC) xem <strong>Audit Logs</strong>. Log proxy thật: stdout/journal, event{' '}
+        <code className="text-amber-100">gateway_transaction</code>.
+      </div>
+
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-white mb-2">Transaction Logs</h1>
-        <p className="text-muted-foreground">Xem và phân tích logs giao dịch từ gateway</p>
+        <p className="text-muted-foreground">Demo — chưa kết nối backend</p>
       </div>
 
       <Card className="rounded-2xl bg-card/80 backdrop-blur-sm border-border p-6 mb-6">

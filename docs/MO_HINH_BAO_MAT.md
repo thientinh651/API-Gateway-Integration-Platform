@@ -51,17 +51,33 @@ Password gửi qua HTTPS lúc login là bình thường; **at rest** phải hash
 
 ---
 
-## 2. Public key / private key — khi nào cần?
+## 2. Public / Private (WSO2-style) — đã có trong gateway
 
-**Không bắt buộc** cho mọi API key. Dùng khi:
+Mô hình mentor mô tả: **client dùng public key mã hóa → chỉ server (private key) giải mã**.
 
-| Kịch bản | Cơ chế |
-|----------|--------|
-| Client ký request (non-repudiation) | RSA/ECDSA: client giữ **private**, gateway giữ **public** verify chữ ký |
-| Gateway mã hóa dữ liệu cho 1 client | Client có **public**, gateway **private** (hiếm) |
-| **Salesforce / Zoho** | **OAuth 2.0** — user authorize, gateway nhận **access_token + refresh_token**, lưu **mã hóa** (AES-GCM), không phải API key tự chế |
+### Đã triển khai (đăng ký credential / secret một lần)
 
-**Tuần 4 ngày:** ưu tiên OAuth + tenant + hash password. **JWT signing / mTLS** để phase sau.
+| Bước | Ai | Việc |
+|------|-----|------|
+| 1 | Partner / UI | `GET /api/crypto/public-key` → PEM public |
+| 2 | Client | JSON `{ name, integration_type, secret_key? }` → **RSA-OAEP-256** bọc AES key + **AES-256-GCM** bọc body |
+| 3 | Gateway | Private key giải mã → tạo `avaso_pk_` + `avaso_sk_` (lưu secret AES at rest) |
+
+API: `POST /api/client-keys/encrypted` body `{ "envelope": { encrypted_aes_key, nonce, ciphertext } }`.
+
+UI: **Bảo mật & Auth** → **Tạo key (RSA / WSO2)**.
+
+### Không dùng RSA cho
+
+| Luồng | Dùng gì |
+|-------|---------|
+| Mọi request data plane `/v1/...` | **HTTPS + HMAC** (như AWS/WSO2 API key thông thường) |
+| Login admin | Argon2 password |
+| Salesforce / Zoho | **OAuth 2.0** + token AES trong DB |
+
+### Khác với WSO2 full
+
+WSO2 AM còn: Developer Portal, policies, JWT, mediation. Gateway simplified chỉ lấy **envelope encrypt** + **API key + HMAC** + **OAuth connector**.
 
 ---
 
