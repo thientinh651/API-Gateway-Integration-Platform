@@ -160,3 +160,50 @@ pub fn verify_hmac_sha256_hex(secret: &str, payload: &str, sig_hex: &str) -> boo
     }
     expected.ct_eq(&sig_bytes).into()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signing_string_format() {
+        let s = signing_string("pk1", "1700000000", "get", "/v1/api/x", b"");
+        assert_eq!(s, "pk1\n1700000000\nGET\n/v1/api/x\n");
+        let s2 = signing_string("pk1", "1", "POST", "/p", b"body");
+        assert_eq!(s2, "pk1\n1\nPOST\n/p\nbody");
+    }
+
+    #[test]
+    fn hmac_verify_roundtrip() {
+        let secret = "avaso_sk_test_secret";
+        let payload = signing_string("avaso_pk_test", "1700000000", "GET", "/v1/api/get", b"");
+        let sig = hmac_sha256_hex(secret, &payload);
+        assert!(verify_hmac_sha256_hex(secret, &payload, &sig));
+        assert!(!verify_hmac_sha256_hex(secret, &payload, "00".repeat(64).as_str()));
+        assert!(!verify_hmac_sha256_hex("wrong", &payload, &sig));
+    }
+
+    #[test]
+    fn hmac_tampered_body_fails() {
+        let secret = "sk";
+        let payload = signing_string("pk", "1", "POST", "/p", b"original");
+        let sig = hmac_sha256_hex(secret, &payload);
+        let tampered = signing_string("pk", "1", "POST", "/p", b"tampered");
+        assert!(!verify_hmac_sha256_hex(secret, &tampered, &sig));
+    }
+
+    #[test]
+    fn encrypt_decrypt_secret_roundtrip() {
+        let plain = "avaso_sk_super_secret_value";
+        let enc = encrypt_secret(plain).expect("encrypt");
+        assert_ne!(enc, plain);
+        assert_eq!(decrypt_secret(&enc).expect("decrypt"), plain);
+    }
+
+    #[test]
+    fn encrypt_decrypt_integration_config_roundtrip() {
+        let json = r#"{"client_id":"abc","client_secret":"xyz"}"#;
+        let enc = encrypt_integration_config(json).expect("enc");
+        assert_eq!(decrypt_integration_config(&enc).expect("dec"), json);
+    }
+}

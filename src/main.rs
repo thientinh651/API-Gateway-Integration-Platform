@@ -4,6 +4,7 @@ mod db;
 mod dashboard;
 mod gateway_rsa;
 mod integrations;
+mod proxy_ext;
 
 use admin_auth::{write_audit, write_audit_event, write_audit_failure, AdminCtx};
 use integrations::OAuthPending;
@@ -62,6 +63,34 @@ pub struct RouteRow {
     pub timeout_secs: i32,
     pub rate_limit_per_min: i32,
     pub tenant_id: i64,
+    #[serde(default = "default_json_obj")]
+    pub transform_add_headers: String,
+    #[serde(default = "default_json_arr")]
+    pub transform_remove_headers: String,
+    #[serde(default)]
+    pub retry_max: i32,
+    #[serde(default = "default_retry_status")]
+    pub retry_on_status: String,
+    #[serde(default = "default_one")]
+    pub retry_on_timeout: i32,
+    #[serde(default)]
+    pub queue_on_failure: i32,
+}
+
+fn default_json_obj() -> String {
+    "{}".into()
+}
+
+fn default_json_arr() -> String {
+    "[]".into()
+}
+
+fn default_retry_status() -> String {
+    "502,503,504".into()
+}
+
+fn default_one() -> i32 {
+    1
 }
 
 /// `path` / `target` pair in `config.yaml` bootstrap.
@@ -158,6 +187,7 @@ struct RuntimeSettings {
     rate_limit: RateLimitConfig,
     enable_metrics: bool,
     enable_health_check: bool,
+    extensions: proxy_ext::ExtensionToggles,
 }
 
 impl Default for RuntimeSettings {
@@ -166,6 +196,7 @@ impl Default for RuntimeSettings {
             rate_limit: RateLimitConfig::default(),
             enable_metrics: true,
             enable_health_check: true,
+            extensions: proxy_ext::ExtensionToggles::default(),
         }
     }
 }
@@ -187,6 +218,9 @@ struct SettingsResponse {
     rate_limit_burst: u32,
     enable_metrics: bool,
     enable_health_check: bool,
+    transform_enabled: bool,
+    retry_enabled: bool,
+    queue_enabled: bool,
     system_info: SettingsSystemInfo,
 }
 
@@ -197,6 +231,12 @@ struct UpdateSettingsBody {
     rate_limit_burst: u32,
     enable_metrics: bool,
     enable_health_check: bool,
+    #[serde(default)]
+    transform_enabled: bool,
+    #[serde(default)]
+    retry_enabled: bool,
+    #[serde(default)]
+    queue_enabled: bool,
 }
 
 const SESSION_COOKIE: &str = "gw_sid";
@@ -223,6 +263,7 @@ struct AppState {
     hmac_replay: Arc<DashMap<String, Instant>>,
     /// OAuth CSRF state → pending tenant/actor.
     oauth_pending: Arc<DashMap<String, OAuthPending>>,
+    proxy_queue: proxy_ext::ProxyQueue,
 }
 
 static STATE: OnceLock<AppState> = OnceLock::new();
@@ -563,8 +604,10 @@ fn mask_api_key_for_log(key: &str) -> String {
     format!("{prefix}…")
 }
 
-/// FR-D1: structured JSON transaction log (tracing subscriber uses `.json()`).
+/// FR-D1: structured JSON transaction log + persist to SQLite for admin UI.
 fn log_gateway_transaction(
+    tenant_id: Option<i64>,
+    client_ip: Option<&str>,
     outcome: &'static str,
     reason: &'static str,
     method: &str,
@@ -574,18 +617,49 @@ fn log_gateway_transaction(
     upstream: Option<&str>,
     elapsed_ms: u128,
 ) {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let api_key_masked = mask_api_key_for_log(api_key_header);
     info!(
         event = "gateway_transaction",
+        request_id = %request_id,
         outcome = outcome,
         reason = reason,
         method = method,
         path = path,
         status = status,
-        api_key_masked = %mask_api_key_for_log(api_key_header),
+        api_key_masked = %api_key_masked,
         upstream = upstream.unwrap_or(""),
         elapsed_ms = elapsed_ms,
         "gateway_transaction"
     );
+    if let Some(st) = STATE.get() {
+        let pool = st.pool.clone();
+        let req_id = request_id.clone();
+        let method = method.to_string();
+        let path = path.to_string();
+        let api_key_masked = api_key_masked.clone();
+        let outcome = outcome.to_string();
+        let reason = reason.to_string();
+        let upstream = upstream.map(|s| s.to_string());
+        let client_ip = client_ip.map(|s| s.to_string());
+        tokio::spawn(async move {
+            let _ = db::insert_transaction_log(
+                &pool,
+                tenant_id,
+                &req_id,
+                &method,
+                &path,
+                status as i64,
+                elapsed_ms as i64,
+                client_ip.as_deref(),
+                &api_key_masked,
+                &outcome,
+                &reason,
+                upstream.as_deref(),
+            )
+            .await;
+        });
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -630,6 +704,13 @@ fn current_bind_port() -> u16 {
         .unwrap_or(3000)
 }
 
+fn server_bind_addr(port: u16) -> SocketAddr {
+    let host = std::env::var("BIND_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    host.parse::<std::net::IpAddr>()
+        .map(|ip| SocketAddr::from((ip, port)))
+        .unwrap_or_else(|_| SocketAddr::from(([127, 0, 0, 1], port)))
+}
+
 fn parse_bool_setting(raw: Option<String>, default: bool) -> bool {
     match raw.as_deref().map(|s| s.trim().to_ascii_lowercase()) {
         Some(v) if matches!(v.as_str(), "1" | "true" | "yes" | "on") => true,
@@ -664,6 +745,18 @@ async fn load_runtime_settings(
         db::load_setting(pool, "runtime_health_enabled").await?,
         true,
     );
+    let transform_enabled = parse_bool_setting(
+        db::load_setting(pool, "runtime_transform_enabled").await?,
+        yaml.transform.enabled,
+    );
+    let retry_enabled = parse_bool_setting(
+        db::load_setting(pool, "runtime_retry_enabled").await?,
+        yaml.retry.enabled,
+    );
+    let queue_enabled = parse_bool_setting(
+        db::load_setting(pool, "runtime_queue_enabled").await?,
+        yaml.queue.enabled,
+    );
 
     Ok(RuntimeSettings {
         rate_limit: RateLimitConfig {
@@ -673,6 +766,11 @@ async fn load_runtime_settings(
         },
         enable_metrics,
         enable_health_check,
+        extensions: proxy_ext::ExtensionToggles {
+            transform_enabled,
+            retry_enabled,
+            queue_enabled,
+        },
     })
 }
 
@@ -710,6 +808,24 @@ async fn persist_runtime_settings(
         if body.enable_health_check { "1" } else { "0" },
     )
     .await?;
+    db::upsert_setting(
+        pool,
+        "runtime_transform_enabled",
+        if body.transform_enabled { "1" } else { "0" },
+    )
+    .await?;
+    db::upsert_setting(
+        pool,
+        "runtime_retry_enabled",
+        if body.retry_enabled { "1" } else { "0" },
+    )
+    .await?;
+    db::upsert_setting(
+        pool,
+        "runtime_queue_enabled",
+        if body.queue_enabled { "1" } else { "0" },
+    )
+    .await?;
     Ok(())
 }
 
@@ -720,6 +836,9 @@ fn settings_response_from_config(cfg: &AppConfig) -> SettingsResponse {
         rate_limit_burst: cfg.settings.rate_limit.burst,
         enable_metrics: cfg.settings.enable_metrics,
         enable_health_check: cfg.settings.enable_health_check,
+        transform_enabled: cfg.settings.extensions.transform_enabled,
+        retry_enabled: cfg.settings.extensions.retry_enabled,
+        queue_enabled: cfg.settings.extensions.queue_enabled,
         system_info: SettingsSystemInfo {
             version: env!("CARGO_PKG_VERSION"),
             runtime: "Rust/Tokio",
@@ -848,6 +967,7 @@ async fn main() {
         admin_sessions: Arc::new(DashMap::new()),
         hmac_replay: Arc::new(DashMap::new()),
         oauth_pending: Arc::new(DashMap::new()),
+        proxy_queue: proxy_ext::ProxyQueue::new(),
     };
     let _ = STATE.set(state);
 
@@ -864,6 +984,10 @@ async fn main() {
         .route("/users", get(api_list_users).post(api_create_user))
         .route("/users/:id", put(api_update_user).delete(api_delete_user))
         .route("/audit-logs", get(api_list_audit_logs))
+        .route("/transaction-logs", get(api_list_transaction_logs))
+        .route("/proxy-queue", get(api_list_proxy_queue))
+        .route("/proxy-queue/:id/retry", post(api_retry_proxy_queue))
+        .route("/proxy-queue/:id", delete(api_delete_proxy_queue))
         .route("/integrations", get(api_list_integrations))
         .route(
             "/integrations/salesforce/connect",
@@ -954,7 +1078,7 @@ async fn main() {
         .fallback(proxy_or_static);
 
     let port = current_bind_port();
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let addr = server_bind_addr(port);
 
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
@@ -963,7 +1087,7 @@ async fn main() {
                 "❌ Cổng {port} đang bị chiếm (address already in use).\n\
                  → Tắt hết bản gateway: pkill -9 -f avaso-gateway\n\
                  → Hoặc xem PID (số sau pid=, không phải cột Recv-Q): ss -tlnp | grep :{port}\n\
-                 → Hoặc: PORT=3001 cargo run  (ExampleWeb: VITE_GATEWAY_ORIGIN=http://127.0.0.1:3001)"
+                 → Hoặc: PORT=3001 cargo run  (web/: VITE_GATEWAY_ORIGIN=http://127.0.0.1:3001)"
             );
             std::process::exit(1);
         }
@@ -1556,6 +1680,63 @@ struct RouteWriteBody {
     timeout_secs: i32,
     #[serde(default = "default_rate_limit_per_min")]
     rate_limit_per_min: i32,
+    #[serde(default = "default_json_obj")]
+    transform_add_headers: String,
+    #[serde(default = "default_json_arr")]
+    transform_remove_headers: String,
+    #[serde(default)]
+    retry_max: i32,
+    #[serde(default = "default_retry_status")]
+    retry_on_status: String,
+    #[serde(default = "default_one")]
+    retry_on_timeout: i32,
+    #[serde(default)]
+    queue_on_failure: bool,
+}
+
+fn route_policy_from_body(body: &RouteWriteBody) -> (String, String, i32, String, i32, i32) {
+    (
+        body.transform_add_headers.clone(),
+        body.transform_remove_headers.clone(),
+        body.retry_max.max(0),
+        body.retry_on_status.clone(),
+        if body.retry_on_timeout != 0 { 1 } else { 0 },
+        if body.queue_on_failure { 1 } else { 0 },
+    )
+}
+
+fn validate_route_proxy_policy(body: &RouteWriteBody) -> Option<Response> {
+    let mut fields = serde_json::Map::new();
+    if serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&body.transform_add_headers)
+        .is_err()
+    {
+        fields.insert(
+            "transform_add_headers".into(),
+            serde_json::Value::String("JSON object, vd {\"X-Proxy-Version\":\"1.0\"}".into()),
+        );
+    }
+    if serde_json::from_str::<Vec<String>>(&body.transform_remove_headers).is_err() {
+        fields.insert(
+            "transform_remove_headers".into(),
+            serde_json::Value::String("JSON array, vd [\"Authorization\"]".into()),
+        );
+    }
+    if body.retry_max < 0 || body.retry_max > 10 {
+        fields.insert(
+            "retry_max".into(),
+            serde_json::Value::String("retry_max từ 0 đến 10".into()),
+        );
+    }
+    if fields.is_empty() {
+        None
+    } else {
+        Some(json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "Cấu hình route không hợp lệ",
+            fields,
+        ))
+    }
 }
 
 fn default_timeout_secs() -> i32 {
@@ -1590,6 +1771,11 @@ async fn api_create_route(
     ) {
         return resp;
     }
+    if let Some(resp) = validate_route_proxy_policy(&body) {
+        return resp;
+    }
+    let (t_add, t_rm, retry_max, retry_status, retry_timeout, queue_fail) =
+        route_policy_from_body(&body);
     match db::insert_route(
         &st.pool,
         &path,
@@ -1597,6 +1783,12 @@ async fn api_create_route(
         body.timeout_secs,
         body.rate_limit_per_min,
         ctx.tenant_id,
+        &t_add,
+        &t_rm,
+        retry_max,
+        &retry_status,
+        retry_timeout,
+        queue_fail,
     )
     .await
     {
@@ -1643,6 +1835,11 @@ async fn api_update_route(
     ) {
         return resp;
     }
+    if let Some(resp) = validate_route_proxy_policy(&body) {
+        return resp;
+    }
+    let (t_add, t_rm, retry_max, retry_status, retry_timeout, queue_fail) =
+        route_policy_from_body(&body);
     match db::update_route(
         &st.pool,
         id,
@@ -1651,6 +1848,12 @@ async fn api_update_route(
         &target,
         body.timeout_secs,
         body.rate_limit_per_min,
+        &t_add,
+        &t_rm,
+        retry_max,
+        &retry_status,
+        retry_timeout,
+        queue_fail,
     )
     .await
     {
@@ -2377,7 +2580,116 @@ async fn api_delete_user(
     }
 }
 
-async fn api_list_audit_logs(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+async fn api_list_proxy_queue(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    let Some(st) = STATE.get() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "state not initialized" })),
+        )
+            .into_response();
+    };
+    let items = st.proxy_queue.list(ctx.tenant_id).await;
+    Json(items).into_response()
+}
+
+async fn api_retry_proxy_queue(
+    Extension(ctx): Extension<AdminCtx>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Some(st) = STATE.get() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "state not initialized" })),
+        )
+            .into_response();
+    };
+    let Some(item) = st.proxy_queue.take(ctx.tenant_id, &id).await else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "not_found", "message": "Queue item không tồn tại" })),
+        )
+            .into_response();
+    };
+    let route = match db::fetch_route_by_id(&st.pool, item.route_id).await {
+        Ok(Some(r)) if r.tenant_id == ctx.tenant_id => r,
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "route_not_found" })),
+            )
+                .into_response();
+        }
+    };
+    let timeout = route.timeout_secs.max(1) as u64;
+    match proxy_ext::replay_queue_item(&st.http, &item, timeout).await {
+        Ok((status, body)) => {
+            write_audit(
+                &st.pool,
+                &ctx,
+                "proxy_queue_retry",
+                &item.path,
+                if status.is_success() { "success" } else { "failure" },
+                None,
+                Some(&format!("status={}", status.as_u16())),
+            )
+            .await;
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "retried",
+                    "upstream_status": status.as_u16(),
+                    "body_preview": String::from_utf8_lossy(&body[..body.len().min(500)]),
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            st.proxy_queue.push(item).await;
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": "retry_failed", "message": e })),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn api_delete_proxy_queue(
+    Extension(ctx): Extension<AdminCtx>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Some(st) = STATE.get() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "state not initialized" })),
+        )
+            .into_response();
+    };
+    if st.proxy_queue.remove(ctx.tenant_id, &id).await {
+        write_audit(
+            &st.pool,
+            &ctx,
+            "proxy_queue_discard",
+            &id,
+            "success",
+            None,
+            None,
+        )
+        .await;
+        Json(serde_json::json!({ "status": "discarded" })).into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "not_found" })),
+        )
+            .into_response()
+    }
+}
+
+async fn api_list_audit_logs(
+    Extension(ctx): Extension<AdminCtx>,
+    axum::extract::Query(query): axum::extract::Query<AuditLogsQuery>,
+) -> impl IntoResponse {
     let st = match STATE.get() {
         Some(s) => s.clone(),
         None => {
@@ -2388,7 +2700,76 @@ async fn api_list_audit_logs(Extension(ctx): Extension<AdminCtx>) -> impl IntoRe
                 .into_response();
         }
     };
-    match db::list_audit_logs(&st.pool, ctx.tenant_id, 50).await {
+    let limit = query.limit.unwrap_or(100);
+    match db::list_audit_logs_filtered(
+        &st.pool,
+        ctx.tenant_id,
+        limit,
+        query.result.as_deref(),
+        query.search.as_deref(),
+    )
+    .await
+    {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AuditLogsQuery {
+    limit: Option<i64>,
+    result: Option<String>,
+    search: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct TransactionLogsQuery {
+    limit: Option<i64>,
+    method: Option<String>,
+    status: Option<String>,
+    search: Option<String>,
+}
+
+fn status_filter_range(status: Option<&str>) -> (Option<i64>, Option<i64>) {
+    match status.filter(|s| !s.is_empty() && *s != "all") {
+        Some("2xx") => (Some(200), Some(300)),
+        Some("4xx") => (Some(400), Some(500)),
+        Some("5xx") => (Some(500), Some(600)),
+        _ => (None, None),
+    }
+}
+
+async fn api_list_transaction_logs(
+    Extension(ctx): Extension<AdminCtx>,
+    axum::extract::Query(query): axum::extract::Query<TransactionLogsQuery>,
+) -> impl IntoResponse {
+    let st = match STATE.get() {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "state not initialized" })),
+            )
+                .into_response();
+        }
+    };
+    let limit = query.limit.unwrap_or(200);
+    let (status_min, status_max) = status_filter_range(query.status.as_deref());
+    match db::list_transaction_logs(
+        &st.pool,
+        ctx.tenant_id,
+        limit,
+        query.method.as_deref(),
+        status_min,
+        status_max,
+        query.search.as_deref(),
+    )
+    .await
+    {
         Ok(rows) => Json(rows).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2603,6 +2984,7 @@ async fn handle_data_plane_request(
     let sign_path = canonical_request_path(&uri);
     let key = x_api_key_from_headers(req.headers());
     let (parts, body) = req.into_parts();
+    let client_ip = admin_auth::client_ip(&parts.headers);
     let body_bytes = match axum::body::to_bytes(body, MAX_DATA_PLANE_BODY).await {
         Ok(b) => b,
         Err(_) => {
@@ -2625,6 +3007,8 @@ async fn handle_data_plane_request(
         Err(err) => {
             let (status, reason, msg) = client_auth_to_response(err);
             log_gateway_transaction(
+                None,
+                client_ip.as_deref(),
                 "denied",
                 reason,
                 &method,
@@ -2653,6 +3037,8 @@ async fn handle_data_plane_request(
         )
         .await;
         log_gateway_transaction(
+            Some(verified.tenant_id),
+            client_ip.as_deref(),
             "success",
             "integration_proxy",
             &method,
@@ -2673,6 +3059,8 @@ async fn handle_data_plane_request(
     if let Some(route) = matched {
         if !tenant_allows_route(verified, &route) {
             log_gateway_transaction(
+                Some(verified.tenant_id),
+                client_ip.as_deref(),
                 "denied",
                 "tenant_forbidden",
                 &method,
@@ -2734,7 +3122,7 @@ async fn handle_proxied_route(
 }
 
 async fn serve_frontend(req: Request<Body>) -> Response {
-    let dist_dir = "web";
+    let dist_dir = "web/dist";
 
     let resp = match ServeDir::new(dist_dir)
         .append_index_html_on_directories(true)
@@ -2781,6 +3169,7 @@ async fn do_proxy(
 
     let cfg = state.config.read().await.clone();
     let key = x_api_key_from_headers(&parts.headers);
+    let client_ip = admin_auth::client_ip(&parts.headers);
 
     let body_bytes = axum::body::to_bytes(body, MAX_DATA_PLANE_BODY)
         .await
@@ -2814,6 +3203,8 @@ async fn do_proxy(
         if !entry.value_mut().take(now, rl_rps, rl_burst) {
             let elapsed_ms = started.elapsed().as_millis();
             log_gateway_transaction(
+                Some(route.tenant_id),
+                client_ip.as_deref(),
                 "denied",
                 "rate_limit_exceeded",
                 parts.method.as_str(),
@@ -2838,43 +3229,47 @@ async fn do_proxy(
 
     let method = parts.method.clone();
     let headers: HeaderMap = parts.headers.clone();
-
-    let mut out = state.http.request(method, url);
-    for (k, v) in headers.iter() {
-        if k == axum::http::header::HOST || k == axum::http::header::CONTENT_LENGTH {
-            continue;
-        }
-        out = out.header(k, v);
-    }
-
+    let policy = proxy_ext::RouteProxyPolicy::from_row(&route);
     let timeout_secs = route.timeout_secs.max(1) as u64;
-    let resp = out
-        .timeout(std::time::Duration::from_secs(timeout_secs))
-        .body(body_bytes)
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_timeout() {
-                status_to_json_error(StatusCode::GATEWAY_TIMEOUT)
-            } else {
-                status_to_json_error(StatusCode::BAD_GATEWAY)
-            }
-        })?;
 
-    let status = resp.status();
-    let mut builder = Response::builder().status(status);
-    for (k, v) in resp.headers().iter() {
-        builder = builder.header(k, v);
-    }
+    let upstream = proxy_ext::forward_with_policy(
+        &state.http,
+        &method,
+        &url,
+        headers,
+        body_bytes,
+        timeout_secs,
+        &policy,
+        &cfg.settings.extensions,
+        &state.proxy_queue,
+        route.tenant_id,
+        &route,
+        &path,
+    )
+    .await;
 
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|_| status_to_json_error(StatusCode::BAD_GATEWAY))?;
+    let status = upstream.status;
+    let log_reason: &'static str = if upstream.queued_id.is_some() {
+        "queued_after_failure"
+    } else if upstream.attempts > 1 {
+        "forwarded_after_retry"
+    } else {
+        "forwarded"
+    };
+    let log_outcome: &'static str = if status.is_success() {
+        "success"
+    } else if upstream.queued_id.is_some() {
+        "queued"
+    } else {
+        "upstream_error"
+    };
+
     let elapsed_ms = started.elapsed().as_millis();
     log_gateway_transaction(
-        "success",
-        "forwarded",
+        Some(route.tenant_id),
+        client_ip.as_deref(),
+        log_outcome,
+        log_reason,
         parts.method.as_str(),
         &path,
         status.as_u16(),
@@ -2883,14 +3278,39 @@ async fn do_proxy(
         elapsed_ms,
     );
 
+    if let Some(qid) = upstream.queued_id.clone() {
+        let body_json = serde_json::json!({
+            "error": "upstream_failed",
+            "message": "Request đã vào hàng đợi (DLQ) sau retry",
+            "queue_id": qid,
+            "attempts": upstream.attempts,
+        });
+        return Ok(Response::builder()
+            .status(StatusCode::BAD_GATEWAY)
+            .header(CONTENT_TYPE, "application/json")
+            .header("X-Queue-Id", qid)
+            .body(Body::from(body_json.to_string()))
+            .map_err(|_| status_to_json_error(StatusCode::BAD_GATEWAY))?);
+    }
+
+    let mut builder = Response::builder().status(status);
+    if upstream.attempts > 1 {
+        builder = builder.header("X-Retry-Attempts", upstream.attempts.to_string());
+    }
+    for (k, v) in upstream.headers.iter() {
+        builder = builder.header(k, v);
+    }
+
     builder
-        .body(Body::from(bytes))
+        .body(Body::from(upstream.body))
         .map_err(|_| status_to_json_error(StatusCode::BAD_GATEWAY))
 }
 
 #[cfg(test)]
 mod path_tests {
     use super::*;
+    use axum::http::Uri;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn data_plane_paths() {
@@ -2910,5 +3330,40 @@ mod path_tests {
     fn api_namespace() {
         assert!(path_is_api_namespace("/v1/foo"));
         assert!(!path_is_api_namespace("/assets/main.js"));
+    }
+
+    #[test]
+    fn canonical_request_path_includes_query() {
+        let uri: Uri = "/v1/api/get?a=1&b=2".parse().unwrap();
+        assert_eq!(canonical_request_path(&uri), "/v1/api/get?a=1&b=2");
+        let uri2: Uri = "/v1/api/get".parse().unwrap();
+        assert_eq!(canonical_request_path(&uri2), "/v1/api/get");
+    }
+
+    #[test]
+    fn parse_bool_setting_values() {
+        assert!(parse_bool_setting(Some("true".into()), false));
+        assert!(parse_bool_setting(Some("1".into()), false));
+        assert!(!parse_bool_setting(Some("off".into()), true));
+        assert!(parse_bool_setting(None, true));
+    }
+
+    #[test]
+    fn token_bucket_allows_burst_then_limits() {
+        let start = Instant::now();
+        let mut bucket = TokenBucket::new(start, 2);
+        assert!(bucket.take(start, 100.0, 2));
+        assert!(bucket.take(start, 100.0, 2));
+        assert!(!bucket.take(start, 100.0, 2));
+        let later = start + Duration::from_secs(1);
+        assert!(bucket.take(later, 1.0, 2));
+    }
+
+    #[test]
+    fn hmac_replay_cache_key_normalizes_sig() {
+        assert_eq!(
+            hmac_replay_cache_key("pk", "AbCdEf"),
+            hmac_replay_cache_key("pk", "abcdef")
+        );
     }
 }

@@ -75,7 +75,7 @@ sqlite3 data/gateway.db "SELECT username, length(password_hash) FROM admin_users
 ### Chiều
 - [ ] Bảng `audit_logs` + ghi: login, CRUD route, key, user
 - [ ] `AuditLogs.tsx` đọc API (list 50 mới nhất)
-- [ ] Build web: `cd ExampleWeb && npm run build`
+- [ ] Build web: `cd web && npm run build`
 
 ### Xong khi
 - [ ] UI tạo `viewer1` → row trong `admin_users`

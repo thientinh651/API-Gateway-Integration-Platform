@@ -18,7 +18,7 @@ Mô tả yêu cầu **mở rộng** Avaso Gateway từ lát cắt API Gateway sa
 | **Zoho Projects** | PM — Projects, Tasks, Milestones |
 | **Dashboard báo cáo** | UI tổng hợp trạng thái kết nối + số liệu đã đồng bộ / proxy |
 
-Tài liệu dùng để: thiết kế DB, API admin, UI (`ExampleWeb`), kiểm thử OAuth, ma trận truy vết FR mới.
+Tài liệu dùng để: thiết kế DB, API admin, UI (`web`), kiểm thử OAuth, ma trận truy vết FR mới.
 
 ### 1.2 Phạm vi
 
@@ -235,7 +235,7 @@ Thay số **mock** trên trang Tổng quan (`Overview.tsx` — Total Requests 12
 - Gateway: routes, health (đã có).
 - Integrations: trạng thái SF/Zoho + snapshot counts.
 
-### 6.2 Cấu trúc menu (ExampleWeb)
+### 6.2 Cấu trúc menu (web)
 
 | Route | Label | Role |
 |-------|-------|------|

@@ -23,7 +23,7 @@ Partner / Browser                    Gateway (Key Manager)
 
 ## Test UI
 
-1. `cargo run` + `npm run dev` (ExampleWeb)
+1. `cargo run` + `npm run dev` (web)
 2. Login admin → **Bảo mật & Auth**
 3. **Tạo key (RSA / WSO2)** → nhập tên → **Mã hóa & tạo key**
 4. Copy pk/sk → **Thử gọi Proxy**

@@ -51,9 +51,9 @@ journalctl -u avaso-gateway --since "5 min ago" | grep -F "avaso_" || true
 ## 5. Deploy UI (sau khi sửa React)
 
 ```bash
-cd /root/avaso-gateway/ExampleWeb
+cd /root/avaso-gateway/web
 npm run build
-# Gateway đọc web/ — không cần restart nếu chỉ đổi static
+# Gateway đọc web/dist/ — không cần restart nếu chỉ đổi static
 ```
 
 ## 6. Cập nhật sau khi sửa code Rust

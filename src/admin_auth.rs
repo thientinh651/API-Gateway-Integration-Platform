@@ -199,3 +199,62 @@ pub fn forbidden_response() -> axum::response::Response {
         "Không đủ quyền (RBAC)",
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::Method;
+
+    fn allow(method: Method, path: &str, role: &str) -> bool {
+        rbac_allow(&method, path, role)
+    }
+
+    #[test]
+    fn normalize_role_lowercase() {
+        assert_eq!(normalize_role(" Admin "), "admin");
+    }
+
+    #[test]
+    fn admin_full_access() {
+        assert!(allow(Method::DELETE, "/api/users/1", "admin"));
+        assert!(allow(Method::POST, "/api/routes", "admin"));
+        assert!(allow(Method::PUT, "/api/settings", "admin"));
+    }
+
+    #[test]
+    fn viewer_read_only() {
+        assert!(allow(Method::GET, "/api/routes", "viewer"));
+        assert!(!allow(Method::POST, "/api/routes", "viewer"));
+        assert!(!allow(Method::PUT, "/api/routes/1", "viewer"));
+        assert!(!allow(Method::DELETE, "/api/client-keys/1", "viewer"));
+    }
+
+    #[test]
+    fn operator_can_update_routes_not_create() {
+        assert!(allow(Method::GET, "/routes", "operator"));
+        assert!(allow(Method::PUT, "/api/routes/3", "operator"));
+        assert!(!allow(Method::POST, "/api/routes", "operator"));
+        assert!(!allow(Method::DELETE, "/api/routes/3", "operator"));
+    }
+
+    #[test]
+    fn operator_blocked_users_and_settings() {
+        assert!(!allow(Method::GET, "/api/users", "operator"));
+        assert!(!allow(Method::PUT, "/api/settings", "operator"));
+        assert!(!allow(Method::POST, "/api/reload-config", "operator"));
+    }
+
+    #[test]
+    fn operator_integrations_read_only_except_test_get_for_admin() {
+        assert!(allow(Method::GET, "/api/integrations", "operator"));
+        assert!(!allow(Method::POST, "/api/integrations/salesforce/sync", "operator"));
+        assert!(!allow(Method::GET, "/api/integrations/salesforce/connect", "operator"));
+    }
+
+    #[test]
+    fn client_ip_from_forwarded() {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", "203.0.113.1, 10.0.0.1".parse().unwrap());
+        assert_eq!(client_ip(&h).as_deref(), Some("203.0.113.1"));
+    }
+}

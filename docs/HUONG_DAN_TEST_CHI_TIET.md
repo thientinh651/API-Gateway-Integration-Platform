@@ -1,6 +1,6 @@
 # Hướng dẫn test end-to-end (một luồng duy nhất)
 
-Luồng này: **bật gateway → bật ExampleWeb → test gần hết trên website**; chỉ dùng **một lệnh `curl` cuối** để xác nhận proxy + client key (vì trang Vite `localhost:5173` gọi thẳng `127.0.0.1:3000` bị chặn CORS nếu không cấu hình thêm).
+Luồng này: **bật gateway → bật web → test gần hết trên website**; chỉ dùng **một lệnh `curl` cuối** để xác nhận proxy + client key (vì trang Vite `localhost:5173` gọi thẳng `127.0.0.1:3000` bị chặn CORS nếu không cấu hình thêm).
 
 Chuẩn bị hai terminal + trình duyệt.
 
@@ -10,7 +10,7 @@ Chuẩn bị hai terminal + trình duyệt.
 
 Bạn chọn **một** chuỗi làm admin, ví dụ: `HocSinhTest2026`
 
-- Nó phải **trùng** ở: `ADMIN_X_API_KEY` (lúc chạy gateway **lần đầu** tạo DB) **và** `VITE_ADMIN_X_API_KEY` trong ExampleWeb `.env`.
+- Nó phải **trùng** ở: `ADMIN_X_API_KEY` (lúc chạy gateway **lần đầu** tạo DB) **và** `VITE_ADMIN_X_API_KEY` trong web `.env`.
 
 **Nếu đã có file `data/gateway.db` từ trước** với key khác:
 
@@ -66,7 +66,7 @@ cargo run
 PORT=3001 cargo run
 ```
 
-Rồi ở **Bước 4** đặt `VITE_GATEWAY_ORIGIN=http://127.0.0.1:3001` trong `ExampleWeb/.env`.
+Rồi ở **Bước 4** đặt `VITE_GATEWAY_ORIGIN=http://127.0.0.1:3001` trong `web/.env`.
 
 **Kỳ vọng:** sau vài giây thấy dòng kiểu `Gateway đang lắng nghe: http://127.0.0.1:3000/` và **không** thoát process. Để terminal này **mở**.
 
@@ -77,14 +77,14 @@ Nếu lỗi **trước** dòng “đang lắng nghe”:
 
 ---
 
-## Bước 2 — Terminal 2: ExampleWeb
+## Bước 2 — Terminal 2: web
 
 ```bash
-cd ~/avaso-gateway/ExampleWeb
+cd ~/avaso-gateway/web
 cp -n .env.example .env   # Linux: bỏ qua nếu .env đã có; hoặc tạo tay .env
 ```
 
-Mở file **`ExampleWeb/.env`** và sửa / thêm đúng hai dòng (trùng admin ở Bước 0):
+Mở file **`web/.env`** và sửa / thêm đúng hai dòng (trùng admin ở Bước 0):
 
 ```env
 VITE_GATEWAY_ORIGIN=http://127.0.0.1:3000

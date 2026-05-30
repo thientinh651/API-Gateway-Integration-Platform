@@ -24,10 +24,10 @@ cargo run
 
 ## Test UI
 
-**Cách A — ExampleWeb (dev, proxy Vite)**
+**Cách A — web (dev, proxy Vite)**
 
 ```bash
-cd ExampleWeb
+cd web
 cp .env.example .env   # chỉnh VITE_ADMIN_X_API_KEY trùng secret admin đang dùng
 npm install
 npm run dev
@@ -35,9 +35,13 @@ npm run dev
 
 Vite proxy `/api`, `/health`, `/metrics` → `VITE_GATEWAY_ORIGIN` (mặc định `http://127.0.0.1:3000`). Header admin từ `VITE_ADMIN_X_API_KEY`.
 
-**Cách B — Static `web/` qua gateway**
+**Cách B — Static qua gateway**
 
-Build/copy SPA vào `web/` rồi mở `http://127.0.0.1:3000/` (gateway phục vụ static + SPA fallback).
+```bash
+cd web && npm run build   # → web/dist/
+```
+
+Mở `http://127.0.0.1:3000/` — gateway phục vụ `web/dist/` + SPA fallback.
 
 ## Luồng runtime (tóm tắt)
 

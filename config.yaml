@@ -15,6 +15,7 @@ rate_limit:
   burst: 20
 
 # Optional extensions (not implemented yet)
+# Optional extensions — bật trong Cài đặt hệ thống
 transform:
   enabled: false
 retry:

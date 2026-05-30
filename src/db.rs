@@ -11,6 +11,9 @@ use std::path::PathBuf;
 
 use crate::{crypto, RouteRow, YamlBootstrap};
 
+pub const ROUTE_SELECT: &str =
+    "id, path, target, timeout_secs, rate_limit_per_min, tenant_id, transform_add_headers, transform_remove_headers, retry_max, retry_on_status, retry_on_timeout, queue_on_failure";
+
 /// Runtime credentials for data-plane auth.
 #[derive(Debug, Clone, Default)]
 pub struct ClientCredentials {
@@ -441,13 +444,140 @@ pub async fn list_audit_logs(
     .await
 }
 
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct TransactionLogRow {
+    pub id: i64,
+    pub tenant_id: Option<i64>,
+    pub request_id: String,
+    pub method: String,
+    pub path: String,
+    pub status: i64,
+    pub duration_ms: i64,
+    pub client_ip: Option<String>,
+    pub api_key_masked: Option<String>,
+    pub outcome: String,
+    pub reason: String,
+    pub upstream: Option<String>,
+    pub created_at: String,
+}
+
+pub async fn insert_transaction_log(
+    pool: &SqlitePool,
+    tenant_id: Option<i64>,
+    request_id: &str,
+    method: &str,
+    path: &str,
+    status: i64,
+    duration_ms: i64,
+    client_ip: Option<&str>,
+    api_key_masked: &str,
+    outcome: &str,
+    reason: &str,
+    upstream: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO gateway_transaction_logs
+         (tenant_id, request_id, method, path, status, duration_ms, client_ip, api_key_masked, outcome, reason, upstream)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(tenant_id)
+    .bind(request_id)
+    .bind(method)
+    .bind(path)
+    .bind(status)
+    .bind(duration_ms)
+    .bind(client_ip)
+    .bind(api_key_masked)
+    .bind(outcome)
+    .bind(reason)
+    .bind(upstream)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn list_transaction_logs(
+    pool: &SqlitePool,
+    tenant_id: i64,
+    limit: i64,
+    method: Option<&str>,
+    status_min: Option<i64>,
+    status_max: Option<i64>,
+    search: Option<&str>,
+) -> Result<Vec<TransactionLogRow>, sqlx::Error> {
+    let lim = limit.clamp(1, 500);
+    let mut sql = String::from(
+        "SELECT id, tenant_id, request_id, method, path, status, duration_ms, client_ip, api_key_masked, outcome, reason, upstream, created_at
+         FROM gateway_transaction_logs WHERE (tenant_id = ? OR tenant_id IS NULL)",
+    );
+    if method.filter(|m| !m.is_empty() && *m != "all").is_some() {
+        sql.push_str(" AND method = ?");
+    }
+    if status_min.is_some() {
+        sql.push_str(" AND status >= ?");
+    }
+    if status_max.is_some() {
+        sql.push_str(" AND status < ?");
+    }
+    if search.filter(|s| !s.trim().is_empty()).is_some() {
+        sql.push_str(" AND (path LIKE ? OR request_id LIKE ? OR COALESCE(client_ip,'') LIKE ?)");
+    }
+    sql.push_str(" ORDER BY id DESC LIMIT ?");
+
+    let mut q = sqlx::query_as::<_, TransactionLogRow>(&sql).bind(tenant_id);
+    if let Some(m) = method.filter(|m| !m.is_empty() && *m != "all") {
+        q = q.bind(m.to_uppercase());
+    }
+    if let Some(smin) = status_min {
+        q = q.bind(smin);
+    }
+    if let Some(smax) = status_max {
+        q = q.bind(smax);
+    }
+    if let Some(s) = search.filter(|s| !s.trim().is_empty()) {
+        let pat = format!("%{}%", s.trim());
+        q = q.bind(pat.clone()).bind(pat.clone()).bind(pat);
+    }
+    q.bind(lim).fetch_all(pool).await
+}
+
+pub async fn list_audit_logs_filtered(
+    pool: &SqlitePool,
+    tenant_id: i64,
+    limit: i64,
+    result: Option<&str>,
+    search: Option<&str>,
+) -> Result<Vec<AuditLogRow>, sqlx::Error> {
+    let lim = limit.clamp(1, 500);
+    let mut sql = String::from(
+        "SELECT id, tenant_id, actor, role, action, resource, result, source_ip, details, created_at
+         FROM audit_logs WHERE tenant_id = ?",
+    );
+    if result.filter(|r| !r.is_empty() && *r != "all").is_some() {
+        sql.push_str(" AND result = ?");
+    }
+    if search.filter(|s| !s.trim().is_empty()).is_some() {
+        sql.push_str(" AND (actor LIKE ? OR action LIKE ? OR resource LIKE ? OR COALESCE(details,'') LIKE ?)");
+    }
+    sql.push_str(" ORDER BY id DESC LIMIT ?");
+
+    let mut q = sqlx::query_as::<_, AuditLogRow>(&sql).bind(tenant_id);
+    if let Some(r) = result.filter(|r| !r.is_empty() && *r != "all") {
+        q = q.bind(r);
+    }
+    if let Some(s) = search.filter(|s| !s.trim().is_empty()) {
+        let pat = format!("%{}%", s.trim());
+        q = q.bind(pat.clone()).bind(pat.clone()).bind(pat.clone()).bind(pat);
+    }
+    q.bind(lim).fetch_all(pool).await
+}
+
 pub async fn list_routes_for_tenant(
     pool: &SqlitePool,
     tenant_id: i64,
 ) -> Result<Vec<RouteRow>, sqlx::Error> {
     sqlx::query_as::<_, RouteRow>(
-        "SELECT id, path, target, timeout_secs, rate_limit_per_min, tenant_id
-         FROM gateway_routes WHERE tenant_id = ? ORDER BY path",
+        &format!("SELECT {ROUTE_SELECT} FROM gateway_routes WHERE tenant_id = ? ORDER BY path"),
     )
     .bind(tenant_id)
     .fetch_all(pool)
@@ -460,8 +590,7 @@ pub async fn fetch_route_by_id_tenant(
     tenant_id: i64,
 ) -> Result<Option<RouteRow>, sqlx::Error> {
     sqlx::query_as::<_, RouteRow>(
-        "SELECT id, path, target, timeout_secs, rate_limit_per_min, tenant_id
-         FROM gateway_routes WHERE id = ? AND tenant_id = ?",
+        &format!("SELECT {ROUTE_SELECT} FROM gateway_routes WHERE id = ? AND tenant_id = ?"),
     )
     .bind(id)
     .bind(tenant_id)
@@ -471,7 +600,7 @@ pub async fn fetch_route_by_id_tenant(
 
 pub async fn load_route_rows(pool: &SqlitePool) -> Result<Vec<RouteRow>, sqlx::Error> {
     sqlx::query_as::<_, RouteRow>(
-        "SELECT id, path, target, timeout_secs, rate_limit_per_min, tenant_id FROM gateway_routes ORDER BY path",
+        &format!("SELECT {ROUTE_SELECT} FROM gateway_routes ORDER BY path"),
     )
     .fetch_all(pool)
     .await
@@ -555,24 +684,38 @@ pub async fn insert_route(
     timeout_secs: i32,
     rate_limit_per_min: i32,
     tenant_id: i64,
+    transform_add_headers: &str,
+    transform_remove_headers: &str,
+    retry_max: i32,
+    retry_on_status: &str,
+    retry_on_timeout: i32,
+    queue_on_failure: i32,
 ) -> Result<RouteRow, sqlx::Error> {
     sqlx::query_as::<_, RouteRow>(
-        "INSERT INTO gateway_routes (path, target, timeout_secs, rate_limit_per_min, tenant_id)
-         VALUES (?, ?, ?, ?, ?)
-         RETURNING id, path, target, timeout_secs, rate_limit_per_min, tenant_id",
+        &format!(
+            "INSERT INTO gateway_routes (path, target, timeout_secs, rate_limit_per_min, tenant_id, transform_add_headers, transform_remove_headers, retry_max, retry_on_status, retry_on_timeout, queue_on_failure)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         RETURNING {ROUTE_SELECT}"
+        ),
     )
     .bind(path)
     .bind(target)
     .bind(timeout_secs)
     .bind(rate_limit_per_min)
     .bind(tenant_id)
+    .bind(transform_add_headers)
+    .bind(transform_remove_headers)
+    .bind(retry_max)
+    .bind(retry_on_status)
+    .bind(retry_on_timeout)
+    .bind(queue_on_failure)
     .fetch_one(pool)
     .await
 }
 
 pub async fn fetch_route_by_id(pool: &SqlitePool, id: i64) -> Result<Option<RouteRow>, sqlx::Error> {
     sqlx::query_as::<_, RouteRow>(
-        "SELECT id, path, target, timeout_secs, rate_limit_per_min, tenant_id FROM gateway_routes WHERE id = ?",
+        &format!("SELECT {ROUTE_SELECT} FROM gateway_routes WHERE id = ?"),
     )
     .bind(id)
     .fetch_optional(pool)
@@ -587,15 +730,29 @@ pub async fn update_route(
     target: &str,
     timeout_secs: i32,
     rate_limit_per_min: i32,
+    transform_add_headers: &str,
+    transform_remove_headers: &str,
+    retry_max: i32,
+    retry_on_status: &str,
+    retry_on_timeout: i32,
+    queue_on_failure: i32,
 ) -> Result<u64, sqlx::Error> {
     let r = sqlx::query(
-        "UPDATE gateway_routes SET path = ?, target = ?, timeout_secs = ?, rate_limit_per_min = ?
+        "UPDATE gateway_routes SET path = ?, target = ?, timeout_secs = ?, rate_limit_per_min = ?,
+         transform_add_headers = ?, transform_remove_headers = ?, retry_max = ?, retry_on_status = ?,
+         retry_on_timeout = ?, queue_on_failure = ?
          WHERE id = ? AND tenant_id = ?",
     )
     .bind(path)
     .bind(target)
     .bind(timeout_secs)
     .bind(rate_limit_per_min)
+    .bind(transform_add_headers)
+    .bind(transform_remove_headers)
+    .bind(retry_max)
+    .bind(retry_on_status)
+    .bind(retry_on_timeout)
+    .bind(queue_on_failure)
     .bind(id)
     .bind(tenant_id)
     .execute(pool)
@@ -1164,4 +1321,25 @@ pub async fn delete_client_key(
         .execute(pool)
         .await?;
     Ok(r.rows_affected())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sha256_hex_known() {
+        assert_eq!(
+            sha256_hex("hello"),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+    }
+
+    #[test]
+    fn password_hash_and_verify() {
+        let hash = hash_password("Str0ng!Pass").expect("hash");
+        assert!(hash.starts_with("$argon2"));
+        assert!(verify_password("Str0ng!Pass", &hash));
+        assert!(!verify_password("wrong", &hash));
+    }
 }

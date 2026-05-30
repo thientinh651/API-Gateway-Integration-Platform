@@ -1,104 +1,127 @@
-# avaso-gateway
+# AVASO Gateway
 
-Simplified middleware / API Gateway (inspired by WSO2). Rust + Axum + Tokio. Single-node demo.
+API Gateway đơn node — Rust (Axum) + SQLite + React admin UI. Production demo: [thientinh.io.vn](https://thientinh.io.vn).
 
-## MVP scope (this project)
-- **API Gateway (HTTP server)**
-- **Routing config**
-- **API key auth**
-- **Rate limiting**
-- **Logging**
-- Optional (if time): **request transform**, **retry**, **queue**
+## Tính năng chính
 
-## What it does
-- **Reverse proxy / routing**: map `/<path_prefix>/*` -> upstream `target`
-- **Config-driven**: routes from `config.yaml`
-- **Dashboard (static)**: served from `web/` at `/`
-- **Health**: `GET /health`
-- **Protected internal API (demo)**: `/api/*` requires header `x-api-key` (value currently hardcoded in code; do not use in production)
+| Lớp | Mô tả |
+|-----|--------|
+| **Data plane** | Reverse proxy theo route; prefix `/v1/api/*`; HMAC-SHA256 + replay guard; rate limit token bucket |
+| **Admin plane** | REST `/api/*` — session cookie hoặc `X-API-Key` admin; RBAC admin / operator / viewer |
+| **Bảo mật** | Argon2id mật khẩu; AES-256-GCM secret client key; audit log; transaction log SQLite |
+| **Tích hợp** | Salesforce + Zoho Projects OAuth; proxy data-plane; snapshot sync |
+| **Mở rộng** | Request transform, retry, DLQ queue (toggle runtime) |
+| **Dashboard** | React SPA trong `web/` — build ra `web/dist/` |
 
-Status note:
-- Routing + config + basic API-key check: **implemented**
-- Rate limiting + structured logging: **planned** (see Roadmap)
+## Kiến trúc nhanh
 
-## Architecture (quick)
-- **Data plane**: public traffic, route-match then proxy
-- **Admin/internal plane (minimal today)**: `/api/routes` (list configured routes), `/api/proxy` (demo handler)
+```
+Client ──► Nginx (TLS) ──► avaso-gateway :3000 (localhost)
+                              ├── /health, /metrics (stub JSON)
+                              ├── /v1/api/*     → HMAC auth → proxy upstream
+                              ├── /api/*        → admin API (session / admin key)
+                              └── /*            → static web/dist/ (SPA)
+```
 
-## Quickstart (local)
-Prereq: Rust toolchain.
+- Route lưu **SQLite** (`data/gateway.db`), seed lần đầu từ `config.yaml`.
+- Session admin, replay cache, proxy queue: **in-memory** (mất khi restart).
+
+## Quickstart (dev)
 
 ```bash
+# Backend
+cp .env.example .env   # chỉnh secret trước khi public
 cargo run
+
+# Frontend (terminal khác)
+cd web && npm install && npm run dev
+# Production build: npm run build  → web/dist/
 ```
 
-Open:
-- `http://127.0.0.1:3000/` (dashboard)
-- `http://127.0.0.1:3000/health`
+Mở `http://127.0.0.1:3000/` (sau build) hoặc `http://127.0.0.1:5173/` (dev). Đăng nhập admin từ `ADMIN_USERNAME` / `ADMIN_PASSWORD` trong `.env`.
 
-Test proxy via config default (`/test/*` -> `https://httpbin.org`):
+## Kiểm thử
 
 ```bash
-curl -i "http://127.0.0.1:3000/test/get"
+cargo test                    # unit tests (crypto, RBAC, HMAC, rate limit)
+cd web && npm run build
+./scripts/smoke-test.sh       # health + login (cần gateway đang chạy)
+python3 scripts/test_hmac_replay.py  # HMAC replay (cần client key)
 ```
 
-List routes (requires `x-api-key` header):
+CI: GitHub Actions — `.github/workflows/ci.yml`.
+
+## Cấu hình
+
+| File | Vai trò |
+|------|---------|
+| `.env` | DB path, admin bootstrap, `CLIENT_KEY_MASTER_KEY`, OAuth SF/Zoho, CORS |
+| `config.yaml` | Rate limit mặc định, seed routes, feature toggles |
+| `web/.env` | `VITE_API_BASE_URL`, `VITE_GATEWAY_ORIGIN` (dev) |
+
+Chi tiết production: [`deploy/systemd/README.md`](deploy/systemd/README.md), [`deploy/nginx/README.md`](deploy/nginx/README.md).
+
+## Admin API (tóm tắt)
+
+Tất cả dưới prefix **`/api`**:
+
+- `POST /api/login`, `POST /api/logout`, `GET /api/me`
+- `GET/POST /api/routes`, `PUT/DELETE /api/routes/:id`
+- `GET/POST /api/client-keys`, `DELETE /api/client-keys/:id`
+- `GET/POST/PUT/DELETE /api/users`
+- `GET /api/audit-logs`, `GET /api/transaction-logs`
+- `GET/PUT /api/settings`, `GET /api/dashboard/stats`
+- `GET /api/integrations/*` (Salesforce, Zoho OAuth + sync)
+
+Tài liệu đầy đủ: UI **Tài liệu API** hoặc [`docs/TEAM_RUNBOOK.md`](docs/TEAM_RUNBOOK.md).
+
+## Data plane auth (HMAC)
+
+Header: `X-API-Key`, `X-Timestamp`, `X-Signature`. Payload ký: `{api_key}\n{timestamp}\n{METHOD}\n{path_with_query}\n{body}`.
+
+Flow: [`docs/HMAC_MIDDLEWARE_FLOW.md`](docs/HMAC_MIDDLEWARE_FLOW.md).
+
+## Deploy (Ubuntu)
 
 ```bash
-curl -i -H 'x-api-key: <your_demo_key>' "http://127.0.0.1:3000/api/routes"
+cargo build --release
+cd web && npm run build          # → web/dist/
+cd web && npm test               # Vitest
+sudo cp deploy/systemd/avaso-gateway.service /etc/systemd/system/
+sudo systemctl enable --now avaso-gateway
 ```
 
-## Configuration (`config.yaml`)
+Nginx reverse proxy tới `127.0.0.1:3000` — xem [`deploy/nginx/thientinh.io.vn.conf`](deploy/nginx/thientinh.io.vn.conf).
 
-Example:
+## Docker (demo local)
 
-```yaml
-routes:
-  - path: "/test"
-    target: "https://httpbin.org"
-  - path: "/my-api"
-    target: "http://localhost:5000"
+```bash
+cp .env.example .env
+docker compose up --build
+# http://127.0.0.1:3000 — BIND_HOST=0.0.0.0 trong compose
 ```
 
-Match rule:
-- **Longest prefix wins**. `path == route.path` or `path starts_with route.path + "/"`.
-- Query string preserved.
-- Request method preserved.
-- Most headers forwarded (skips `Host`, `Content-Length`).
+Demo bảo vệ: [`docs/DEMO_BAO_VE.md`](docs/DEMO_BAO_VE.md).
 
-## Endpoints
-- **Public**
-  - `GET /health`
-  - `/<configured_route>/*` (proxy)
-  - `/` and other paths (static files from `web/` when no route match)
-- **Internal (demo, protected by `x-api-key`)**
-  - `GET /api/routes`
-  - `GET /api/proxy` (demo call to jsonplaceholder)
+## Thư mục frontend (`web/`)
 
-## Deploy (Ubuntu + Nginx + TLS)
-Repo includes Nginx + Let's Encrypt notes in [`deploy/nginx/README.md`](deploy/nginx/README.md).
+| Path | Mục đích |
+|------|----------|
+| `web/src/` | Source React — **sửa code ở đây** |
+| `web/dist/` | Build output — gateway phục vụ (gitignore) |
+| `npm run dev` | Vite :5173, proxy `/api` → gateway |
 
-Important:
-- App currently binds **localhost `127.0.0.1:3000`**.
-- Example Nginx vhost uses upstream `127.0.0.1:8080` in [`deploy/nginx/thientinh.io.vn.conf`](deploy/nginx/thientinh.io.vn.conf). Change to `3000` (or change app bind) to match.
-- For public repo, treat domain as **placeholder**; use your own domain + cert paths.
+**Không sửa tay `web/dist/`** — luôn `npm run build` sau khi đổi UI.
 
-## Security notes (public repo)
-- `x-api-key` check is **demo-only** (hardcoded in `src/main.rs`). Production needs:
-  - secret from env/DB/Vault, rotation, per-key scopes
-  - authn + authz policy (RBAC/ABAC) for admin plane
-  - audit log
-- Bind localhost + Nginx reverse proxy is intentional perimeter for demo.
+## Tài liệu thêm
 
-## Roadmap (thesis/scale topics)
-MVP + extensions:
-- **Rate limiting**: token bucket/leaky bucket per key/IP
-- **Logging**: structured request/response logs + request id
-- Optional extensions:
-  - **Request/response transform**: headers/body mapping per route
-  - **Retry**: idempotent-safe retry policy
-  - **Queue**: async buffering for burst traffic / downstream outage
+| Doc | Nội dung |
+|-----|----------|
+| [`docs/MO_HINH_BAO_MAT.md`](docs/MO_HINH_BAO_MAT.md) | Mô hình bảo mật |
+| [`docs/HUONG_DAN_TEST_CHI_TIET.md`](docs/HUONG_DAN_TEST_CHI_TIET.md) | E2E manual |
+| [`docs/TICH_HOP_SALESFORCE.md`](docs/TICH_HOP_SALESFORCE.md) | Salesforce OAuth |
+| [`docs/TICH_HOP_ZOHO_PROJECTS.md`](docs/TICH_HOP_ZOHO_PROJECTS.md) | Zoho Projects |
 
 ## License
-TBD.
 
+MIT — see [LICENSE](LICENSE).

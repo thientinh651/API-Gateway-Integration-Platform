@@ -1,3 +1,6 @@
 /target
-/ExampleWeb/node_modules
+/web/node_modules
+/web/dist
+/web/data
 /data/*.db
+.env
