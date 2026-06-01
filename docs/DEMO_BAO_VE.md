@@ -40,7 +40,9 @@ curl -sS https://thientinh.io.vn/health
 | Restart mất gì? | Session, replay cache, DLQ — Settings ghi rõ |
 | Multi-tenant? | Schema `tenant_id`, demo tenant 1 |
 | F-15 Reports? | Dashboard Overview + `/api/dashboard/stats` |
-| Test tự động? | `cargo test` (21) + `cd web && npm test` (17) + CI |
+| Test tự động? | `cargo test` + `cd web && npm test` + CI |
+| NFR / benchmark? | `GET /metrics`; `./scripts/collect-thesis-evidence.sh` |
+| Trace FR đồ án? | `docs/MA_TRAN_DONG_AN.md` |
 
 ## Docker (local demo)
 

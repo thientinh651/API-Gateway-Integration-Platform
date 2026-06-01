@@ -93,6 +93,33 @@ export function isViewer(user: AdminMe | null): boolean {
   return normalizeRole(user?.role) === 'viewer';
 }
 
+/** Admin API GET tương ứng trang dashboard — dùng lọc menu & guard route. */
+const NAV_PAGE_GET_API: Record<string, string> = {
+  '/routes': '/api/routes',
+  '/auth': '/api/client-keys',
+  '/proxy-queue': '/api/proxy-queue',
+  '/integrations': '/api/integrations',
+  '/users': '/api/users',
+  '/logs': '/api/transaction-logs',
+  '/audit': '/api/audit-logs',
+  '/settings': '/api/settings',
+};
+
+/**
+ * Trang có trong menu chỉ khi role đọc được API chính của trang (khớp backend).
+ * Khách: Tổng quan + Tài liệu API. Trang cần đăng nhập: ẩn khi chưa login.
+ */
+export function canAccessNavPath(path: string, user: AdminMe | null): boolean {
+  if (path === '/' || path === '/api-docs') return true;
+  if (path === '/proxy-try') return user != null;
+  if (!user) return false;
+
+  const api = NAV_PAGE_GET_API[path];
+  if (!api) return false;
+  if (path === '/users') return canManageUsers(user);
+  return rbacAllow('GET', api, user.role);
+}
+
 export function roleLabel(role?: string): string {
   const r = normalizeRole(role);
   if (r === 'admin') return 'Admin';

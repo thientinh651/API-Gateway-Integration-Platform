@@ -151,7 +151,7 @@ function OverviewAdmin() {
     <>
       <div className="mb-8 flex flex-wrap justify-between gap-4 items-center">
         <div>
-          <h1 className="text-3xl font-bold text-white mb-2">Tổng quan</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Tổng quan</h1>
           <p className="text-muted-foreground">
             Gateway + tích hợp Salesforce / Zoho — dữ liệu thật từ snapshot & audit.
           </p>

@@ -95,17 +95,43 @@ pub fn rbac_allow(method: &Method, path: &str, role: &str) -> bool {
     true
 }
 
+fn first_ip_from_list(value: &str) -> String {
+    value.split(',').next().unwrap_or(value).trim().to_string()
+}
+
+/// Client IP từ reverse proxy (Nginx: X-Real-IP, X-Forwarded-For).
 pub fn client_ip(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string())
-        })
+    if let Some(v) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        let ip = first_ip_from_list(v);
+        if !ip.is_empty() {
+            return Some(ip);
+        }
+    }
+    if let Some(v) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+        let ip = v.trim().to_string();
+        if !ip.is_empty() {
+            return Some(ip);
+        }
+    }
+    if let Some(v) = headers.get("cf-connecting-ip").and_then(|v| v.to_str().ok()) {
+        let ip = v.trim().to_string();
+        if !ip.is_empty() {
+            return Some(ip);
+        }
+    }
+    // RFC 7239 Forwarded: for=1.2.3.4;proto=https
+    if let Some(v) = headers.get("forwarded").and_then(|v| v.to_str().ok()) {
+        for part in v.split(';') {
+            let part = part.trim();
+            if let Some(rest) = part.strip_prefix("for=") {
+                let ip = rest.trim_matches('"').trim();
+                if !ip.is_empty() && ip != "unknown" {
+                    return Some(ip.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 pub async fn write_audit_event(

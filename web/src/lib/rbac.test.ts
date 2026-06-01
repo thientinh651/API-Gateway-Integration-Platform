@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canAccessNavPath,
   canCreateRoute,
   canDeleteRoute,
   canEditSettings,
@@ -63,5 +64,34 @@ describe('rbac helpers', () => {
     expect(canWriteClientKeys(viewer)).toBe(false);
     expect(canMutateProxyQueue(viewer)).toBe(false);
     expect(canMutateProxyQueue(operator)).toBe(true);
+  });
+});
+
+describe('canAccessNavPath', () => {
+  const viewer = { username: 'v', role: 'viewer' };
+  const operator = { username: 'op', role: 'operator' };
+  const admin = { username: 'a', role: 'admin' };
+
+  it('guest public pages only', () => {
+    expect(canAccessNavPath('/', null)).toBe(true);
+    expect(canAccessNavPath('/api-docs', null)).toBe(true);
+    expect(canAccessNavPath('/routes', null)).toBe(false);
+    expect(canAccessNavPath('/proxy-try', null)).toBe(false);
+  });
+
+  it('viewer no users', () => {
+    expect(canAccessNavPath('/routes', viewer)).toBe(true);
+    expect(canAccessNavPath('/users', viewer)).toBe(false);
+    expect(canAccessNavPath('/settings', viewer)).toBe(true);
+  });
+
+  it('operator no users', () => {
+    expect(canAccessNavPath('/users', operator)).toBe(false);
+    expect(canAccessNavPath('/integrations', operator)).toBe(true);
+  });
+
+  it('admin all nav pages', () => {
+    expect(canAccessNavPath('/users', admin)).toBe(true);
+    expect(canAccessNavPath('/proxy-try', admin)).toBe(true);
   });
 });

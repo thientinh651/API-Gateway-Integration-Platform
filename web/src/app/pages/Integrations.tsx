@@ -598,9 +598,9 @@ function IntegrationsAdmin() {
 
   return (
     <>
-      <div className="mb-8 flex justify-between items-center flex-wrap gap-4">
+      <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-white mb-2">Tích hợp</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Tích hợp</h1>
           <p className="text-muted-foreground">
             OAuth admin connector — token mã hóa AES trong SQLite (khác API key client).
           </p>

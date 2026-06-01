@@ -63,6 +63,12 @@ CI: GitHub Actions — `.github/workflows/ci.yml`.
 
 Chi tiết production: [`deploy/systemd/README.md`](deploy/systemd/README.md), [`deploy/nginx/README.md`](deploy/nginx/README.md).
 
+**502 / web không vào:** [`docs/XU_LY_502_BAD_GATEWAY.md`](docs/XU_LY_502_BAD_GATEWAY.md)
+
+**Bảo vệ đồ án — trace FR + benchmark:** [`docs/MA_TRAN_DONG_AN.md`](docs/MA_TRAN_DONG_AN.md) · [`docs/BENCHMARK.md`](docs/BENCHMARK.md) · `./scripts/collect-thesis-evidence.sh`
+
+**Docker HA (2 instance + Nginx LB):** [`docs/DOCKER_HA_DEMO.md`](docs/DOCKER_HA_DEMO.md) · `docker compose -f docker-compose.ha.yml up --build`
+
 ## Admin API (tóm tắt)
 
 Tất cả dưới prefix **`/api`**:

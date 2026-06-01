@@ -1,0 +1,2 @@
+    PID   RSS    VSZ %MEM CMD
+ 972389 33712 568112  1.6 /root/avaso-gateway/target/release/avaso-gateway

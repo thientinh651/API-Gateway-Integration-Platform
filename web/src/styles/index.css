@@ -3,6 +3,15 @@
 @import './theme.css';
 @import 'sonner/dist/styles.css';
 
+/* Mobile: tránh zoom chữ + scroll ngang layout */
+html {
+  -webkit-text-size-adjust: 100%;
+  overflow-x: hidden;
+}
+body {
+  overflow-x: hidden;
+}
+
 /* Sonner: nút đóng mặc định trái (biến --toast-close-button-*). Ép sang phải. */
 [data-sonner-toaster][dir='ltr'] {
   --toast-close-button-start: unset !important;

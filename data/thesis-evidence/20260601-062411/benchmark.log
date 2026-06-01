@@ -1,0 +1,16 @@
+benchmark_at=2026-06-01T06:24:12+00:00
+url=http://127.0.0.1:3000/health
+requests=50
+concurrency=5
+rss_kb_before=33712
+---
+Tool: curl loop (cài 'hey' để có histogram chuẩn hơn)
+requests_ok=50
+requests_fail=0
+avg_latency_ms=1
+---
+rss_kb_after=33712
+rss_delta_kb=0
+
+Saved: /root/avaso-gateway/data/thesis-evidence/20260601-062411/result-20260601-062412.txt
+Metrics snapshot: curl -sS http://127.0.0.1:3000/health/metrics 2>/dev/null || curl -sS http://127.0.0.1:3000/metrics

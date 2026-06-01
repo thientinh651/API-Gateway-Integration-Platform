@@ -1,3 +1,4 @@
+# Một instance — dev local. HA demo bảo vệ: docker compose -f docker-compose.ha.yml up
 services:
   gateway:
     build: .

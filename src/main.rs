@@ -4,6 +4,7 @@ mod db;
 mod dashboard;
 mod gateway_rsa;
 mod integrations;
+mod metrics;
 mod proxy_ext;
 
 use admin_auth::{write_audit, write_audit_event, write_audit_failure, AdminCtx};
@@ -264,6 +265,7 @@ struct AppState {
     /// OAuth CSRF state → pending tenant/actor.
     oauth_pending: Arc<DashMap<String, OAuthPending>>,
     proxy_queue: proxy_ext::ProxyQueue,
+    gateway_metrics: Arc<metrics::GatewayMetrics>,
 }
 
 static STATE: OnceLock<AppState> = OnceLock::new();
@@ -632,6 +634,12 @@ fn log_gateway_transaction(
         elapsed_ms = elapsed_ms,
         "gateway_transaction"
     );
+    if path_is_under_data_plane(path) {
+        if let Some(st) = STATE.get() {
+            st.gateway_metrics.record_data_plane(outcome);
+        }
+    }
+
     if let Some(st) = STATE.get() {
         let pool = st.pool.clone();
         let req_id = request_id.clone();
@@ -968,6 +976,7 @@ async fn main() {
         hmac_replay: Arc::new(DashMap::new()),
         oauth_pending: Arc::new(DashMap::new()),
         proxy_queue: proxy_ext::ProxyQueue::new(),
+        gateway_metrics: Arc::new(metrics::GatewayMetrics::new()),
     };
     let _ = STATE.set(state);
 
@@ -1071,6 +1080,7 @@ async fn main() {
 
     let app = Router::new()
         .layer(NormalizePathLayer::trim_trailing_slash())
+        .layer(middleware::from_fn(instance_label_middleware))
         .layer(cors)
         .nest("/api", api)
         .route("/health", get(health_handler))
@@ -1180,6 +1190,26 @@ async fn resolve_admin_ctx(headers: &HeaderMap) -> Result<AdminCtx, Response> {
         "unauthorized",
         "Session expired or invalid",
     ))
+}
+
+fn gateway_instance_name() -> Option<String> {
+    std::env::var("INSTANCE_NAME")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+async fn instance_label_middleware(req: Request<Body>, next: Next) -> Result<Response, Response> {
+    let mut res = next.run(req).await;
+    if let Some(name) = gateway_instance_name() {
+        if let Ok(hv) = HeaderValue::from_str(&name) {
+            res.headers_mut().insert(
+                axum::http::HeaderName::from_static("x-gateway-instance"),
+                hv,
+            );
+        }
+    }
+    Ok(res)
 }
 
 async fn admin_auth_middleware(mut req: Request<Body>, next: Next) -> Result<Response, Response> {
@@ -1393,7 +1423,7 @@ async fn admin_login(headers: HeaderMap, Json(body): Json<LoginBody>) -> impl In
         "login",
         "session",
         "success",
-        None,
+        ip.as_deref(),
         None,
     )
     .await;
@@ -1492,12 +1522,15 @@ async fn health_handler() -> Response {
     if !enabled {
         return json_error(StatusCode::NOT_FOUND, "disabled", "health endpoint disabled");
     }
-    Json(serde_json::json!({
+    let mut body = serde_json::json!({
         "status": "ok",
         "service": "avaso-gateway",
         "version": env!("CARGO_PKG_VERSION"),
-    }))
-    .into_response()
+    });
+    if let Some(inst) = gateway_instance_name() {
+        body["instance"] = serde_json::Value::String(inst);
+    }
+    Json(body).into_response()
 }
 
 /// Public: xác minh Nginx → gateway đúng binary (có route /api/*). Không cần auth.
@@ -1518,12 +1551,16 @@ async fn metrics_handler() -> Response {
     if !enabled {
         return json_error(StatusCode::NOT_FOUND, "disabled", "metrics endpoint disabled");
     }
-    Json(serde_json::json!({
-        "status": "ok",
-        "service": "avaso-gateway",
-        "note": "MVP stub JSON; có thể chuyển Prometheus text khi implement F-06 đầy đủ"
-    }))
-    .into_response()
+    let body = if let Some(st) = STATE.get() {
+        st.gateway_metrics.snapshot()
+    } else {
+        serde_json::json!({
+            "status": "ok",
+            "service": "avaso-gateway",
+            "data_plane": { "requests_total": 0 }
+        })
+    };
+    Json(body).into_response()
 }
 
 async fn api_get_settings() -> impl IntoResponse {

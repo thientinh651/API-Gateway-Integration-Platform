@@ -69,9 +69,9 @@ function AuthAdmin() {
 
   return (
     <>
-      <div className="mb-8 flex justify-between items-center flex-wrap gap-4">
+      <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-white mb-2">Bảo mật & Authentication</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Bảo mật & Authentication</h1>
           <p className="text-muted-foreground">
             Hai cách cấp credential (giống WSO2 đơn giản): (1) HTTPS thường + HMAC; (2){' '}
             <strong className="text-foreground">RSA public encrypt</strong> → gateway private decrypt

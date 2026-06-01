@@ -97,5 +97,5 @@ Xem chi tiết: [`NFR20_STABILITY.md`](NFR20_STABILITY.md) và script `scripts/n
 | Triệu chứng | Xử lý |
 |-------------|--------|
 | `Address already in use` | `pkill -9 -f avaso-gateway`; chỉ dùng systemd |
-| 502 từ Nginx | `systemctl status avaso-gateway`; kiểm tra cổng upstream trong Nginx |
+| 502 từ Nginx | [`docs/XU_LY_502_BAD_GATEWAY.md`](../../docs/XU_LY_502_BAD_GATEWAY.md) — checklist; `systemctl status avaso-gateway`; cổng upstream Nginx |
 | Cookie login fail | `COOKIE_SECURE=true` + HTTPS; `CORS_ALLOWED_ORIGINS` đúng domain |

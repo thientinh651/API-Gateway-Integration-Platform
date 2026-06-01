@@ -40,9 +40,9 @@ function ProxyQueueAdmin() {
 
   return (
     <>
-      <div className="mb-8 flex justify-between items-center flex-wrap gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-white mb-2">Proxy Queue (DLQ)</h1>
+      <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4">
+        <div className="min-w-0">
+          <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Proxy Queue (DLQ)</h1>
           <p className="text-muted-foreground max-w-2xl">
             Request lỗi (timeout, không kết nối upstream, HTTP 5xx sau retry) khi DLQ bật trong Cài đặt.
             In-memory — mất khi restart gateway. Demo: gọi{' '}

@@ -22,7 +22,7 @@ export function LoginPage() {
   }, [searchParams]);
 
   return (
-    <div className="min-h-screen bg-background flex flex-col items-center justify-center p-6">
+    <div className="min-h-[100dvh] bg-background flex flex-col items-center justify-center p-4 sm:p-6">
       <a
         href="https://thientinh.io.vn"
         rel="noopener noreferrer"
@@ -36,7 +36,7 @@ export function LoginPage() {
         </span>
       </a>
 
-      <Card className="w-full max-w-md rounded-2xl border-border bg-card/90 backdrop-blur-sm p-8 shadow-xl">
+      <Card className="w-full max-w-md rounded-2xl border-border bg-card/90 backdrop-blur-sm p-6 sm:p-8 shadow-xl">
         <h1 className="text-2xl font-bold text-white mb-1">Đăng nhập quản trị</h1>
         <p className="text-sm text-muted-foreground mb-6">Nhập tài khoản quản trị để vào dashboard.</p>
         <LoginForm />

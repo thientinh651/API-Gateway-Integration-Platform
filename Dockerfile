@@ -1,32 +1,33 @@
 # syntax=docker/dockerfile:1
+# Multi-stage — image runtime ~40–80MB (Alpine + binary + web/dist)
 
-FROM rust:1-bookworm AS rust-build
+FROM rust:1-alpine AS rust-build
+RUN apk add --no-cache musl-dev openssl-dev pkgconf build-base
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY migrations ./migrations
 COPY src ./src
 RUN cargo build --release
 
-FROM node:20-bookworm AS web-build
+FROM node:20-alpine AS web-build
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-FROM debian:bookworm-slim AS runtime
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+FROM alpine:3.19 AS runtime
+RUN apk add --no-cache ca-certificates
 WORKDIR /app
 COPY --from=rust-build /app/target/release/avaso-gateway /app/avaso-gateway
 COPY --from=web-build /app/web/dist /app/web/dist
 COPY config.yaml /app/config.yaml
 COPY migrations /app/migrations
-ENV DATABASE_URL=sqlite:data/gateway.db \
+ENV DATABASE_URL=sqlite:data/gateway.db?mode=rwc \
     PORT=3000 \
     BIND_HOST=0.0.0.0 \
-    COOKIE_SECURE=false
+    COOKIE_SECURE=false \
+    INSTANCE_NAME=gateway
 EXPOSE 3000
 VOLUME ["/app/data"]
 CMD ["/app/avaso-gateway"]

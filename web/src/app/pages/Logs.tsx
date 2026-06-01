@@ -108,7 +108,7 @@ export function Logs() {
   return (
     <>
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-white mb-2">Transaction Logs</h1>
+        <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Transaction Logs</h1>
         <p className="text-muted-foreground">
           Request qua data-plane gateway — lưu SQLite, tối đa 200 bản ghi gần nhất
         </p>

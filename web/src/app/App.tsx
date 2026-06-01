@@ -15,6 +15,7 @@ import { ProxyTry } from './pages/ProxyTry';
 import { ProxyQueuePage } from './pages/ProxyQueue';
 import { LoginPage } from './pages/login/LoginPage';
 import { AdminOnly } from './components/auth/AdminOnly';
+import { NavAccessGuard } from './components/auth/NavAccessGuard';
 
 export default function App() {
   return (
@@ -31,49 +32,87 @@ export default function App() {
           <Route path="/login" element={<LoginPage />} />
           <Route path="/" element={<MainLayout />}>
             <Route index element={<Overview />} />
-            <Route path="routes" element={<RoutesPage />} />
-            <Route path="auth" element={<Auth />} />
+            <Route
+              path="routes"
+              element={
+                <NavAccessGuard path="/routes">
+                  <RoutesPage />
+                </NavAccessGuard>
+              }
+            />
+            <Route
+              path="auth"
+              element={
+                <NavAccessGuard path="/auth">
+                  <Auth />
+                </NavAccessGuard>
+              }
+            />
             <Route
               path="proxy-try"
               element={
-                <AdminOnly title="Thử gọi Proxy" description="Đăng nhập để thử HMAC data-plane.">
-                  <ProxyTry />
-                </AdminOnly>
+                <NavAccessGuard path="/proxy-try">
+                  <AdminOnly title="Thử gọi Proxy" description="Đăng nhập để thử HMAC data-plane.">
+                    <ProxyTry />
+                  </AdminOnly>
+                </NavAccessGuard>
               }
             />
-            <Route path="proxy-queue" element={<ProxyQueuePage />} />
+            <Route
+              path="proxy-queue"
+              element={
+                <NavAccessGuard path="/proxy-queue">
+                  <ProxyQueuePage />
+                </NavAccessGuard>
+              }
+            />
             <Route path="api-docs" element={<ApiDocs />} />
-            <Route path="integrations" element={<Integrations />} />
+            <Route
+              path="integrations"
+              element={
+                <NavAccessGuard path="/integrations">
+                  <Integrations />
+                </NavAccessGuard>
+              }
+            />
             <Route
               path="users"
               element={
-                <AdminOnly title="Quản lý Users" description="Đăng nhập để quản lý tài khoản quản trị.">
-                  <Users />
-                </AdminOnly>
+                <NavAccessGuard path="/users">
+                  <AdminOnly title="Quản lý Users" description="Đăng nhập để quản lý tài khoản quản trị.">
+                    <Users />
+                  </AdminOnly>
+                </NavAccessGuard>
               }
             />
             <Route
               path="logs"
               element={
-                <AdminOnly title="Logs" description="Đăng nhập để xem log hệ thống.">
-                  <Logs />
-                </AdminOnly>
+                <NavAccessGuard path="/logs">
+                  <AdminOnly title="Logs" description="Đăng nhập để xem log hệ thống.">
+                    <Logs />
+                  </AdminOnly>
+                </NavAccessGuard>
               }
             />
             <Route
               path="audit"
               element={
-                <AdminOnly title="Audit Logs" description="Đăng nhập để xem nhật ký audit.">
-                  <AuditLogs />
-                </AdminOnly>
+                <NavAccessGuard path="/audit">
+                  <AdminOnly title="Audit Logs" description="Đăng nhập để xem nhật ký audit.">
+                    <AuditLogs />
+                  </AdminOnly>
+                </NavAccessGuard>
               }
             />
             <Route
               path="settings"
               element={
-                <AdminOnly title="Cài đặt hệ thống" description="Đăng nhập để chỉnh cấu hình gateway.">
-                  <Settings />
-                </AdminOnly>
+                <NavAccessGuard path="/settings">
+                  <AdminOnly title="Cài đặt hệ thống" description="Đăng nhập để chỉnh cấu hình gateway.">
+                    <Settings />
+                  </AdminOnly>
+                </NavAccessGuard>
               }
             />
           </Route>

@@ -210,20 +210,11 @@ function UsersAdmin() {
     }
   };
 
-  if (!canManageUsers(me)) {
-    return (
-      <p className="text-muted-foreground">
-        Chỉ role <strong className="text-foreground">admin</strong> quản lý user dashboard. Operator/viewer
-        không truy cập trang này.
-      </p>
-    );
-  }
-
   return (
     <>
-      <div className="mb-8 flex justify-between items-center">
+      <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-white mb-2">Quản lý Users</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Quản lý Users</h1>
           <p className="text-muted-foreground">
             Tài khoản đăng nhập dashboard (Argon2). Khác API key cấp cho phần mềm.
           </p>

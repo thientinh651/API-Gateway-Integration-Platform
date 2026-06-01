@@ -39,5 +39,10 @@ code=$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/api/audit-logs?limit=5" -b
 [[ "$code" == "200" ]] || { echo "FAIL audit-logs HTTP $code"; exit 1; }
 echo "OK audit-logs"
 
+echo "==> GET $BASE/metrics"
+code=$(curl -sS -o /tmp/smoke_metrics.json -w '%{http_code}' "$BASE/metrics")
+[[ "$code" == "200" ]] || { echo "FAIL metrics HTTP $code"; exit 1; }
+grep -q 'data_plane' /tmp/smoke_metrics.json && echo "OK metrics"
+
 echo ""
 echo "All smoke checks passed."

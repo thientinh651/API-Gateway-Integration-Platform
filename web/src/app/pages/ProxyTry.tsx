@@ -154,7 +154,7 @@ export function ProxyTry() {
   return (
     <>
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-white mb-2">Thử gọi Proxy (Data plane)</h1>
+        <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Thử gọi Proxy (Data plane)</h1>
         <p className="text-muted-foreground max-w-2xl">
           Gửi request qua gateway giống client thật — không cần terminal. Prefix mặc định{' '}
           <code className="text-primary text-sm">/v1/api</code>; cần route khớp trên Quản lý Route.
