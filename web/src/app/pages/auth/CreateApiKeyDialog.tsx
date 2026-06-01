@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { createClientKey } from '../../../lib/api';
+import { handleFormApiError, failClientValidation, clearOneFieldError, fieldInputErrorClass } from '../../../lib/formValidation';
+import { FieldError } from '../../components/forms/FieldError';
 import { setTestHmacKeys } from '../../../lib/proxyTryStorage';
 import { Link } from 'react-router';
 import { Button } from '../../components/ui/button';
@@ -23,18 +25,14 @@ import {
 } from '../../components/ui/select';
 import { useAdminAuth } from '../../../contexts/AdminAuthContext';
 import { canWriteClientKeys } from '../../../lib/rbac';
+import {
+  CLIENT_KEY_INTEGRATION_TYPES,
+  CLIENT_KEY_TYPE_HINT,
+} from './clientKeyIntegrationTypes';
 
 type Props = {
   onKeysChanged: () => void;
 };
-
-const INTEGRATION_TYPES = [
-  { value: 'app', label: 'Ứng dụng / phần mềm (mobile, web, script)' },
-  { value: 'partner', label: 'Đối tác B2B' },
-  { value: 'salesforce', label: 'Tích hợp Salesforce (chuẩn bị)' },
-  { value: 'zoho', label: 'Tích hợp Zoho (chuẩn bị)' },
-  { value: 'test', label: 'Thử nghiệm / dev' },
-] as const;
 
 export function CreateApiKeyDialog({ onKeysChanged }: Props) {
   const { user } = useAdminAuth();
@@ -47,6 +45,7 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
   const [name, setName] = useState('');
   const [integrationType, setIntegrationType] = useState<string>('app');
   const [pending, setPending] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const reset = () => {
     setGeneratedApiKey('');
@@ -54,6 +53,7 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
     setPurpose('');
     setName('');
     setIntegrationType('app');
+    setFieldErrors({});
   };
 
   const handleOpenChange = (open: boolean) => {
@@ -62,7 +62,12 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
   };
 
   const handleCreate = async () => {
+    if (!name.trim()) {
+      failClientValidation(setFieldErrors, { name: 'Nhập tên app / đối tác' });
+      return;
+    }
     setPending(true);
+    setFieldErrors({});
     try {
       const res = await createClientKey(name.trim(), integrationType);
       setGeneratedApiKey(res.api_key);
@@ -71,7 +76,7 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
       onKeysChanged();
       toast.success('Cặp API Key + Secret đã tạo — copy ngay, không xem lại Secret');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      handleFormApiError(e, setFieldErrors);
     } finally {
       setPending(false);
     }
@@ -99,8 +104,8 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
           <DialogTitle className="text-white">Tạo credential cho phần mềm</DialogTitle>
         </DialogHeader>
         <p className="text-xs text-muted-foreground -mt-2">
-          Admin cấp cho <strong className="text-foreground">ứng dụng / tích hợp</strong>, không phải
-          cặp RSA. User dashboard dùng username/password riêng.
+          Cấp <strong className="text-foreground">avaso_pk_</strong> + <strong className="text-foreground">avaso_sk_</strong>{' '}
+          cho app gọi data-plane (HMAC). Khác đăng nhập dashboard; khác nút RSA bên cạnh.
         </p>
         {!generatedApiKey ? (
           <div className="space-y-4 mt-2">
@@ -109,29 +114,35 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
               <Input
                 placeholder="mobile-app-prod"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="bg-input border-border text-foreground"
+                onChange={(e) => {
+                  setName(e.target.value);
+                  clearOneFieldError(setFieldErrors, 'name');
+                }}
+                aria-invalid={Boolean(fieldErrors.name)}
+                className={fieldInputErrorClass(Boolean(fieldErrors.name), 'bg-input border-border text-foreground')}
               />
+              <FieldError message={fieldErrors.name} />
             </div>
             <div>
-              <Label className="text-foreground">Mục đích</Label>
+              <Label className="text-foreground">Loại client</Label>
               <Select value={integrationType} onValueChange={setIntegrationType}>
-                <SelectTrigger className="bg-input border-border text-foreground">
+                <SelectTrigger className="bg-input border-border text-foreground mt-1">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {INTEGRATION_TYPES.map((t) => (
+                  {CLIENT_KEY_INTEGRATION_TYPES.map((t) => (
                     <SelectItem key={t.value} value={t.value}>
                       {t.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              <p className="text-xs text-muted-foreground mt-1">{CLIENT_KEY_TYPE_HINT}</p>
             </div>
             <Button
               onClick={() => void handleCreate()}
               className="w-full bg-primary hover:bg-primary/90"
-              disabled={!name.trim() || pending}
+              disabled={pending}
             >
               {pending ? 'Đang tạo…' : 'Tạo trên gateway'}
             </Button>

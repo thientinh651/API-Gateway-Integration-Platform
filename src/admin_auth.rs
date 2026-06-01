@@ -249,6 +249,7 @@ mod tests {
         assert!(allow(Method::GET, "/api/integrations", "operator"));
         assert!(!allow(Method::POST, "/api/integrations/salesforce/sync", "operator"));
         assert!(!allow(Method::GET, "/api/integrations/salesforce/connect", "operator"));
+        assert!(!allow(Method::GET, "/api/integrations/salesforce/test", "operator"));
     }
 
     #[test]

@@ -85,6 +85,10 @@ export function canMutateProxyQueue(user: AdminMe | null): boolean {
   return rbacAllow('POST', '/api/proxy-queue/1/retry', user?.role);
 }
 
+export function canManageIntegrations(user: AdminMe | null): boolean {
+  return normalizeRole(user?.role) === 'admin';
+}
+
 export function isViewer(user: AdminMe | null): boolean {
   return normalizeRole(user?.role) === 'viewer';
 }

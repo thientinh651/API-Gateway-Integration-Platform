@@ -38,7 +38,9 @@ cd web && npm install && npm run dev
 # Production build: npm run build  → web/dist/
 ```
 
-Mở `http://127.0.0.1:3000/` (sau build) hoặc `http://127.0.0.1:5173/` (dev). Đăng nhập admin từ `ADMIN_USERNAME` / `ADMIN_PASSWORD` trong `.env`.
+Mở `http://127.0.0.1:3000/` (sau build) hoặc `http://127.0.0.1:5173/` (dev).
+
+**Lưu ý:** `ADMIN_PASSWORD` trong `.env` chỉ bootstrap lần đầu khi bảng `admin_users` trống. Đổi pass sau login qua UI Users — sửa `.env` không đổi pass DB.
 
 ## Kiểm thử
 

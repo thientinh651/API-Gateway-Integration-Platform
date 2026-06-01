@@ -24,7 +24,7 @@ export function ApiKeysDataTable({ apiKeys, onDelete, canDelete = true }: Props)
               <th className="px-6 py-4">Name</th>
               <th className="px-6 py-4">Key</th>
               <th className="px-6 py-4">Rate Limit</th>
-              <th className="px-6 py-4">Created</th>
+              <th className="px-6 py-4">Auth mode</th>
               <th className="px-6 py-4">Status</th>
               <th className="px-6 py-4 text-right">Actions</th>
             </tr>

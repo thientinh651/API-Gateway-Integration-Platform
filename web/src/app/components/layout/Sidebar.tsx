@@ -72,8 +72,10 @@ export function Sidebar() {
 
       <div className="p-6 border-t border-border">
         <div className="flex items-center space-x-3 text-xs text-muted-foreground">
-          <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
-          <span>Node: Ubuntu-Avaso-01</span>
+          <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+          <span className="truncate" title={typeof window !== 'undefined' ? window.location.host : ''}>
+            {typeof window !== 'undefined' ? window.location.host : 'gateway'}
+          </span>
         </div>
       </div>
     </aside>

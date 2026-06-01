@@ -24,8 +24,10 @@ import {
   type IntegrationRow,
   type IntegrationSnapshotSummary,
 } from '../../lib/api';
-import { canManageUsers } from '../../lib/rbac';
+import { ApiClientError } from '../../lib/apiClientError';
+import { canManageIntegrations } from '../../lib/rbac';
 import { formatApiErrorToast, toastApiError } from '../../lib/apiClientError';
+import { failClientValidation } from '../../lib/formValidation';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -122,9 +124,16 @@ function statusBadge(status: string) {
   }
 }
 
+function integrationCallbackUri(path: string): string {
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return `${window.location.origin}${path}`;
+  }
+  return path;
+}
+
 function IntegrationsAdmin() {
   const { user } = useAdminAuth();
-  const isAdmin = canManageUsers(user);
+  const isAdmin = canManageIntegrations(user);
   const [params, setParams] = useSearchParams();
   const [rows, setRows] = useState<IntegrationRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -138,7 +147,7 @@ function IntegrationsAdmin() {
   const [zohoCfg, setZohoCfg] = useState({
     client_id: '',
     client_secret: '',
-    redirect_uri: 'https://thientinh.io.vn/api/integrations/zoho/callback',
+    redirect_uri: integrationCallbackUri('/api/integrations/zoho/callback'),
     accounts_url: 'https://accounts.zoho.com',
     scopes: 'ZohoProjects.portals.READ,ZohoProjects.projects.ALL,ZohoProjects.tasks.READ',
     secret_masked: '',
@@ -150,7 +159,7 @@ function IntegrationsAdmin() {
   const [sfCfg, setSfCfg] = useState({
     client_id: '',
     client_secret: '',
-    redirect_uri: 'https://thientinh.io.vn/api/integrations/salesforce/callback',
+    redirect_uri: integrationCallbackUri('/api/integrations/salesforce/callback'),
     login_url: 'https://login.salesforce.com',
     secret_masked: '',
     has_secret: false,
@@ -277,7 +286,7 @@ function IntegrationsAdmin() {
   const saveSfConfig = async () => {
     const errors = validateSfConfig(sfCfg);
     if (Object.keys(errors).length > 0) {
-      setSfCfgErrors(errors);
+      failClientValidation(setSfCfgErrors, errors);
       return;
     }
     setSfCfgSaving(true);
@@ -301,8 +310,10 @@ function IntegrationsAdmin() {
     } catch (e) {
       if (e instanceof ApiClientError && e.fields && Object.keys(e.fields).length > 0) {
         setSfCfgErrors(e.fields);
+        toast.error(e.message);
       } else {
         setSfCfgErrors({ _form: formatApiErrorToast(e) });
+        toastApiError(e);
       }
     } finally {
       setSfCfgSaving(false);
@@ -312,7 +323,7 @@ function IntegrationsAdmin() {
   const saveZohoConfig = async () => {
     const errors = validateZohoConfig(zohoCfg);
     if (Object.keys(errors).length > 0) {
-      setZohoCfgErrors(errors);
+      failClientValidation(setZohoCfgErrors, errors);
       return;
     }
     setZohoCfgSaving(true);
@@ -337,8 +348,10 @@ function IntegrationsAdmin() {
     } catch (e) {
       if (e instanceof ApiClientError && e.fields && Object.keys(e.fields).length > 0) {
         setZohoCfgErrors(e.fields);
+        toast.error(e.message);
       } else {
         setZohoCfgErrors({ _form: formatApiErrorToast(e) });
+        toastApiError(e);
       }
     } finally {
       setZohoCfgSaving(false);

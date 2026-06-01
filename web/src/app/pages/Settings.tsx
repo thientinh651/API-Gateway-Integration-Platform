@@ -12,6 +12,13 @@ import {
   type GatewaySettings,
 } from '../../lib/api';
 import { toastApiError } from '../../lib/apiClientError';
+import {
+  clearOneFieldError,
+  failClientValidation,
+  fieldInputErrorClass,
+  handleFormApiError,
+} from '../../lib/formValidation';
+import { FieldError } from '../components/forms/FieldError';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import { canEditSettings } from '../../lib/rbac';
 
@@ -50,6 +57,7 @@ export function Settings() {
   const [snapshot, setSnapshot] = useState<GatewaySettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -71,9 +79,15 @@ export function Settings() {
   const handleSaveApiKey = () => {
     const key = adminApiKey.trim();
     if (!key) {
-      toast.error('Vui lòng nhập API Key');
+      failClientValidation(setFieldErrors, { admin_api_key: 'Nhập Admin API Key' });
       return;
     }
+    setFieldErrors((prev) => {
+      if (!prev.admin_api_key) return prev;
+      const next = { ...prev };
+      delete next.admin_api_key;
+      return next;
+    });
     window.localStorage.setItem('admin_api_key', key);
     setAdminApiKey(key);
     toast.success('Admin API Key đã được lưu');
@@ -89,12 +103,20 @@ export function Settings() {
     if (!settings) return;
     const rateLimitRps = Number(settings.rateLimitRps);
     const rateLimitBurst = Number(settings.rateLimitBurst);
-    if (!Number.isFinite(rateLimitRps) || !Number.isFinite(rateLimitBurst)) {
-      toast.error('Nhập số hợp lệ cho RPS và burst');
+    const clientErrors: Record<string, string> = {};
+    if (!Number.isFinite(rateLimitRps)) {
+      clientErrors.rate_limit_rps = 'Nhập số hợp lệ';
+    }
+    if (!Number.isFinite(rateLimitBurst)) {
+      clientErrors.rate_limit_burst = 'Nhập số hợp lệ';
+    }
+    if (Object.keys(clientErrors).length > 0) {
+      failClientValidation(setFieldErrors, clientErrors);
       return;
     }
 
     setSaving(true);
+    setFieldErrors({});
     try {
       const data = await updateGatewaySettings({
         rate_limit_enabled: settings.rateLimitEnabled,
@@ -110,7 +132,7 @@ export function Settings() {
       setSnapshot(data);
       toast.success('Đã lưu settings runtime');
     } catch (e) {
-      toastApiError(e);
+      handleFormApiError(e, setFieldErrors);
     } finally {
       setSaving(false);
     }
@@ -192,19 +214,35 @@ export function Settings() {
                     <Label className="text-foreground">RPS</Label>
                     <Input
                       value={settings.rateLimitRps}
-                      onChange={(e) => setSettings({ ...settings, rateLimitRps: e.target.value })}
-                      className="bg-input border-border text-foreground"
+                      onChange={(e) => {
+                        setSettings({ ...settings, rateLimitRps: e.target.value });
+                        clearOneFieldError(setFieldErrors, 'rate_limit_rps');
+                      }}
+                      aria-invalid={Boolean(fieldErrors.rate_limit_rps)}
+                      className={fieldInputErrorClass(
+                        Boolean(fieldErrors.rate_limit_rps),
+                        'bg-input border-border text-foreground',
+                      )}
                       disabled={readOnly || !settings.rateLimitEnabled}
                     />
+                    <FieldError message={fieldErrors.rate_limit_rps} />
                   </div>
                   <div>
                     <Label className="text-foreground">Burst</Label>
                     <Input
                       value={settings.rateLimitBurst}
-                      onChange={(e) => setSettings({ ...settings, rateLimitBurst: e.target.value })}
-                      className="bg-input border-border text-foreground"
+                      onChange={(e) => {
+                        setSettings({ ...settings, rateLimitBurst: e.target.value });
+                        clearOneFieldError(setFieldErrors, 'rate_limit_burst');
+                      }}
+                      aria-invalid={Boolean(fieldErrors.rate_limit_burst)}
+                      className={fieldInputErrorClass(
+                        Boolean(fieldErrors.rate_limit_burst),
+                        'bg-input border-border text-foreground',
+                      )}
                       disabled={readOnly || !settings.rateLimitEnabled}
                     />
+                    <FieldError message={fieldErrors.rate_limit_burst} />
                   </div>
                 </div>
                 <div className="flex items-center justify-between p-3 rounded-lg bg-background/50">
@@ -275,7 +313,9 @@ export function Settings() {
                 <div className="flex items-center justify-between p-3 rounded-lg bg-background/50">
                   <div>
                     <p className="text-sm font-medium text-white">Dead-letter queue</p>
-                    <p className="text-xs text-muted-foreground">In-memory — xem Proxy Queue.</p>
+                    <p className="text-xs text-muted-foreground">
+                      Bật → mọi route đẩy request lỗi (timeout, 5xx…) vào DLQ in-memory. Xem Proxy Queue.
+                    </p>
                   </div>
                   <Switch
                     checked={settings.queueEnabled}
@@ -350,10 +390,18 @@ export function Settings() {
                 <Label className="text-foreground text-xs uppercase tracking-wider">x-api-key</Label>
                 <Input
                   value={adminApiKey}
-                  onChange={(e) => setAdminApiKey(e.target.value)}
+                  onChange={(e) => {
+                    setAdminApiKey(e.target.value);
+                    clearOneFieldError(setFieldErrors, 'admin_api_key');
+                  }}
                   placeholder="Paste key here"
-                  className="bg-input border-border text-foreground font-mono text-xs"
+                  aria-invalid={Boolean(fieldErrors.admin_api_key)}
+                  className={fieldInputErrorClass(
+                    Boolean(fieldErrors.admin_api_key),
+                    'bg-input border-border text-foreground font-mono text-xs',
+                  )}
                 />
+                <FieldError message={fieldErrors.admin_api_key} />
               </div>
               <div className="flex gap-3">
                 <Button onClick={handleSaveApiKey} className="flex-1 bg-primary hover:bg-primary/90">

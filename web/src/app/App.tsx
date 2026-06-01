@@ -33,7 +33,14 @@ export default function App() {
             <Route index element={<Overview />} />
             <Route path="routes" element={<RoutesPage />} />
             <Route path="auth" element={<Auth />} />
-            <Route path="proxy-try" element={<ProxyTry />} />
+            <Route
+              path="proxy-try"
+              element={
+                <AdminOnly title="Thử gọi Proxy" description="Đăng nhập để thử HMAC data-plane.">
+                  <ProxyTry />
+                </AdminOnly>
+              }
+            />
             <Route path="proxy-queue" element={<ProxyQueuePage />} />
             <Route path="api-docs" element={<ApiDocs />} />
             <Route path="integrations" element={<Integrations />} />

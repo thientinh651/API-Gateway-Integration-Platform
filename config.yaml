@@ -4,18 +4,17 @@ routes:
   - path: "/my-api"
     target: "http://localhost:5000"
 
-# Data-plane API keys (MVP). If empty -> no auth on proxied routes.
+# Legacy YAML keys — seed lần đầu; runtime dùng SQLite gateway_client_keys (HMAC).
+# Khi DB đã có client keys, data-plane bắt buộc HMAC (không còn "open proxy").
 api_keys:
   - "demo-key-1"
 
-# Rate limiting (MVP) - not enabled by default yet.
 rate_limit:
   enabled: true
   rps: 10
   burst: 20
 
-# Optional extensions (not implemented yet)
-# Optional extensions — bật trong Cài đặt hệ thống
+# Bật/tắt global trong Cài đặt hệ thống; per-route override trên form Route.
 transform:
   enabled: false
 retry:

@@ -3,6 +3,7 @@ import {
   canCreateRoute,
   canDeleteRoute,
   canEditSettings,
+  canMutateProxyQueue,
   canUpdateRoute,
   canWriteClientKeys,
   rbacAllow,
@@ -60,5 +61,7 @@ describe('rbac helpers', () => {
     expect(canEditSettings(admin)).toBe(true);
     expect(canWriteClientKeys(operator)).toBe(true);
     expect(canWriteClientKeys(viewer)).toBe(false);
+    expect(canMutateProxyQueue(viewer)).toBe(false);
+    expect(canMutateProxyQueue(operator)).toBe(true);
   });
 });

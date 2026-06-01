@@ -226,6 +226,27 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+/// Global DLQ bật → mọi route; tắt global thì chỉ route có `queue_on_failure`.
+fn dlq_enabled(toggles: &ExtensionToggles, policy: &RouteProxyPolicy) -> bool {
+    toggles.queue_enabled || policy.queue_on_failure
+}
+
+/// HTTP status đủ điều kiện vào DLQ sau khi hết retry (5xx hoặc status trong retry_on_status).
+fn is_queueable_http_status(
+    status: StatusCode,
+    policy: &RouteProxyPolicy,
+    retry_allowed: bool,
+) -> bool {
+    if status.is_success() {
+        return false;
+    }
+    let code = status.as_u16();
+    if code >= 500 {
+        return true;
+    }
+    retry_allowed && policy.retry_on_status.contains(&code)
+}
+
 pub async fn forward_with_policy(
     http: &Client,
     method: &Method,
@@ -274,13 +295,17 @@ pub async fn forward_with_policy(
                     last_reason = format!("retry_on_status:{code}");
                     continue;
                 }
-                return UpstreamResponse {
-                    status,
-                    headers: last_headers,
-                    body: last_body,
-                    attempts,
-                    queued_id: None,
-                };
+                if !is_queueable_http_status(status, policy, retry_allowed) {
+                    return UpstreamResponse {
+                        status,
+                        headers: last_headers,
+                        body: last_body,
+                        attempts,
+                        queued_id: None,
+                    };
+                }
+                last_reason = format!("upstream_status:{code}");
+                break;
             }
             Err(UpstreamFailure::Timeout) => {
                 last_status = StatusCode::GATEWAY_TIMEOUT;
@@ -303,7 +328,7 @@ pub async fn forward_with_policy(
     }
 
     let mut queued_id = None;
-    if toggles.queue_enabled && policy.queue_on_failure {
+    if dlq_enabled(toggles, policy) {
         let id = Uuid::new_v4().to_string();
         let headers_map: HashMap<String, String> = headers
             .iter()
@@ -357,5 +382,71 @@ pub async fn replay_queue_item(
         Ok((status, _, bytes)) => Ok((status, bytes.to_vec())),
         Err(UpstreamFailure::Timeout) => Err("upstream_timeout".into()),
         Err(UpstreamFailure::Connection(e)) => Err(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn policy_with_retry_status() -> RouteProxyPolicy {
+        RouteProxyPolicy {
+            transform_add_headers: HashMap::new(),
+            transform_remove_headers: vec![],
+            retry_max: 2,
+            retry_on_status: vec![502, 503, 504],
+            retry_on_timeout: true,
+            queue_on_failure: false,
+        }
+    }
+
+    #[test]
+    fn dlq_global_on_without_per_route() {
+        let toggles = ExtensionToggles {
+            queue_enabled: true,
+            ..Default::default()
+        };
+        let policy = RouteProxyPolicy {
+            queue_on_failure: false,
+            ..policy_with_retry_status()
+        };
+        assert!(dlq_enabled(&toggles, &policy));
+    }
+
+    #[test]
+    fn dlq_per_route_when_global_off() {
+        let toggles = ExtensionToggles::default();
+        let policy = RouteProxyPolicy {
+            queue_on_failure: true,
+            ..policy_with_retry_status()
+        };
+        assert!(dlq_enabled(&toggles, &policy));
+    }
+
+    #[test]
+    fn dlq_off_when_both_off() {
+        let toggles = ExtensionToggles::default();
+        let policy = RouteProxyPolicy {
+            queue_on_failure: false,
+            ..policy_with_retry_status()
+        };
+        assert!(!dlq_enabled(&toggles, &policy));
+    }
+
+    #[test]
+    fn queueable_http_5xx() {
+        let policy = policy_with_retry_status();
+        assert!(is_queueable_http_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &policy,
+            true
+        ));
+    }
+
+    #[test]
+    fn not_queueable_2xx_or_404() {
+        let policy = policy_with_retry_status();
+        assert!(!is_queueable_http_status(StatusCode::OK, &policy, true));
+        assert!(!is_queueable_http_status(StatusCode::NOT_FOUND, &policy, true));
     }
 }

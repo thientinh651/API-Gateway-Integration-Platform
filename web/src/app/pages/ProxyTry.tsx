@@ -5,6 +5,12 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
+import { FieldError } from '../components/forms/FieldError';
+import {
+  clearOneFieldError,
+  failClientValidation,
+  fieldInputErrorClass,
+} from '../../lib/formValidation';
 import {
   Select,
   SelectContent,
@@ -84,6 +90,7 @@ export function ProxyTry() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ProxyTryResult | null>(null);
   const [lastMode, setLastMode] = useState<'no_key' | 'with_key' | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     setApiKey(getTestApiKey());
@@ -91,14 +98,18 @@ export function ProxyTry() {
   }, []);
 
   const run = async (mode: 'no_key' | 'with_key') => {
+    const nextErrors: Record<string, string> = {};
     if (mode === 'with_key' && !apiKey.trim()) {
-      toast.error('Dán API Key (avaso_pk_...) + Secret (avaso_sk_...) hoặc tạo ở Bảo mật & Auth.');
-      return;
+      nextErrors.api_key = 'Nhập API Key (avaso_pk_...)';
     }
     if (mode === 'with_key' && apiKey.startsWith('avaso_pk_') && !secretKey.trim()) {
-      toast.error('Key HMAC cần Secret Key (avaso_sk_...) để ký request.');
+      nextErrors.secret_key = 'Key HMAC cần Secret Key (avaso_sk_...)';
+    }
+    if (Object.keys(nextErrors).length > 0) {
+      failClientValidation(setFieldErrors, nextErrors);
       return;
     }
+    setFieldErrors({});
     setBusy(true);
     try {
       const res = await tryDataPlaneRequest({
@@ -127,9 +138,15 @@ export function ProxyTry() {
 
   const saveKeyForTab = () => {
     if (!apiKey.trim()) {
-      toast.error('Nhập API Key trước khi lưu.');
+      failClientValidation(setFieldErrors, { api_key: 'Nhập API Key trước khi lưu' });
       return;
     }
+    setFieldErrors((prev) => {
+      if (!prev.api_key) return prev;
+      const next = { ...prev };
+      delete next.api_key;
+      return next;
+    });
     setTestHmacKeys(apiKey.trim(), secretKey.trim() || null);
     toast.success('Đã lưu cặp key trong tab (sessionStorage).');
   };
@@ -171,10 +188,18 @@ export function ProxyTry() {
                 <Label className="text-foreground">Path</Label>
                 <Input
                   value={path}
-                  onChange={(e) => setPath(e.target.value)}
+                  onChange={(e) => {
+                    setPath(e.target.value);
+                    clearOneFieldError(setFieldErrors, 'path');
+                  }}
                   placeholder="/v1/api/get"
-                  className="mt-1 bg-input border-border text-foreground"
+                  aria-invalid={Boolean(fieldErrors.path)}
+                  className={fieldInputErrorClass(
+                    Boolean(fieldErrors.path),
+                    'mt-1 bg-input border-border text-foreground',
+                  )}
                 />
+                <FieldError message={fieldErrors.path} />
               </div>
             </div>
             <div>
@@ -182,20 +207,36 @@ export function ProxyTry() {
               <Input
                 type="password"
                 value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+                onChange={(e) => {
+                  setApiKey(e.target.value);
+                  clearOneFieldError(setFieldErrors, 'api_key');
+                }}
                 placeholder="X-API-Key"
-                className="mt-1 bg-input border-border text-foreground"
+                aria-invalid={Boolean(fieldErrors.api_key)}
+                className={fieldInputErrorClass(
+                  Boolean(fieldErrors.api_key),
+                  'mt-1 bg-input border-border text-foreground',
+                )}
                 autoComplete="off"
               />
+              <FieldError message={fieldErrors.api_key} />
               <Label className="text-foreground mt-3 block">Secret Key (avaso_sk_...)</Label>
               <Input
                 type="password"
                 value={secretKey}
-                onChange={(e) => setSecretKey(e.target.value)}
+                onChange={(e) => {
+                  setSecretKey(e.target.value);
+                  clearOneFieldError(setFieldErrors, 'secret_key');
+                }}
                 placeholder="Ký HMAC — chỉ lưu phía client"
-                className="mt-1 bg-input border-border text-foreground"
+                aria-invalid={Boolean(fieldErrors.secret_key)}
+                className={fieldInputErrorClass(
+                  Boolean(fieldErrors.secret_key),
+                  'mt-1 bg-input border-border text-foreground',
+                )}
                 autoComplete="off"
               />
+              <FieldError message={fieldErrors.secret_key} />
               <div className="mt-2 flex gap-2">
                 <Button type="button" variant="outline" size="sm" className="border-border" onClick={saveKeyForTab}>
                   Lưu key trong tab

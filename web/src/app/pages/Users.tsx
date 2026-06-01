@@ -31,7 +31,15 @@ import {
   type AdminUserRow,
 } from '../../lib/api';
 import { canManageUsers } from '../../lib/rbac';
+import { formatDbTimestamp } from '../../lib/formatDbTimestamp';
 import { toastApiError } from '../../lib/apiClientError';
+import {
+  clearOneFieldError,
+  failClientValidation,
+  fieldInputErrorClass,
+  handleFormApiError,
+} from '../../lib/formValidation';
+import { FieldError } from '../components/forms/FieldError';
 
 function displayRole(role: string): string {
   const r = role.toLowerCase();
@@ -55,6 +63,7 @@ function UsersAdmin() {
     password: '',
     role: 'Viewer' as 'Admin' | 'Operator' | 'Viewer',
   });
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -71,7 +80,26 @@ function UsersAdmin() {
     void load();
   }, [load]);
 
+  const validateForm = (): Record<string, string> => {
+    const errors: Record<string, string> = {};
+    if (!formData.username.trim()) {
+      errors.username = 'Nhập username';
+    }
+    if (!editingUser && formData.password.length < 6) {
+      errors.password = 'Mật khẩu tối thiểu 6 ký tự';
+    }
+    if (editingUser && formData.password.trim() && formData.password.trim().length < 6) {
+      errors.password = 'Mật khẩu tối thiểu 6 ký tự';
+    }
+    return errors;
+  };
+
   const handleCreate = async () => {
+    const clientErrors = validateForm();
+    if (Object.keys(clientErrors).length > 0) {
+      failClientValidation(setFieldErrors, clientErrors);
+      return;
+    }
     try {
       await createAdminUser({
         username: formData.username.trim(),
@@ -81,14 +109,20 @@ function UsersAdmin() {
       await load();
       setIsOpen(false);
       resetForm();
+      setFieldErrors({});
       toast.success('User đã được tạo');
     } catch (e) {
-      toastApiError(e);
+      handleFormApiError(e, setFieldErrors);
     }
   };
 
   const handleUpdate = async () => {
     if (!editingUser) return;
+    const clientErrors = validateForm();
+    if (Object.keys(clientErrors).length > 0) {
+      failClientValidation(setFieldErrors, clientErrors);
+      return;
+    }
     try {
       await updateAdminUser(editingUser.id, {
         username: formData.username.trim(),
@@ -100,9 +134,10 @@ function UsersAdmin() {
       setIsOpen(false);
       setEditingUser(null);
       resetForm();
+      setFieldErrors({});
       toast.success('User đã được cập nhật');
     } catch (e) {
-      toastApiError(e);
+      handleFormApiError(e, setFieldErrors);
     }
   };
 
@@ -142,6 +177,7 @@ function UsersAdmin() {
 
   const resetForm = () => {
     setFormData({ username: '', password: '', role: 'Viewer' });
+    setFieldErrors({});
   };
 
   const handleDialogClose = (open: boolean) => {
@@ -211,10 +247,15 @@ function UsersAdmin() {
                 <Input
                   placeholder="username"
                   value={formData.username}
-                  onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                  className="bg-input border-border text-foreground"
+                  onChange={(e) => {
+                    setFormData({ ...formData, username: e.target.value });
+                    clearOneFieldError(setFieldErrors, 'username');
+                  }}
+                  aria-invalid={Boolean(fieldErrors.username)}
+                  className={fieldInputErrorClass(Boolean(fieldErrors.username), 'bg-input border-border text-foreground')}
                   autoComplete="off"
                 />
+                <FieldError message={fieldErrors.username} />
               </div>
               <div>
                 <Label className="text-foreground">
@@ -224,18 +265,24 @@ function UsersAdmin() {
                   type="password"
                   placeholder="********"
                   value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  className="bg-input border-border text-foreground"
+                  onChange={(e) => {
+                    setFormData({ ...formData, password: e.target.value });
+                    clearOneFieldError(setFieldErrors, 'password');
+                  }}
+                  aria-invalid={Boolean(fieldErrors.password)}
+                  className={fieldInputErrorClass(Boolean(fieldErrors.password), 'bg-input border-border text-foreground')}
                   autoComplete="new-password"
                 />
+                <FieldError message={fieldErrors.password} />
               </div>
               <div>
                 <Label className="text-foreground">Role</Label>
                 <Select
                   value={formData.role}
-                  onValueChange={(v: 'Admin' | 'Operator' | 'Viewer') =>
-                    setFormData({ ...formData, role: v })
-                  }
+                  onValueChange={(v: 'Admin' | 'Operator' | 'Viewer') => {
+                    setFormData({ ...formData, role: v });
+                    clearOneFieldError(setFieldErrors, 'role');
+                  }}
                 >
                   <SelectTrigger className="bg-input border-border text-foreground">
                     <SelectValue />
@@ -246,6 +293,7 @@ function UsersAdmin() {
                     <SelectItem value="Viewer">Viewer — chỉ đọc</SelectItem>
                   </SelectContent>
                 </Select>
+                <FieldError message={fieldErrors.role} />
               </div>
               <Button
                 onClick={() => void (editingUser ? handleUpdate() : handleCreate())}
@@ -288,7 +336,7 @@ function UsersAdmin() {
                       {displayRole(user.role)}
                     </Badge>
                   </td>
-                  <td className="px-6 py-4 text-slate-400">{user.created_at}</td>
+                  <td className="px-6 py-4 text-slate-400">{formatDbTimestamp(user.created_at)}</td>
                   <td className="px-6 py-4">
                     <Switch
                       checked={user.is_active}

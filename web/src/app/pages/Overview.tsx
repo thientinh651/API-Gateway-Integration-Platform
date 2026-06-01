@@ -40,6 +40,7 @@ import {
 } from '../../lib/api';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import type { GatewayRouteRow } from '../../lib/gatewayRoutes';
+import { formatDbTimestamp } from '../../lib/formatDbTimestamp';
 import { OverviewGuest } from './OverviewGuest';
 
 const CHART_COLORS = ['#3b82f6', '#f97316', '#a855f7', '#10b981', '#fb923c'];
@@ -124,7 +125,7 @@ function OverviewAdmin() {
   const timelineData = useMemo(() => {
     const map = new Map<string, { time: string; opportunity: number; account: number; project: number; task: number }>();
     for (const p of stats?.snapshot_timeline ?? []) {
-      const time = p.fetched_at.replace('T', ' ').slice(0, 16);
+      const time = formatDbTimestamp(p.fetched_at);
       const row = map.get(time) ?? { time, opportunity: 0, account: 0, project: 0, task: 0 };
       if (p.entity_type === 'opportunity') row.opportunity = p.record_count;
       if (p.entity_type === 'account') row.account = p.record_count;
@@ -411,7 +412,7 @@ function OverviewAdmin() {
                   <Badge className={`${integrationStatusBadge(row.status)} border text-xs`}>{row.status}</Badge>
                 </div>
                 {row.last_sync_at ? (
-                  <p className="text-xs text-muted-foreground">Sync: {row.last_sync_at}</p>
+                  <p className="text-xs text-muted-foreground">Sync: {formatDbTimestamp(row.last_sync_at)}</p>
                 ) : (
                   <p className="text-xs text-muted-foreground">Chưa sync snapshot</p>
                 )}

@@ -11,9 +11,14 @@ import {
   type ProxyQueueItem,
 } from '../../lib/api';
 import { toastApiError } from '../../lib/apiClientError';
+import { useAdminAuth } from '../../contexts/AdminAuthContext';
+import { canMutateProxyQueue } from '../../lib/rbac';
+import { formatUnixTimestamp } from '../../lib/formatDbTimestamp';
 import { AdminOnly } from '../components/auth/AdminOnly';
 
 function ProxyQueueAdmin() {
+  const { user } = useAdminAuth();
+  const canMutate = canMutateProxyQueue(user);
   const [items, setItems] = useState<ProxyQueueItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -38,8 +43,10 @@ function ProxyQueueAdmin() {
       <div className="mb-8 flex justify-between items-center flex-wrap gap-4">
         <div>
           <h1 className="text-3xl font-bold text-white mb-2">Proxy Queue (DLQ)</h1>
-          <p className="text-muted-foreground">
-            Request thất bại sau retry — in-memory, mất khi restart gateway.
+          <p className="text-muted-foreground max-w-2xl">
+            Request lỗi (timeout, không kết nối upstream, HTTP 5xx sau retry) khi DLQ bật trong Cài đặt.
+            In-memory — mất khi restart gateway. Demo: gọi{' '}
+            <code className="text-primary text-sm">/v1/api/status/503</code> qua Thử Proxy.
           </p>
         </div>
         <Button variant="outline" className="border-border" onClick={() => void load()} disabled={loading}>
@@ -65,7 +72,7 @@ function ProxyQueueAdmin() {
               {items.map((item) => (
                 <tr key={item.id} className="border-t border-border/50 hover:bg-primary/5">
                   <td className="px-4 py-3 font-mono text-xs text-slate-400">
-                    {new Date(item.created_at_unix * 1000).toLocaleString()}
+                    {formatUnixTimestamp(item.created_at_unix)}
                   </td>
                   <td className="px-4 py-3">
                     <Badge variant="outline" className="font-mono">{item.method}</Badge>
@@ -76,47 +83,53 @@ function ProxyQueueAdmin() {
                   <td className="px-4 py-3 text-xs text-amber-200">{item.failure_reason}</td>
                   <td className="px-4 py-3 text-slate-400">{item.retry_attempts}</td>
                   <td className="px-4 py-3 text-right space-x-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="border-border"
-                      disabled={busyId === item.id}
-                      onClick={async () => {
-                        setBusyId(item.id);
-                        try {
-                          const r = await retryProxyQueueItem(item.id);
-                          toast.success(`Retry OK — upstream ${r.upstream_status}`);
-                          await load();
-                        } catch (e) {
-                          toastApiError(e);
-                        } finally {
-                          setBusyId(null);
-                        }
-                      }}
-                    >
-                      <RotateCw className="w-3 h-3 mr-1" />
-                      Retry
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="border-destructive/50 text-destructive"
-                      disabled={busyId === item.id}
-                      onClick={async () => {
-                        setBusyId(item.id);
-                        try {
-                          await deleteProxyQueueItem(item.id);
-                          toast.success('Đã xóa');
-                          await load();
-                        } catch (e) {
-                          toastApiError(e);
-                        } finally {
-                          setBusyId(null);
-                        }
-                      }}
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </Button>
+                    {canMutate ? (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="border-border"
+                          disabled={busyId === item.id}
+                          onClick={async () => {
+                            setBusyId(item.id);
+                            try {
+                              const r = await retryProxyQueueItem(item.id);
+                              toast.success(`Retry OK — upstream ${r.upstream_status}`);
+                              await load();
+                            } catch (e) {
+                              toastApiError(e);
+                            } finally {
+                              setBusyId(null);
+                            }
+                          }}
+                        >
+                          <RotateCw className="w-3 h-3 mr-1" />
+                          Retry
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="border-destructive/50 text-destructive"
+                          disabled={busyId === item.id}
+                          onClick={async () => {
+                            setBusyId(item.id);
+                            try {
+                              await deleteProxyQueueItem(item.id);
+                              toast.success('Đã xóa');
+                              await load();
+                            } catch (e) {
+                              toastApiError(e);
+                            } finally {
+                              setBusyId(null);
+                            }
+                          }}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </Button>
+                      </>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">Viewer: chỉ xem</span>
+                    )}
                   </td>
                 </tr>
               ))}

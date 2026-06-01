@@ -209,7 +209,12 @@ export function RouteFormDialog({
               />
             </div>
             <div className="flex items-center justify-between">
-              <Label className="text-foreground">Queue on failure</Label>
+              <div>
+                <Label className="text-foreground">Queue on failure</Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Bật khi global DLQ tắt; nếu đã bật trong Cài đặt thì route này vẫn vào queue.
+                </p>
+              </div>
               <Switch
                 checked={formData.queueOnFailure}
                 onCheckedChange={(c) => setFormData({ ...formData, queueOnFailure: c })}

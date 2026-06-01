@@ -7,6 +7,8 @@ import {
   type CreateClientKeyResponse,
 } from '../../../lib/api';
 import { buildEncryptedEnvelope } from '../../../lib/rsaEnvelope';
+import { handleFormApiError, failClientValidation, clearOneFieldError, fieldInputErrorClass } from '../../../lib/formValidation';
+import { FieldError } from '../../components/forms/FieldError';
 import { setTestHmacKeys } from '../../../lib/proxyTryStorage';
 import { Link } from 'react-router';
 import { Button } from '../../components/ui/button';
@@ -28,16 +30,14 @@ import {
 } from '../../components/ui/select';
 import { useAdminAuth } from '../../../contexts/AdminAuthContext';
 import { canWriteClientKeys } from '../../../lib/rbac';
+import {
+  CLIENT_KEY_INTEGRATION_TYPES,
+  CLIENT_KEY_TYPE_HINT,
+} from './clientKeyIntegrationTypes';
 
 type Props = {
   onKeysChanged: () => void;
 };
-
-const INTEGRATION_TYPES = [
-  { value: 'app', label: 'Ứng dụng / phần mềm' },
-  { value: 'partner', label: 'Đối tác B2B' },
-  { value: 'test', label: 'Thử nghiệm' },
-] as const;
 
 export function CreateApiKeyRsaDialog({ onKeysChanged }: Props) {
   const { user } = useAdminAuth();
@@ -48,15 +48,22 @@ export function CreateApiKeyRsaDialog({ onKeysChanged }: Props) {
   const [integrationType, setIntegrationType] = useState('partner');
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<CreateClientKeyResponse | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const reset = () => {
     setName('');
     setIntegrationType('partner');
     setResult(null);
+    setFieldErrors({});
   };
 
   const handleCreate = async () => {
+    if (!name.trim()) {
+      failClientValidation(setFieldErrors, { name: 'Nhập tên app / đối tác' });
+      return;
+    }
     setPending(true);
+    setFieldErrors({});
     try {
       const { public_key_pem } = await fetchGatewayPublicKey();
       const envelope = await buildEncryptedEnvelope(public_key_pem, {
@@ -68,7 +75,7 @@ export function CreateApiKeyRsaDialog({ onKeysChanged }: Props) {
       onKeysChanged();
       toast.success('Đã tạo key — payload đã mã hóa bằng public key gateway');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      handleFormApiError(e, setFieldErrors);
     } finally {
       setPending(false);
     }
@@ -103,26 +110,36 @@ export function CreateApiKeyRsaDialog({ onKeysChanged }: Props) {
           <div className="space-y-4 mt-2">
             <div>
               <Label>Tên ứng dụng / đối tác</Label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} className="mt-1" />
+              <Input
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  clearOneFieldError(setFieldErrors, 'name');
+                }}
+                aria-invalid={Boolean(fieldErrors.name)}
+                className={fieldInputErrorClass(Boolean(fieldErrors.name), 'mt-1')}
+              />
+              <FieldError message={fieldErrors.name} />
             </div>
             <div>
-              <Label>Mục đích</Label>
+              <Label>Loại client</Label>
               <Select value={integrationType} onValueChange={setIntegrationType}>
                 <SelectTrigger className="mt-1">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {INTEGRATION_TYPES.map((t) => (
+                  {CLIENT_KEY_INTEGRATION_TYPES.map((t) => (
                     <SelectItem key={t.value} value={t.value}>
                       {t.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              <p className="text-xs text-muted-foreground mt-1">{CLIENT_KEY_TYPE_HINT}</p>
             </div>
             <Button
               className="w-full bg-primary"
-              disabled={!name.trim() || pending}
+              disabled={pending}
               onClick={() => void handleCreate()}
             >
               {pending ? 'Đang mã hóa & gửi…' : 'Mã hóa & tạo key'}

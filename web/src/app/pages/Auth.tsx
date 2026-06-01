@@ -15,12 +15,16 @@ import { ApiKeysDataTable } from './auth/ApiKeysDataTable';
 import { CreateApiKeyDialog } from './auth/CreateApiKeyDialog';
 import { CreateApiKeyRsaDialog } from './auth/CreateApiKeyRsaDialog';
 import type { ApiKeyRow } from './auth/apiKeyTypes';
+import { integrationTypeLabel } from './auth/clientKeyIntegrationTypes';
 
 function metaToRow(m: ClientKeyMeta): ApiKeyRow {
-  const label = m.integration_type && m.integration_type !== 'app' ? ` [${m.integration_type}]` : '';
+  const typeLabel =
+    m.integration_type && m.integration_type !== 'app'
+      ? ` · ${integrationTypeLabel(m.integration_type)}`
+      : '';
   return {
     id: String(m.id),
-    name: `${m.name}${label}`,
+    name: `${m.name}${typeLabel}`,
     key: m.api_key ?? '(legacy — secret không hiển thị lại)',
     isActive: true,
     createdAt: m.auth_mode,

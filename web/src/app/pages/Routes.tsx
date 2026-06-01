@@ -5,12 +5,12 @@ import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import { canCreateRoute, canDeleteRoute, canUpdateRoute } from '../../lib/rbac';
 import { useGatewayRoutes } from '../../hooks/useGatewayRoutes';
 import {
-  ApiClientError,
   createGatewayRoute,
   deleteGatewayRoute,
   updateGatewayRoute,
 } from '../../lib/api';
 import { toastApiError } from '../../lib/apiClientError';
+import { handleFormApiError } from '../../lib/formValidation';
 import { RouteFormDialog, type RouteFormState } from './routes/RouteFormDialog';
 import { RoutesTable } from './routes/RoutesTable';
 import type { UiRoute } from './routes/routeTypes';
@@ -84,10 +84,7 @@ function RoutesAdmin() {
   };
 
   const handleApiFailure = (e: unknown) => {
-    if (e instanceof ApiClientError && e.fields && Object.keys(e.fields).length > 0) {
-      setFieldErrors(e.fields);
-    }
-    toastApiError(e);
+    handleFormApiError(e, setFieldErrors);
   };
 
   const handleCreate = async () => {

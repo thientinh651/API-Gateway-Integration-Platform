@@ -1492,7 +1492,12 @@ async fn health_handler() -> Response {
     if !enabled {
         return json_error(StatusCode::NOT_FOUND, "disabled", "health endpoint disabled");
     }
-    Json(serde_json::json!({ "status": "ok" })).into_response()
+    Json(serde_json::json!({
+        "status": "ok",
+        "service": "avaso-gateway",
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
+    .into_response()
 }
 
 /// Public: xác minh Nginx → gateway đúng binary (có route /api/*). Không cần auth.
@@ -1634,6 +1639,7 @@ async fn proxy_handler() -> impl IntoResponse {
                 StatusCode::OK,
                 Json(serde_json::json!({
                     "status": "ok",
+                    "demo_only": true,
                     "upstream": "jsonplaceholder.typicode.com",
                     "body": body
                 })),
@@ -2005,8 +2011,8 @@ fn integration_purpose_label(t: &str) -> &'static str {
     match t {
         "app" => "Ứng dụng / phần mềm gọi API (mobile, web, script)",
         "partner" => "Đối tác / B2B tích hợp",
-        "salesforce" => "Chuẩn bị tích hợp Salesforce (data plane)",
-        "zoho" => "Chuẩn bị tích hợp Zoho Projects",
+        "salesforce" => "Client data-plane Salesforce",
+        "zoho" => "Client data-plane Zoho Projects",
         "test" => "Thử nghiệm / dev",
         _ => "Ứng dụng",
     }
@@ -2036,11 +2042,17 @@ async fn api_create_client_key(
     };
     let name = body.name.trim().to_string();
     if name.is_empty() {
-        return (
+        let mut fields = serde_json::Map::new();
+        fields.insert(
+            "name".into(),
+            serde_json::Value::String("Nhập tên app / đối tác".into()),
+        );
+        return json_error_fields(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "name required" })),
-        )
-            .into_response();
+            "validation_failed",
+            "Dữ liệu key không hợp lệ",
+            fields,
+        );
     }
     let api_key = db::random_api_key_id();
     let secret_key = db::random_secret_key();
@@ -2186,11 +2198,15 @@ async fn api_create_client_key_encrypted(
             Some("name_required"),
         )
         .await;
-        return (
+        return json_error_fields(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "name required in encrypted payload" })),
-        )
-            .into_response();
+            "validation_failed",
+            "Dữ liệu key không hợp lệ",
+            serde_json::Map::from_iter([(
+                "name".into(),
+                serde_json::Value::String("Nhập tên app / đối tác".into()),
+            )]),
+        );
     }
 
     let integration_type = normalize_integration_type(&parsed.integration_type);
@@ -2353,22 +2369,38 @@ async fn api_create_user(
     };
     let username = body.username.trim();
     let pass = body.password.trim();
-    if username.is_empty() || pass.len() < 6 {
-        return (
+    let mut fields = serde_json::Map::new();
+    if username.is_empty() {
+        fields.insert(
+            "username".into(),
+            serde_json::Value::String("Nhập username".into()),
+        );
+    }
+    if pass.len() < 6 {
+        fields.insert(
+            "password".into(),
+            serde_json::Value::String("Mật khẩu tối thiểu 6 ký tự".into()),
+        );
+    }
+    if !fields.is_empty() {
+        return json_error_fields(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "validation_failed",
-                "message": "username và password (≥6 ký tự) bắt buộc"
-            })),
-        )
-            .into_response();
+            "validation_failed",
+            "Dữ liệu user không hợp lệ",
+            fields,
+        );
     }
     let Some(role) = normalize_user_role(&body.role) else {
-        return (
+        fields.insert(
+            "role".into(),
+            serde_json::Value::String("Chọn admin, operator hoặc viewer".into()),
+        );
+        return json_error_fields(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "invalid_role", "message": "role: admin | operator | viewer" })),
-        )
-            .into_response();
+            "invalid_role",
+            "Dữ liệu user không hợp lệ",
+            fields,
+        );
     };
     let password_hash = match db::hash_password(pass) {
         Ok(h) => h,
@@ -2409,11 +2441,16 @@ async fn api_create_user(
         Err(e) => {
             if let sqlx::Error::Database(ref d) = e {
                 if d.is_unique_violation() {
-                    return (
+                    fields.insert(
+                        "username".into(),
+                        serde_json::Value::String("Username đã tồn tại".into()),
+                    );
+                    return json_error_fields(
                         StatusCode::CONFLICT,
-                        Json(serde_json::json!({ "error": "username_exists" })),
-                    )
-                        .into_response();
+                        "username_exists",
+                        "Username đã được dùng",
+                        fields,
+                    );
                 }
             }
             (
@@ -2441,37 +2478,51 @@ async fn api_update_user(
         }
     };
     if id == ctx.user_id && !body.is_active {
-        return (
+        return json_error(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "cannot_disable_self" })),
-        )
-            .into_response();
+            "cannot_disable_self",
+            "Không thể tự vô hiệu hóa tài khoản đang đăng nhập",
+        );
     }
     let username = body.username.trim();
+    let mut fields = serde_json::Map::new();
     if username.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "username required" })),
-        )
-            .into_response();
+        fields.insert(
+            "username".into(),
+            serde_json::Value::String("Nhập username".into()),
+        );
     }
-    let Some(role) = normalize_user_role(&body.role) else {
-        return (
+    let role = normalize_user_role(&body.role);
+    if role.is_none() {
+        fields.insert(
+            "role".into(),
+            serde_json::Value::String("Chọn admin, operator hoặc viewer".into()),
+        );
+    }
+    if !fields.is_empty() {
+        return json_error_fields(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "invalid_role" })),
-        )
-            .into_response();
-    };
+            "validation_failed",
+            "Dữ liệu user không hợp lệ",
+            fields,
+        );
+    }
+    let role = role.unwrap();
     let pass_hash = if let Some(ref p) = body.password {
         let t = p.trim();
         if t.is_empty() {
             None
         } else if t.len() < 6 {
-            return (
+            fields.insert(
+                "password".into(),
+                serde_json::Value::String("Mật khẩu tối thiểu 6 ký tự".into()),
+            );
+            return json_error_fields(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "password_too_short" })),
-            )
-                .into_response();
+                "password_too_short",
+                "Dữ liệu user không hợp lệ",
+                fields,
+            );
         } else {
             match db::hash_password(t) {
                 Ok(h) => Some(h),
@@ -2930,9 +2981,6 @@ async fn api_list_integration_snapshots(
 }
 
 async fn api_dashboard_stats(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
-    if !ctx.is_admin() {
-        return audit_admin_denied(&ctx, "dashboard/stats").await;
-    }
     dashboard::api_dashboard_stats(&ctx).await
 }
 

@@ -22,9 +22,14 @@ describe('formatDbTimestamp', () => {
     expect(formatDbTimestamp(utc)).toBe(expected);
   });
 
-  it('accepts ISO strings with T', () => {
+  it('accepts ISO UTC strings', () => {
     const iso = '2026-05-30T04:53:43Z';
     expect(formatDbTimestamp(iso)).not.toBe('—');
+  });
+
+  it('parses ISO with timezone offset', () => {
+    const iso = '2026-05-30T11:53:43+07:00';
+    expect(formatDbTimestamp(iso)).toContain('2026');
   });
 
   it('returns raw string when unparseable', () => {
