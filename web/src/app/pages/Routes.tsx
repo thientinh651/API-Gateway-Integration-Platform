@@ -48,7 +48,7 @@ function routeBodyFromForm(form: RouteFormState) {
     transform_remove_headers: form.transformRemoveHeaders.trim() || '[]',
     retry_max: Number.parseInt(form.retryMax.trim(), 10) || 0,
     retry_on_status: form.retryOnStatus.trim() || '502,503,504',
-    retry_on_timeout: form.retryOnTimeout,
+    retry_on_timeout: form.retryOnTimeout ? 1 : 0,
     queue_on_failure: form.queueOnFailure,
   };
 }

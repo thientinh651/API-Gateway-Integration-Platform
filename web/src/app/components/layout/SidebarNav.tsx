@@ -44,10 +44,10 @@ export function SidebarNav({ onNavigate, className = '' }: Props) {
               key={item.path}
               to={item.path}
               onClick={onNavigate}
-              className={`flex items-center space-x-3 p-3 min-h-[44px] rounded-xl transition touch-manipulation ${
+              className={`flex items-center space-x-3 p-3 min-h-[44px] rounded-xl transition touch-manipulation border-l-2 ${
                 isActive
-                  ? 'text-primary bg-primary/10'
-                  : 'text-muted-foreground hover:bg-primary/10 hover:text-primary active:bg-primary/15'
+                  ? 'text-primary bg-primary/10 border-primary shadow-[inset_0_0_20px_rgba(249,115,22,0.08)] font-medium'
+                  : 'text-muted-foreground border-transparent hover:bg-primary/10 hover:text-primary hover:border-primary/30 active:bg-primary/15'
               }`}
             >
               <Icon className="w-5 h-5 shrink-0" />
@@ -60,7 +60,10 @@ export function SidebarNav({ onNavigate, className = '' }: Props) {
       <div className="p-4 sm:p-6 border-t border-border shrink-0 pb-[max(1rem,env(safe-area-inset-bottom))]">
         <div className="flex items-center space-x-3 text-xs text-muted-foreground">
           <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse shrink-0" />
-          <span className="truncate" title={typeof window !== 'undefined' ? window.location.host : ''}>
+          <span
+            className="truncate font-mono-tech text-[11px]"
+            title={typeof window !== 'undefined' ? window.location.host : ''}
+          >
             {typeof window !== 'undefined' ? window.location.host : 'gateway'}
           </span>
         </div>

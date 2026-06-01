@@ -104,7 +104,8 @@ export type RouteWriteBody = {
   transform_remove_headers?: string;
   retry_max?: number;
   retry_on_status?: string;
-  retry_on_timeout?: boolean;
+  /** Backend SQLite/API: 0 | 1 */
+  retry_on_timeout?: number;
   queue_on_failure?: boolean;
 };
 
@@ -478,6 +479,8 @@ export type DashboardStats = {
   routes_count: number;
   client_keys_count: number;
   audit_24h: { total: number; success: number; failure: number };
+  audit_top_actions: Array<{ label: string; count: number }>;
+  audit_hourly: Array<{ label: string; count: number }>;
   integrations: IntegrationRow[];
   snapshot_entities: Array<{
     provider: string;

@@ -1,0 +1,141 @@
+/* Tech / devtool aesthetic — dùng chung dashboard */
+
+.font-mono-tech {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.tech-grid-bg {
+  background-image:
+    linear-gradient(rgba(249, 115, 22, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(249, 115, 22, 0.04) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+.tech-grid-bg-subtle {
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.tech-panel {
+  position: relative;
+  border-radius: 1rem;
+  border: 1px solid rgba(30, 41, 59, 0.9);
+  background: linear-gradient(145deg, rgba(15, 23, 42, 0.85), rgba(10, 12, 18, 0.95));
+  box-shadow:
+    0 0 0 1px rgba(249, 115, 22, 0.06),
+    0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.tech-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, rgba(249, 115, 22, 0.35), transparent 40%, transparent 60%, rgba(59, 130, 246, 0.2));
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.tech-corner {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-color: rgba(249, 115, 22, 0.5);
+  pointer-events: none;
+}
+
+.tech-corner-tl {
+  top: 8px;
+  left: 8px;
+  border-top: 2px solid;
+  border-left: 2px solid;
+}
+
+.tech-corner-br {
+  bottom: 8px;
+  right: 8px;
+  border-bottom: 2px solid;
+  border-right: 2px solid;
+}
+
+.tech-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.tech-shimmer-title {
+  background: linear-gradient(90deg, #f8fafc 0%, #f97316 45%, #f8fafc 90%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: tech-shimmer 7s linear infinite;
+}
+
+@keyframes tech-shimmer {
+  0% {
+    background-position: 200% center;
+  }
+  100% {
+    background-position: -200% center;
+  }
+}
+
+@keyframes tech-pulse-glow {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.tech-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: #34d399;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.8);
+  animation: tech-pulse-glow 2s ease-in-out infinite;
+}
+
+.tech-endpoint-row {
+  position: relative;
+  padding-left: 0.75rem;
+  border-left: 3px solid transparent;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.tech-endpoint-row:hover {
+  background: rgba(15, 23, 42, 0.6);
+}
+
+.tech-endpoint-row[data-method='GET'] {
+  border-left-color: rgba(59, 130, 246, 0.7);
+}
+
+.tech-endpoint-row[data-method='POST'] {
+  border-left-color: rgba(52, 211, 153, 0.7);
+}
+
+.tech-endpoint-row[data-method='PUT'] {
+  border-left-color: rgba(251, 191, 36, 0.7);
+}
+
+.tech-endpoint-row[data-method='DELETE'] {
+  border-left-color: rgba(248, 113, 113, 0.7);
+}
+
+.tech-endpoint-row[data-method='*'] {
+  border-left-color: rgba(148, 163, 184, 0.5);
+}

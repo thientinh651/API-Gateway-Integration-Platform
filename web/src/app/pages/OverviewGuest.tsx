@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import {
+  ArrowDown,
   ArrowRight,
   Box,
   Cpu,
@@ -17,6 +18,7 @@ import {
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
+import { TechPanel } from '../components/tech/TechPanel';
 
 type HealthPayload = {
   status?: string;
@@ -46,7 +48,7 @@ const CAPABILITIES = [
   {
     icon: Shield,
     title: 'Zero-trust data plane',
-    text: 'HMAC + timestamp + chống replay. API key chỉ lưu hash — không plain text trong DB.',
+    text: 'HMAC + timestamp + chống replay.',
     tag: 'Security',
   },
   {
@@ -124,7 +126,7 @@ function TerminalMock() {
   );
 
   return (
-    <div className="relative rounded-2xl border border-border/80 bg-[#050810] overflow-hidden shadow-2xl shadow-primary/5">
+    <TechPanel className="overflow-hidden shadow-2xl shadow-primary/5 !bg-[#050810]">
       <div className="flex items-center gap-2 px-4 py-3 border-b border-border/60 bg-slate-900/80">
         <span className="w-2.5 h-2.5 rounded-full bg-red-500/90" />
         <span className="w-2.5 h-2.5 rounded-full bg-amber-500/90" />
@@ -150,7 +152,7 @@ function TerminalMock() {
             'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(255,255,255,0.4) 2px, rgba(255,255,255,0.4) 3px)',
         }}
       />
-    </div>
+    </TechPanel>
   );
 }
 
@@ -164,34 +166,11 @@ export function OverviewGuest() {
           0%, 100% { transform: translateY(0) scale(1); }
           50% { transform: translateY(-12px) scale(1.02); }
         }
-        @keyframes guest-shimmer {
-          0% { background-position: 200% center; }
-          100% { background-position: -200% center; }
-        }
-        @keyframes guest-grid-drift {
-          0% { transform: translate(0, 0); }
-          100% { transform: translate(32px, 32px); }
-        }
-        .guest-hero-grid {
-          background-image:
-            linear-gradient(rgba(249,115,22,0.06) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(249,115,22,0.06) 1px, transparent 1px);
-          background-size: 48px 48px;
-          animation: guest-grid-drift 24s linear infinite;
-        }
-        .guest-text-shimmer {
-          background: linear-gradient(90deg, #fff 0%, #f97316 40%, #fff 80%);
-          background-size: 200% auto;
-          -webkit-background-clip: text;
-          background-clip: text;
-          color: transparent;
-          animation: guest-shimmer 6s linear infinite;
-        }
       `}</style>
 
       {/* Hero */}
       <section className="relative overflow-hidden border-b border-border/60">
-        <div className="absolute inset-0 guest-hero-grid opacity-60" />
+        <div className="absolute inset-0 tech-grid-bg opacity-70" />
         <div
           className="absolute -top-32 -right-32 w-96 h-96 rounded-full bg-primary/20 blur-[100px] pointer-events-none"
           style={{ animation: 'guest-float 8s ease-in-out infinite' }}
@@ -228,7 +207,7 @@ export function OverviewGuest() {
           </div>
 
           <h1 className="text-3xl sm:text-4xl md:text-6xl font-black tracking-tight text-white mb-5 leading-[1.1]">
-            <span className="guest-text-shimmer">AVASO Gateway</span>
+            <span className="tech-shimmer-title">AVASO Gateway</span>
             <br />
             <span className="text-xl sm:text-2xl md:text-4xl font-bold text-slate-300">
               Cổng API đa tích hợp · Rust async
@@ -291,38 +270,44 @@ export function OverviewGuest() {
               sub: health?.service ?? 'avaso-gateway',
             },
           ].map(({ icon: Icon, label, value, sub }) => (
-            <Card
+            <TechPanel
               key={label}
-              className="rounded-2xl p-5 bg-gradient-to-br from-slate-900/90 to-slate-950/90 border-border/80 hover:border-primary/30 transition-colors group"
+              corners={false}
+              className="p-5 hover:border-primary/30 transition-colors group"
             >
               <Icon className="w-5 h-5 text-primary mb-3 group-hover:scale-110 transition-transform" />
-              <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-bold">{label}</p>
-              <p className="text-xl font-bold text-white mt-1 font-mono">{value}</p>
-              <p className="text-xs text-muted-foreground mt-1">{sub}</p>
-            </Card>
+              <p className="tech-label">{label}</p>
+              <p className="text-xl font-bold text-white mt-1 font-mono-tech">{value}</p>
+              <p className="text-xs text-muted-foreground mt-1 font-mono-tech">{sub}</p>
+            </TechPanel>
           ))}
         </div>
 
         {/* Architecture + terminal */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8 items-stretch">
           <div>
-            <h2 className="text-sm font-bold uppercase tracking-widest text-primary mb-4 flex items-center gap-2">
+            <h2 className="tech-label text-primary mb-4 flex items-center gap-2 font-mono-tech">
               <GitBranch className="w-4 h-4" />
               Kiến trúc luồng
             </h2>
-            <div className="space-y-3">
+            <div className="flex flex-col items-stretch max-w-md">
               {FLOW.map(({ label, icon: Icon, tone }, i) => (
-                <div key={label} className="flex items-center gap-3">
+                <div key={label} className="flex flex-col items-center w-full">
                   <Card
-                    className={`flex-1 rounded-xl p-4 border bg-gradient-to-r ${tone} flex items-center gap-3`}
+                    className={`w-full min-h-[56px] rounded-xl p-4 border bg-gradient-to-r ${tone} flex items-center gap-3`}
                   >
-                    <div className="p-2 rounded-lg bg-black/30">
+                    <div className="p-2 rounded-lg bg-black/30 shrink-0">
                       <Icon className="w-5 h-5 text-white" />
                     </div>
                     <span className="font-semibold text-white text-sm">{label}</span>
                   </Card>
                   {i < FLOW.length - 1 && (
-                    <ArrowRight className="w-5 h-5 text-primary shrink-0 hidden sm:block" />
+                    <div
+                      className="flex items-center justify-center h-8 w-full"
+                      aria-hidden
+                    >
+                      <ArrowDown className="w-5 h-5 text-primary" />
+                    </div>
                   )}
                 </div>
               ))}
@@ -340,7 +325,7 @@ export function OverviewGuest() {
         <div>
           <h2 className="text-2xl font-bold text-white mb-2">Năng lực nền tảng</h2>
           <p className="text-muted-foreground mb-8 max-w-xl">
-            Xây dựng cho vận hành thật — không chỉ mock UI. Phù hợp đồ án middleware & hướng AI gateway.
+            Xây dựng cho vận hành thật
           </p>
           <div className="grid md:grid-cols-2 gap-5">
             {CAPABILITIES.map(({ icon: Icon, title, text, tag }) => (
@@ -364,7 +349,7 @@ export function OverviewGuest() {
         </div>
 
         {/* CTA */}
-        <Card className="rounded-3xl p-8 md:p-10 border-primary/20 bg-gradient-to-br from-primary/10 via-slate-900/80 to-slate-950 border overflow-hidden relative">
+        <TechPanel className="p-8 md:p-10 border-primary/30 bg-gradient-to-br from-primary/10 via-slate-900/80 to-slate-950 overflow-hidden">
           <div className="absolute top-0 right-0 w-64 h-64 bg-primary/10 rounded-full blur-3xl pointer-events-none" />
           <div className="relative flex flex-col md:flex-row md:items-center md:justify-between gap-6">
             <div>
@@ -380,7 +365,7 @@ export function OverviewGuest() {
               </Link>
             </Button>
           </div>
-        </Card>
+        </TechPanel>
       </div>
     </div>
   );

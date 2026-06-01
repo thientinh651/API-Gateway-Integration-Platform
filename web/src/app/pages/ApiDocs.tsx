@@ -4,6 +4,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Badge } from '../components/ui/badge';
 import { Code, Globe, Server, AlertTriangle, Terminal } from 'lucide-react';
 import { cn } from '../components/ui/utils';
+import { TechPageHeader } from '../components/tech/TechPageHeader';
+import { ApiEndpointCard } from '../components/tech/ApiEndpointCard';
 
 type ApiDocTab = 'data-plane' | 'admin-api' | 'errors' | 'examples';
 
@@ -14,31 +16,25 @@ const TAB_CONFIG: Record<
     short: string;
     description: string;
     icon: typeof Globe;
-    listClass: string;
-    triggerActive: string;
     frameClass: string;
     headerClass: string;
   }
 > = {
   'data-plane': {
-    label: 'Data Plane',
-    short: 'Client / HMAC',
-    description: 'Traffic qua gateway tới upstream — /v1/api/*, /health, HMAC client key.',
+    label: 'Ứng dụng gọi qua gateway',
+    short: 'Proxy',
+    description:
+      'App hoặc dịch vụ bên ngoài gửi request qua gateway tới server đích. Cần khóa API client + chữ ký HMAC (tab ví dụ bên dưới).',
     icon: Globe,
-    listClass: 'bg-slate-900/80 border-slate-700',
-    triggerActive:
-      'data-[state=active]:bg-blue-500/20 data-[state=active]:text-blue-200 data-[state=active]:border-blue-500/50 data-[state=active]:shadow-[0_0_12px_rgba(59,130,246,0.25)]',
     frameClass: 'border-blue-500/40 bg-blue-500/[0.06] shadow-[inset_0_1px_0_rgba(59,130,246,0.15)]',
     headerClass: 'from-blue-500/15 to-transparent border-blue-500/30',
   },
   'admin-api': {
-    label: 'Admin API',
-    short: 'Dashboard /api/*',
-    description: 'Quản trị route, key, user, tích hợp — session cookie hoặc X-API-Key admin.',
+    label: 'Quản trị trên dashboard',
+    short: 'Admin',
+    description:
+      'Cấu hình route, API key, user, audit, Salesforce/Zoho. Đăng nhập web (cookie) hoặc gửi header X-API-Key admin — mọi path bắt đầu /api/.',
     icon: Server,
-    listClass: 'bg-slate-900/80 border-slate-700',
-    triggerActive:
-      'data-[state=active]:bg-primary/25 data-[state=active]:text-primary data-[state=active]:border-primary/60 data-[state=active]:shadow-[0_0_12px_rgba(249,115,22,0.3)]',
     frameClass: 'border-primary/45 bg-primary/[0.07] shadow-[inset_0_1px_0_rgba(249,115,22,0.2)]',
     headerClass: 'from-primary/20 to-transparent border-primary/35',
   },
@@ -47,9 +43,6 @@ const TAB_CONFIG: Record<
     short: 'HTTP lỗi',
     description: 'Mã phản hồi chuẩn từ gateway và upstream.',
     icon: AlertTriangle,
-    listClass: 'bg-slate-900/80 border-slate-700',
-    triggerActive:
-      'data-[state=active]:bg-red-500/20 data-[state=active]:text-red-200 data-[state=active]:border-red-500/50 data-[state=active]:shadow-[0_0_12px_rgba(239,68,68,0.2)]',
     frameClass: 'border-red-500/35 bg-red-500/[0.05] shadow-[inset_0_1px_0_rgba(239,68,68,0.12)]',
     headerClass: 'from-red-500/15 to-transparent border-red-500/30',
   },
@@ -58,9 +51,6 @@ const TAB_CONFIG: Record<
     short: 'curl mẫu',
     description: 'Ví dụ gọi HMAC, login admin, list routes.',
     icon: Terminal,
-    listClass: 'bg-slate-900/80 border-slate-700',
-    triggerActive:
-      'data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-200 data-[state=active]:border-emerald-500/50 data-[state=active]:shadow-[0_0_12px_rgba(16,185,129,0.2)]',
     frameClass: 'border-emerald-500/35 bg-emerald-500/[0.05] shadow-[inset_0_1px_0_rgba(16,185,129,0.12)]',
     headerClass: 'from-emerald-500/15 to-transparent border-emerald-500/30',
   },
@@ -91,10 +81,7 @@ function DocSectionFrame({
           </div>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
-                Đang xem
-              </span>
-              <Badge variant="outline" className="font-semibold text-white border-border/80">
+              <Badge variant="outline" className="font-semibold text-white border-border/80 font-mono-tech">
                 {meta.label}
               </Badge>
             </div>
@@ -112,9 +99,16 @@ function DocSectionFrame({
   );
 }
 
+/** Thanh tab kiểu segmented control — tab chọn có nền pill nổi trong track. */
+const TAB_TRACK =
+  'w-full h-auto grid grid-cols-2 sm:grid-cols-4 gap-1 p-1.5 rounded-xl bg-slate-900/95 border border-slate-700/90';
+const TAB_PILL_IDLE =
+  'bg-transparent text-slate-400 hover:text-slate-200 border-0 shadow-none';
+const TAB_PILL_ACTIVE =
+  'bg-slate-600 text-white shadow-[0_2px_10px_rgba(0,0,0,0.45)] border border-slate-500/80';
+
 export function ApiDocs() {
   const [activeTab, setActiveTab] = useState<ApiDocTab>('data-plane');
-  const activeMeta = TAB_CONFIG[activeTab];
   const dataPlaneEndpoints = [
     {
       method: 'GET',
@@ -133,7 +127,7 @@ export function ApiDocs() {
     {
       method: '*',
       path: '/v1/api/*',
-      description: 'Data plane — proxy route + SF/Zoho integration paths',
+      description: 'Proxy theo route đã cấu hình + đường tích hợp Salesforce/Zoho',
       auth: 'HMAC: X-API-Key, X-Timestamp, X-Signature',
       response: 'Response từ upstream hoặc integration backend',
     },
@@ -202,99 +196,97 @@ export function ApiDocs() {
 
   return (
     <>
-      <div className="mb-6 sm:mb-8">
-        <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Tài liệu API</h1>
-        <p className="text-muted-foreground">
-          Admin API mount tại <code className="text-primary">/api/*</code> — session cookie hoặc header{' '}
-          <code className="text-primary">X-API-Key</code> (admin).
-        </p>
-      </div>
+      <TechPageHeader
+        codeLine="// danh sách endpoint"
+        title="Tài liệu API"
+        description={
+          <>
+            Gateway có <strong className="text-blue-300 font-normal">hai nhóm API</strong> tách biệt:{' '}
+            <strong className="text-blue-300 font-normal">ứng dụng bên ngoài</strong> gọi proxy (khóa client + chữ ký
+            HMAC) và <strong className="text-primary font-normal">quản trị</strong> trên dashboard (
+            <code className="text-primary font-mono-tech text-sm">/api/*</code> — sau khi đăng nhập hoặc dùng khóa
+            admin). Chọn tab bên dưới để xem từng nhóm.
+          </>
+        }
+      />
 
       <Tabs
         value={activeTab}
         onValueChange={(v) => setActiveTab(v as ApiDocTab)}
         className="space-y-4"
       >
-        <TabsList
-          className={cn(
-            'w-full h-auto grid grid-cols-2 sm:flex sm:flex-wrap gap-2 p-2 rounded-xl border',
-            activeMeta.listClass
-          )}
-        >
+        <TabsList className={cn(TAB_TRACK, 'bg-muted/0')}>
           {(Object.keys(TAB_CONFIG) as ApiDocTab[]).map((key) => {
             const m = TAB_CONFIG[key];
+            const selected = activeTab === key;
             return (
               <TabsTrigger
                 key={key}
                 value={key}
                 className={cn(
-                  'flex-1 min-h-[44px] px-3 py-2.5 text-sm font-semibold rounded-lg border border-transparent',
-                  'text-muted-foreground transition-all',
-                  m.triggerActive
+                  'min-h-[42px] px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200',
+                  'data-[state=active]:bg-transparent data-[state=active]:text-inherit data-[state=active]:shadow-none',
+                  'dark:data-[state=active]:bg-transparent dark:data-[state=active]:text-inherit',
+                  selected ? TAB_PILL_ACTIVE : TAB_PILL_IDLE
                 )}
               >
-                <span className="flex flex-col items-center sm:items-start gap-0.5">
-                  <span>{m.label}</span>
-                  <span className="text-[10px] font-normal opacity-80 hidden sm:inline">{m.short}</span>
-                </span>
+                {m.label}
               </TabsTrigger>
             );
           })}
         </TabsList>
 
         <TabsContent value="data-plane" className="mt-0 focus-visible:outline-none">
-          <DocSectionFrame tab="data-plane" title="Endpoints — Data Plane">
+          <DocSectionFrame tab="data-plane" title="Endpoint cho ứng dụng (proxy)">
             <div className="space-y-4">
               {dataPlaneEndpoints.map((endpoint, index) => (
-                <div key={index} className="p-4 rounded-lg bg-background/50 border border-border">
-                  <div className="flex items-center gap-3 mb-2 flex-wrap">
-                    <Badge className={`${getMethodColor(endpoint.method)} border font-mono`}>
-                      {endpoint.method}
-                    </Badge>
-                    <code className="text-sm text-slate-300 font-mono">{endpoint.path}</code>
-                  </div>
-                  <p className="text-sm text-muted-foreground mb-2">{endpoint.description}</p>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                <ApiEndpointCard
+                  key={index}
+                  method={endpoint.method}
+                  path={endpoint.path}
+                  description={endpoint.description}
+                  methodColorClass={getMethodColor(endpoint.method)}
+                >
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs font-mono-tech">
                     <div>
-                      <span className="text-muted-foreground">Auth: </span>
+                      <span className="text-muted-foreground">auth → </span>
                       <span className="text-slate-300">{endpoint.auth}</span>
                     </div>
                     <div>
-                      <span className="text-muted-foreground">Response: </span>
+                      <span className="text-muted-foreground">res → </span>
                       <span className="text-slate-300">{endpoint.response}</span>
                     </div>
                   </div>
-                </div>
+                </ApiEndpointCard>
               ))}
             </div>
           </DocSectionFrame>
         </TabsContent>
 
         <TabsContent value="admin-api" className="mt-0 focus-visible:outline-none">
-          <DocSectionFrame tab="admin-api" title="Endpoints — Admin API">
-            <div className="space-y-3 max-h-[min(640px,60vh)] overflow-y-auto pr-1">
+          <DocSectionFrame tab="admin-api" title="Endpoint quản trị (dashboard)">
+            <div className="space-y-3">
               {adminEndpoints.map((endpoint, index) => (
-                <div key={index} className="p-4 rounded-lg bg-background/50 border border-border">
-                  <div className="flex items-center gap-3 mb-2 flex-wrap">
-                    <Badge className={`${getMethodColor(endpoint.method)} border font-mono`}>
-                      {endpoint.method}
-                    </Badge>
-                    <code className="text-sm text-slate-300 font-mono">{endpoint.path}</code>
-                  </div>
-                  <p className="text-sm text-muted-foreground mb-1">{endpoint.description}</p>
-                  <div className="text-xs space-y-1">
+                <ApiEndpointCard
+                  key={index}
+                  method={endpoint.method}
+                  path={endpoint.path}
+                  description={endpoint.description}
+                  methodColorClass={getMethodColor(endpoint.method)}
+                >
+                  <div className="text-xs space-y-1 font-mono-tech">
                     <div>
-                      <span className="text-muted-foreground">Auth: </span>
+                      <span className="text-muted-foreground">auth → </span>
                       <span className="text-amber-400">{endpoint.auth}</span>
                     </div>
                     {endpoint.body && (
                       <div>
-                        <span className="text-muted-foreground">Body/query: </span>
+                        <span className="text-muted-foreground">body → </span>
                         <code className="text-slate-300 text-xs">{endpoint.body}</code>
                       </div>
                     )}
                   </div>
-                </div>
+                </ApiEndpointCard>
               ))}
             </div>
           </DocSectionFrame>
@@ -323,7 +315,7 @@ export function ApiDocs() {
                 <Code className="w-5 h-5 text-emerald-400" />
                 HMAC data-plane request
               </h4>
-              <div className="bg-background/80 rounded-lg p-4 font-mono text-xs overflow-x-auto">
+              <div className="bg-[#050810] rounded-lg p-4 font-mono-tech text-xs overflow-x-auto border border-border/80 shadow-inner">
                 <pre className="text-slate-300">{`# Ký payload: api_key\\ntimestamp\\nMETHOD\\npath?query\\nbody
 curl -X GET "https://thientinh.io.vn/v1/api/get" \\
   -H "X-API-Key: avaso_pk_..." \\
@@ -337,7 +329,7 @@ curl -X GET "https://thientinh.io.vn/v1/api/get" \\
                 <Code className="w-5 h-5 text-primary" />
                 Admin login
               </h4>
-              <div className="bg-background/80 rounded-lg p-4 font-mono text-xs overflow-x-auto">
+              <div className="bg-[#050810] rounded-lg p-4 font-mono-tech text-xs overflow-x-auto border border-border/80 shadow-inner">
                 <pre className="text-slate-300">{`curl -X POST https://thientinh.io.vn/api/login \\
   -H "Content-Type: application/json" \\
   -d '{"username":"admin","password":"***"}' \\
@@ -352,7 +344,7 @@ curl -X GET "https://thientinh.io.vn/v1/api/get" \\
                 <Code className="w-5 h-5 text-primary" />
                 List routes (session)
               </h4>
-              <div className="bg-background/80 rounded-lg p-4 font-mono text-xs overflow-x-auto">
+              <div className="bg-[#050810] rounded-lg p-4 font-mono-tech text-xs overflow-x-auto border border-border/80 shadow-inner">
                 <pre className="text-slate-300">{`curl https://thientinh.io.vn/api/routes -b cookies.txt
 
 # Hoặc admin key:

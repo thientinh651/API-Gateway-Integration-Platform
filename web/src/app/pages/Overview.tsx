@@ -24,10 +24,8 @@ import {
   type ChartConfig,
 } from '../components/ui/chart';
 import {
-  Activity,
-  Database,
   Key,
-  Plug,
+  ListOrdered,
   RefreshCw,
   Route,
   ShieldCheck,
@@ -36,28 +34,42 @@ import {
   ApiClientError,
   fetchDashboardStats,
   fetchGatewayRoutes,
+  fetchProxyQueue,
   type DashboardStats,
 } from '../../lib/api';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import type { GatewayRouteRow } from '../../lib/gatewayRoutes';
 import { formatDbTimestamp } from '../../lib/formatDbTimestamp';
 import { OverviewGuest } from './OverviewGuest';
+import { TechPageHeader } from '../components/tech/TechPageHeader';
 
 const CHART_COLORS = ['#3b82f6', '#f97316', '#a855f7', '#10b981', '#fb923c'];
 
 const AXIS_TICK = '#94a3b8';
 const GRID_STROKE = '#334155';
 
-const entityBarConfig = {
-  opportunity: { label: 'Opportunities', color: CHART_COLORS[0] },
-  account: { label: 'Accounts', color: CHART_COLORS[1] },
-  project: { label: 'Projects', color: CHART_COLORS[2] },
-  task: { label: 'Tasks', color: CHART_COLORS[3] },
-} satisfies ChartConfig;
-
-const stagePieConfig = {
+const countBarConfig = {
   count: { label: 'Số lượng', color: CHART_COLORS[0] },
 } satisfies ChartConfig;
+
+const auditPieConfig = {
+  count: { label: 'Sự kiện', color: CHART_COLORS[0] },
+} satisfies ChartConfig;
+
+const auditHourlyConfig = {
+  count: { label: 'Sự kiện audit', color: CHART_COLORS[0] },
+} satisfies ChartConfig;
+
+const ACTION_VI: Record<string, string> = {
+  admin_login: 'Đăng nhập admin',
+  admin_logout: 'Đăng xuất',
+  route_create: 'Tạo route',
+  route_update: 'Sửa route',
+  route_delete: 'Xóa route',
+  client_key_create: 'Tạo API key',
+  client_key_delete: 'Xóa API key',
+  proxy_queue_retry: 'Retry DLQ',
+};
 
 function integrationStatusBadge(status: string) {
   switch (status) {
@@ -76,6 +88,7 @@ function OverviewAdmin() {
   const { user } = useAdminAuth();
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [routes, setRoutes] = useState<GatewayRouteRow[]>([]);
+  const [proxyQueueLen, setProxyQueueLen] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -84,9 +97,14 @@ function OverviewAdmin() {
     setLoading(true);
     setLoadError(null);
     try {
-      const [dash, routeRows] = await Promise.all([fetchDashboardStats(), fetchGatewayRoutes()]);
+      const [dash, routeRows, queue] = await Promise.all([
+        fetchDashboardStats(),
+        fetchGatewayRoutes(),
+        fetchProxyQueue().catch(() => []),
+      ]);
       setStats(dash);
       setRoutes(routeRows);
+      setProxyQueueLen(queue.length);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setLoadError(msg);
@@ -101,112 +119,69 @@ function OverviewAdmin() {
     void load();
   }, [load]);
 
-  const entityBarData = useMemo(
+  const audit = stats?.audit_24h;
+
+  const auditPieData = useMemo(() => {
+    if (!audit?.total) return [];
+    const rows = [
+      { name: 'Thành công', count: audit.success },
+      { name: 'Lỗi', count: audit.failure },
+    ];
+    return rows.filter((r) => r.count > 0);
+  }, [audit]);
+
+  const auditActionsData = useMemo(
     () =>
-      (stats?.snapshot_entities ?? []).map((e) => ({
-        name: e.entity_type,
-        label: e.label.replace('Salesforce ', 'SF ').replace('Zoho ', ''),
-        count: e.record_count,
+      (stats?.audit_top_actions ?? []).map((a) => ({
+        label: ACTION_VI[a.label] ?? a.label,
+        count: a.count,
       })),
     [stats]
   );
 
-  const stagePieData = useMemo(() => {
-    const stages = stats?.salesforce_stages ?? [];
-    if (stages.length > 0) {
-      return stages.map((s) => ({ name: s.label, count: s.count }));
-    }
-    return (stats?.snapshot_entities ?? []).map((e) => ({
-      name: e.label,
-      count: e.record_count,
-    }));
-  }, [stats]);
+  const routeConfigData = useMemo(() => {
+    const queue = routes.filter((r) => (r.queue_on_failure ?? 0) !== 0).length;
+    const retry = routes.filter((r) => (r.retry_max ?? 0) > 0).length;
+    return [
+      { label: 'Tổng route', count: routes.length },
+      { label: 'Queue khi lỗi', count: queue },
+      { label: 'Bật retry', count: retry },
+    ];
+  }, [routes]);
 
-  const timelineData = useMemo(() => {
-    const map = new Map<string, { time: string; opportunity: number; account: number; project: number; task: number }>();
-    for (const p of stats?.snapshot_timeline ?? []) {
-      const time = formatDbTimestamp(p.fetched_at);
-      const row = map.get(time) ?? { time, opportunity: 0, account: 0, project: 0, task: 0 };
-      if (p.entity_type === 'opportunity') row.opportunity = p.record_count;
-      if (p.entity_type === 'account') row.account = p.record_count;
-      if (p.entity_type === 'project') row.project = p.record_count;
-      if (p.entity_type === 'task') row.task = p.record_count;
-      map.set(time, row);
-    }
-    return [...map.values()].slice(-12);
-  }, [stats]);
+  const auditHourlyData = useMemo(
+    () =>
+      (stats?.audit_hourly ?? []).map((h) => ({
+        time: h.label,
+        count: h.count,
+      })),
+    [stats]
+  );
 
-  const lineConfig = {
-    opportunity: { label: 'Opportunities', color: CHART_COLORS[0] },
-    account: { label: 'Accounts', color: CHART_COLORS[1] },
-    project: { label: 'Projects', color: CHART_COLORS[2] },
-    task: { label: 'Tasks', color: CHART_COLORS[3] },
-  } satisfies ChartConfig;
-
-  const sf = stats?.integrations.find((i) => i.provider === 'salesforce');
-  const zoho = stats?.integrations.find((i) => i.provider === 'zoho_projects');
-  const audit = stats?.audit_24h;
+  const connectedIntegrations = useMemo(
+    () => (stats?.integrations ?? []).filter((i) => i.status === 'connected').length,
+    [stats]
+  );
 
   return (
     <>
-      <div className="mb-8 flex flex-wrap justify-between gap-4 items-center">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Tổng quan</h1>
-          <p className="text-muted-foreground">
-            Gateway + tích hợp Salesforce / Zoho — dữ liệu thật từ snapshot & audit.
-          </p>
-        </div>
-        <Button variant="outline" className="border-border" onClick={() => void load()} disabled={loading}>
-          <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-          Làm mới
-        </Button>
-      </div>
+      <TechPageHeader
+        codeLine="// dashboard · live metrics"
+        title="Tổng quan"
+        description="Vận hành gateway: route, API key, audit admin, hàng đợi proxy (DLQ)."
+        actions={
+          <Button variant="outline" className="border-border font-mono-tech text-xs" onClick={() => void load()} disabled={loading}>
+            <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+            refresh
+          </Button>
+        }
+      />
 
       {loadError ? (
         <Card className="mb-6 p-4 border-amber-500/30 bg-amber-500/10 text-amber-200 text-sm">{loadError}</Card>
       ) : null}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        <StatsCard
-          icon={<Database className="text-primary" />}
-          iconBg="bg-primary/10"
-          title="Bản ghi snapshot"
-          value={loading ? '…' : String(stats?.total_snapshot_records ?? 0)}
-          badge={{ text: 'CRM + PM', variant: 'info' }}
-        />
-        <StatsCard
-          icon={<Plug className="text-blue-500" />}
-          iconBg="bg-blue-500/10"
-          title="Salesforce"
-          value={loading ? '…' : sf?.status ?? '—'}
-          badge={{
-            text: sf?.status === 'connected' ? 'OAuth OK' : 'Chưa connect',
-            variant: sf?.status === 'connected' ? 'success' : 'warning',
-          }}
-        />
-        <StatsCard
-          icon={<Plug className="text-orange-500" />}
-          iconBg="bg-orange-500/10"
-          title="Zoho Projects"
-          value={loading ? '…' : zoho?.status ?? '—'}
-          badge={{
-            text: zoho?.status === 'connected' ? 'OAuth OK' : 'Chưa connect',
-            variant: zoho?.status === 'connected' ? 'success' : 'warning',
-          }}
-        />
-        <StatsCard
-          icon={<ShieldCheck className="text-emerald-500" />}
-          iconBg="bg-emerald-500/10"
-          title="Audit 24h"
-          value={loading ? '…' : String(audit?.total ?? 0)}
-          badge={{
-            text: audit ? `${audit.success} ok / ${audit.failure} lỗi` : '—',
-            variant: audit && audit.failure > 0 ? 'warning' : 'success',
-          }}
-        />
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
         <StatsCard
           icon={<Route className="text-purple-500" />}
           iconBg="bg-purple-500/10"
@@ -222,40 +197,129 @@ function OverviewAdmin() {
           badge={{ text: 'HMAC', variant: 'info' }}
         />
         <StatsCard
-          icon={<Activity className="text-cyan-500" />}
-          iconBg="bg-cyan-500/10"
-          title="Lần sync gần nhất"
-          value={
-            loading
-              ? '…'
-              : stats?.snapshot_entities[0]?.fetched_at?.slice(0, 16).replace('T', ' ') ?? 'Chưa sync'
-          }
-          badge={{ text: 'Integrations', variant: 'info' }}
+          icon={<ShieldCheck className="text-emerald-500" />}
+          iconBg="bg-emerald-500/10"
+          title="Audit 24h"
+          value={loading ? '…' : String(audit?.total ?? 0)}
+          badge={{
+            text: audit ? `${audit.success} ok / ${audit.failure} lỗi` : '—',
+            variant: audit && audit.failure > 0 ? 'warning' : 'success',
+          }}
+        />
+        <StatsCard
+          icon={<ListOrdered className="text-amber-500" />}
+          iconBg="bg-amber-500/10"
+          title="Proxy queue (DLQ)"
+          value={loading ? '…' : String(proxyQueueLen)}
+          badge={{
+            text: proxyQueueLen > 0 ? 'Cần xử lý' : 'Trống',
+            variant: proxyQueueLen > 0 ? 'warning' : 'success',
+          }}
         />
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 mb-8">
-        <Card className="p-6 bg-card/80 border-border">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">
-            Snapshot theo entity (lần sync mới nhất)
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 lg:gap-8 mb-8">
+        <Card className="p-4 sm:p-6 bg-card/80 border-border">
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
+            Audit 24h — kết quả
           </h3>
-          {entityBarData.length === 0 ? (
+          <p className="text-xs text-muted-foreground mb-4">
+            Hành động admin trên gateway (đăng nhập, route, key…).
+          </p>
+          {auditPieData.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              Chưa có dữ liệu. Vào{' '}
-              <Link to="/integrations" className="text-primary underline">
-                Tích hợp
+              Chưa có audit 24h. Thao tác trên{' '}
+              <Link to="/audit" className="text-primary underline">
+                Nhật ký
               </Link>{' '}
-              → <strong>Đồng bộ snapshot</strong>.
+              sẽ hiện ở đây.
             </p>
           ) : (
-            <ChartContainer config={entityBarConfig} className="h-[280px] w-full aspect-auto">
-              <BarChart data={entityBarData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+            <ChartContainer config={auditPieConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
+              <PieChart>
+                <ChartTooltip content={<ChartTooltipContent nameKey="name" />} />
+                <Pie
+                  data={auditPieData}
+                  dataKey="count"
+                  nameKey="name"
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={55}
+                  outerRadius={90}
+                  paddingAngle={3}
+                  stroke="#0f172a"
+                  strokeWidth={2}
+                >
+                  {auditPieData.map((_, i) => (
+                    <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                  ))}
+                </Pie>
+              </PieChart>
+            </ChartContainer>
+          )}
+        </Card>
+
+        <Card className="p-4 sm:p-6 bg-card/80 border-border">
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
+            Audit — hành động nhiều nhất
+          </h3>
+          <p className="text-xs text-muted-foreground mb-4">Top 8 action trong 24 giờ qua.</p>
+          {auditActionsData.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Chưa có dữ liệu.</p>
+          ) : (
+            <ChartContainer config={countBarConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
+              <BarChart data={auditActionsData} margin={{ top: 8, right: 8, left: 0, bottom: 32 }}>
                 <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
                 <XAxis
-                  dataKey="name"
+                  dataKey="label"
+                  tickLine={false}
+                  axisLine={false}
+                  fontSize={10}
+                  interval={0}
+                  angle={-25}
+                  textAnchor="end"
+                  height={56}
+                  tick={{ fill: AXIS_TICK }}
+                />
+                <YAxis
                   tickLine={false}
                   axisLine={false}
                   fontSize={11}
+                  allowDecimals={false}
+                  tick={{ fill: AXIS_TICK }}
+                />
+                <ChartTooltip content={<ChartTooltipContent />} />
+                <Bar dataKey="count" radius={[6, 6, 0, 0]} fill={CHART_COLORS[0]} />
+              </BarChart>
+            </ChartContainer>
+          )}
+        </Card>
+
+        <Card className="p-4 sm:p-6 bg-card/80 border-border">
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
+            Cấu hình routes
+          </h3>
+          <p className="text-xs text-muted-foreground mb-4">
+            Retry / queue-on-failure — tính năng gateway thực tế.
+          </p>
+          {routes.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Chưa có route.{' '}
+              <Link to="/routes" className="text-primary underline">
+                Thêm route
+              </Link>
+              .
+            </p>
+          ) : (
+            <ChartContainer config={countBarConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
+              <BarChart data={routeConfigData} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
+                <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
+                <XAxis
+                  dataKey="label"
+                  tickLine={false}
+                  axisLine={false}
+                  fontSize={10}
+                  interval={0}
                   tick={{ fill: AXIS_TICK }}
                 />
                 <YAxis
@@ -267,11 +331,8 @@ function OverviewAdmin() {
                 />
                 <ChartTooltip content={<ChartTooltipContent />} />
                 <Bar dataKey="count" radius={[6, 6, 0, 0]}>
-                  {entityBarData.map((entry, i) => (
-                    <Cell
-                      key={entry.name}
-                      fill={CHART_COLORS[i % CHART_COLORS.length]}
-                    />
+                  {routeConfigData.map((_, i) => (
+                    <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
                   ))}
                 </Bar>
               </BarChart>
@@ -279,98 +340,44 @@ function OverviewAdmin() {
           )}
         </Card>
 
-        <Card className="p-6 bg-card/80 border-border">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">
-            {stats?.salesforce_stages?.length
-              ? 'Salesforce — Opportunity theo Stage'
-              : 'Phân bổ bản ghi snapshot'}
+        <Card className="p-4 sm:p-6 bg-card/80 border-border">
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
+            Audit theo giờ (24h)
           </h3>
-          {stagePieData.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Chưa có dữ liệu biểu đồ.</p>
+          <p className="text-xs text-muted-foreground mb-4">Mật độ sự kiện admin theo giờ trong ngày.</p>
+          {auditHourlyData.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Chưa có audit trong 24h.</p>
           ) : (
-            <ChartContainer config={stagePieConfig} className="h-[280px] w-full aspect-auto">
-              <PieChart>
-                <ChartTooltip content={<ChartTooltipContent nameKey="name" />} />
-                <Pie
-                  data={stagePieData}
+            <ChartContainer config={auditHourlyConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
+              <LineChart data={auditHourlyData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
+                <XAxis
+                  dataKey="time"
+                  tickLine={false}
+                  axisLine={false}
+                  fontSize={10}
+                  tick={{ fill: AXIS_TICK }}
+                />
+                <YAxis
+                  tickLine={false}
+                  axisLine={false}
+                  fontSize={11}
+                  allowDecimals={false}
+                  tick={{ fill: AXIS_TICK }}
+                />
+                <ChartTooltip content={<ChartTooltipContent />} />
+                <Line
+                  type="monotone"
                   dataKey="count"
-                  nameKey="name"
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={55}
-                  outerRadius={90}
-                  paddingAngle={3}
-                  stroke="#0f172a"
+                  stroke={CHART_COLORS[0]}
                   strokeWidth={2}
-                >
-                  {stagePieData.map((_, i) => (
-                    <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-                  ))}
-                </Pie>
-              </PieChart>
+                  dot={{ r: 3, fill: CHART_COLORS[0] }}
+                />
+              </LineChart>
             </ChartContainer>
           )}
         </Card>
       </div>
-
-      <Card className="p-6 bg-card/80 border-border mb-8">
-        <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">
-          Lịch sử đồng bộ (số bản ghi theo thời điểm)
-        </h3>
-        {timelineData.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Chưa có lịch sử sync — mỗi lần bấm Đồng bộ sẽ thêm điểm trên biểu đồ.</p>
-        ) : (
-          <ChartContainer config={lineConfig} className="h-[300px] w-full aspect-auto">
-            <LineChart data={timelineData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-              <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
-              <XAxis
-                dataKey="time"
-                tickLine={false}
-                axisLine={false}
-                fontSize={10}
-                interval="preserveStartEnd"
-                tick={{ fill: AXIS_TICK }}
-              />
-              <YAxis
-                tickLine={false}
-                axisLine={false}
-                fontSize={11}
-                allowDecimals={false}
-                tick={{ fill: AXIS_TICK }}
-              />
-              <ChartTooltip content={<ChartTooltipContent />} />
-              <Line
-                type="monotone"
-                dataKey="opportunity"
-                stroke={CHART_COLORS[0]}
-                strokeWidth={2}
-                dot={{ r: 3, fill: CHART_COLORS[0] }}
-              />
-              <Line
-                type="monotone"
-                dataKey="account"
-                stroke={CHART_COLORS[1]}
-                strokeWidth={2}
-                dot={{ r: 3, fill: CHART_COLORS[1] }}
-              />
-              <Line
-                type="monotone"
-                dataKey="project"
-                stroke={CHART_COLORS[2]}
-                strokeWidth={2}
-                dot={{ r: 3, fill: CHART_COLORS[2] }}
-              />
-              <Line
-                type="monotone"
-                dataKey="task"
-                stroke={CHART_COLORS[3]}
-                strokeWidth={2}
-                dot={{ r: 3, fill: CHART_COLORS[3] }}
-              />
-            </LineChart>
-          </ChartContainer>
-        )}
-      </Card>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
         <div className="xl:col-span-2">
@@ -403,7 +410,10 @@ function OverviewAdmin() {
         </div>
 
         <Card className="rounded-2xl p-6 bg-card/80 border-border">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">Connectors</h3>
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">Tích hợp CRM</h3>
+          <p className="text-xs text-muted-foreground mb-4">
+            {connectedIntegrations} / {stats?.integrations.length ?? 0} đã kết nối — chi tiết snapshot ở trang Tích hợp.
+          </p>
           <div className="space-y-4">
             {(stats?.integrations ?? []).map((row) => (
               <div key={row.provider} className="border border-border rounded-lg p-3">
@@ -414,7 +424,7 @@ function OverviewAdmin() {
                 {row.last_sync_at ? (
                   <p className="text-xs text-muted-foreground">Sync: {formatDbTimestamp(row.last_sync_at)}</p>
                 ) : (
-                  <p className="text-xs text-muted-foreground">Chưa sync snapshot</p>
+                  <p className="text-xs text-muted-foreground">Chưa sync</p>
                 )}
               </div>
             ))}
@@ -423,6 +433,13 @@ function OverviewAdmin() {
                 Quản lý tích hợp
               </Button>
             </Link>
+            {proxyQueueLen > 0 ? (
+              <Link to="/proxy-queue">
+                <Button variant="outline" className="w-full border-amber-500/40 text-amber-300" size="sm">
+                  Xem proxy queue ({proxyQueueLen})
+                </Button>
+              </Link>
+            ) : null}
           </div>
         </Card>
       </div>

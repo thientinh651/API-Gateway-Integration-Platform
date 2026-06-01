@@ -46,7 +46,7 @@ export function Header() {
   };
 
   return (
-    <header className="min-h-14 border-b border-border flex items-center justify-between gap-3 px-4 sm:px-6 lg:px-8 py-2 sticky top-0 bg-background/90 backdrop-blur-md z-20 pt-[max(0.5rem,env(safe-area-inset-top))]">
+    <header className="min-h-14 border-b border-border/80 flex items-center justify-between gap-3 px-4 sm:px-6 lg:px-8 py-2 sticky top-0 bg-background/85 backdrop-blur-xl z-20 pt-[max(0.5rem,env(safe-area-inset-top))] shadow-[0_1px_0_rgba(249,115,22,0.08)]">
       <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
         <MobileNav />
         {user ? (

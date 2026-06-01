@@ -22,7 +22,7 @@ export function MobileNav() {
       </SheetTrigger>
       <SheetContent
         side="left"
-        className="w-[min(100vw-2rem,18rem)] p-0 bg-slate-950 border-border gap-0 [&>button]:text-slate-300"
+        className="w-[min(100vw-2rem,18rem)] p-0 bg-slate-950 border-border gap-0 [&>button]:text-slate-300 tech-grid-bg"
       >
         <SheetTitle className="sr-only">Menu điều hướng</SheetTitle>
         <SidebarNav onNavigate={() => setOpen(false)} className="pt-2" />
