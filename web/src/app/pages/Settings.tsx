@@ -148,9 +148,6 @@ export function Settings() {
     <>
       <div className="mb-8">
         <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Cài đặt hệ thống</h1>
-        <p className="text-muted-foreground">
-          Lưu DB thật. Áp dụng ngay cho global rate limit, <code>/health</code>, <code>/metrics</code>.
-        </p>
         {!allowEdit && (
           <p className="text-sm text-amber-300 mt-2">
             Operator/viewer: chỉ xem — chỉnh settings cần role admin.
@@ -351,7 +348,7 @@ export function Settings() {
               <h3 className="text-lg font-bold text-white">Giới hạn hệ thống</h3>
             </div>
             <ul className="text-sm text-muted-foreground space-y-2 list-disc pl-5">
-              <li>Session admin, HMAC replay cache, Proxy Queue (DLQ): <strong className="text-slate-300">in-memory</strong> — mất khi restart gateway.</li>
+              <li>Session admin, HMAC replay cache, Proxy Queue: <strong className="text-slate-300">in-memory</strong> — mất khi restart gateway.</li>
               <li>Route, user, key, audit, transaction log: SQLite — giữ qua restart.</li>
               <li>Multi-tenant: schema có <code className="text-slate-300">tenant_id</code>; demo mặc định tenant 1.</li>
             </ul>
@@ -380,10 +377,11 @@ export function Settings() {
 
         <div>
           <Card className="rounded-2xl bg-card/80 backdrop-blur-sm border-border p-6">
-            <h3 className="text-lg font-bold text-white mb-4">Admin API Key</h3>
+            <h3 className="text-lg font-bold text-white mb-4">Admin API Key (automation)</h3>
             <p className="text-xs text-muted-foreground mb-4">
-              Lưu ở <code className="text-slate-300">localStorage</code>. Client admin sẽ tự gửi header{' '}
-              <code className="text-slate-300">x-api-key</code> nếu có.
+              Dashboard đăng nhập bằng <strong className="text-slate-300">cookie session</strong> (Redis) — không
+              gửi key này. Chỉ dùng cho <code className="text-slate-300">curl</code> / script: export key rồi{' '}
+              <code className="text-slate-300">-H x-api-key:…</code>
             </p>
             <div className="space-y-3">
               <div>

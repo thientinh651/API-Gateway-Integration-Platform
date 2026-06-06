@@ -1,17 +1,84 @@
-# Một instance — dev local. HA demo bảo vệ: docker compose -f docker-compose.ha.yml up
+# Dev local: PostgreSQL + Redis + gateway (tuned VPS 2GB)
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: avaso
+      POSTGRES_PASSWORD: avaso
+      POSTGRES_DB: avaso_gateway
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - effective_cache_size=256MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=40
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U avaso -d avaso_gateway"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    command:
+      - redis-server
+      - --maxmemory
+      - 128mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+
   gateway:
     build: .
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     env_file:
       - .env
     environment:
       BIND_HOST: "0.0.0.0"
-      DATABASE_URL: "sqlite:data/gateway.db"
-    volumes:
-      - gateway-data:/app/data
+      DATABASE_URL: "postgres://avaso:avaso@postgres:5432/avaso_gateway"
+      REDIS_URL: "redis://redis:6379"
+      PG_POOL_MAX: "5"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 384M
 
 volumes:
-  gateway-data:
+  postgres-data:

@@ -1,10 +1,19 @@
 import { useState } from 'react';
 import { Plus } from 'lucide-react';
 import { toast } from 'sonner';
-import { createClientKey } from '../../../lib/api';
-import { handleFormApiError, failClientValidation, clearOneFieldError, fieldInputErrorClass } from '../../../lib/formValidation';
+import {
+  createClientKey,
+  createClientKeyEncrypted,
+  fetchGatewayPublicKey,
+} from '../../../lib/api';
+import { buildEncryptedEnvelope } from '../../../lib/rsaEnvelope';
+import {
+  handleFormApiError,
+  failClientValidation,
+  clearOneFieldError,
+  fieldInputErrorClass,
+} from '../../../lib/formValidation';
 import { FieldError } from '../../components/forms/FieldError';
-import { setTestHmacKeys } from '../../../lib/proxyTryStorage';
 import { Link } from 'react-router';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -30,6 +39,8 @@ import {
   CLIENT_KEY_TYPE_HINT,
 } from './clientKeyIntegrationTypes';
 
+type CreateMode = 'direct' | 'rsa';
+
 type Props = {
   onKeysChanged: () => void;
 };
@@ -39,6 +50,7 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
   const canCreate = canWriteClientKeys(user);
 
   const [isOpen, setIsOpen] = useState(false);
+  const [mode, setMode] = useState<CreateMode>('direct');
   const [generatedApiKey, setGeneratedApiKey] = useState('');
   const [generatedSecret, setGeneratedSecret] = useState('');
   const [purpose, setPurpose] = useState('');
@@ -48,6 +60,7 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const reset = () => {
+    setMode('direct');
     setGeneratedApiKey('');
     setGeneratedSecret('');
     setPurpose('');
@@ -69,12 +82,25 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
     setPending(true);
     setFieldErrors({});
     try {
-      const res = await createClientKey(name.trim(), integrationType);
-      setGeneratedApiKey(res.api_key);
-      setGeneratedSecret(res.secret_key);
-      setPurpose(res.purpose ?? '');
+      if (mode === 'direct') {
+        const res = await createClientKey(name.trim(), integrationType);
+        setGeneratedApiKey(res.api_key);
+        setGeneratedSecret(res.secret_key);
+        setPurpose(res.purpose ?? '');
+        toast.success('Cặp API Key + Secret đã tạo — copy ngay, không xem lại Secret');
+      } else {
+        const { public_key_pem } = await fetchGatewayPublicKey();
+        const envelope = await buildEncryptedEnvelope(public_key_pem, {
+          name: name.trim(),
+          integration_type: integrationType,
+        });
+        const res = await createClientKeyEncrypted(envelope);
+        setGeneratedApiKey(res.api_key);
+        setGeneratedSecret(res.secret_key);
+        setPurpose(res.purpose ?? '');
+        toast.success('Đã tạo key — payload đã mã hóa RSA trước khi gửi server');
+      }
       onKeysChanged();
-      toast.success('Cặp API Key + Secret đã tạo — copy ngay, không xem lại Secret');
     } catch (e) {
       handleFormApiError(e, setFieldErrors);
     } finally {
@@ -104,11 +130,31 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
           <DialogTitle className="text-white">Tạo credential cho phần mềm</DialogTitle>
         </DialogHeader>
         <p className="text-xs text-muted-foreground -mt-2">
-          Cấp <strong className="text-foreground">avaso_pk_</strong> + <strong className="text-foreground">avaso_sk_</strong>{' '}
-          cho app gọi data-plane (HMAC). Khác đăng nhập dashboard; khác nút RSA bên cạnh.
+          Cùng kết quả: <strong className="text-foreground">avaso_pk_</strong> +{' '}
+          <strong className="text-foreground">avaso_sk_</strong> để gọi data-plane (HMAC). Khác cách
+          gửi yêu cầu tạo key lên server.
         </p>
+
         {!generatedApiKey ? (
           <div className="space-y-4 mt-2">
+            <div>
+              <Label className="text-foreground">Cách tạo</Label>
+              <Select value={mode} onValueChange={(v) => setMode(v as CreateMode)}>
+                <SelectTrigger className="bg-input border-border text-foreground mt-1">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="direct">Thường — gửi qua HTTPS (dashboard)</SelectItem>
+                  <SelectItem value="rsa">Mã hóa RSA — WSO2-style (public key gateway)</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground mt-1">
+                {mode === 'direct'
+                  ? 'Đủ cho hầu hết trường hợp: session cookie + TLS bảo vệ tên app khi tạo key.'
+                  : 'Browser mã hóa JSON bằng public key gateway (RSA-OAEP + AES-GCM) trước khi POST — demo tích hợp enterprise / WSO2.'}
+              </p>
+            </div>
+
             <div>
               <Label className="text-foreground">Tên (app / đối tác)</Label>
               <Input
@@ -144,7 +190,13 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
               className="w-full bg-primary hover:bg-primary/90"
               disabled={pending}
             >
-              {pending ? 'Đang tạo…' : 'Tạo trên gateway'}
+              {pending
+                ? mode === 'rsa'
+                  ? 'Đang mã hóa & tạo…'
+                  : 'Đang tạo…'
+                : mode === 'rsa'
+                  ? 'Mã hóa RSA & tạo key'
+                  : 'Tạo key'}
             </Button>
           </div>
         ) : (
@@ -152,7 +204,10 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
             <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-lg">
               <p className="text-amber-400 text-sm font-medium mb-2">Lưu ngay — chỉ hiện một lần</p>
               <p className="text-xs text-muted-foreground">
-                {purpose || 'API Key (pk) + Secret (sk) — HMAC qua HTTPS. Không phải public/private RSA.'}
+                {purpose ||
+                  (mode === 'rsa'
+                    ? 'Tạo qua envelope RSA — credential giống hệt chế độ thường.'
+                    : 'API Key (pk) + Secret (sk) — HMAC qua HTTPS.')}
               </p>
             </div>
             <div>
@@ -187,19 +242,9 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
                 </Button>
               </div>
             </div>
-            <Button
-              type="button"
-              className="w-full bg-primary/90 hover:bg-primary"
-              onClick={() => {
-                setTestHmacKeys(generatedApiKey, generatedSecret);
-                toast.success('Đã lưu cặp key cho trang Thử gọi Proxy.');
-              }}
-            >
-              Lưu cho Thử Proxy
-            </Button>
             <Button asChild variant="outline" className="w-full border-border">
               <Link to="/proxy-try" onClick={() => handleOpenChange(false)}>
-                Đi tới Thử gọi Proxy
+                Đi tới Thử gọi Proxy (dán key thủ công)
               </Link>
             </Button>
             <Button onClick={() => handleOpenChange(false)} className="w-full" variant="ghost">

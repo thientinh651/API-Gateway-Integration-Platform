@@ -30,7 +30,7 @@ import {
   updateAdminUser,
   type AdminUserRow,
 } from '../../lib/api';
-import { canManageUsers } from '../../lib/rbac';
+import { canManageUsers, roleLabel } from '../../lib/rbac';
 import { formatDbTimestamp } from '../../lib/formatDbTimestamp';
 import { toastApiError } from '../../lib/apiClientError';
 import {
@@ -41,7 +41,7 @@ import {
 } from '../../lib/formValidation';
 import { FieldError } from '../components/forms/FieldError';
 
-function displayRole(role: string): string {
+function uiRoleFromApi(role: string): 'Admin' | 'Operator' | 'Viewer' {
   const r = role.toLowerCase();
   if (r === 'admin') return 'Admin';
   if (r === 'operator') return 'Operator';
@@ -60,6 +60,7 @@ function UsersAdmin() {
   const [editingUser, setEditingUser] = useState<AdminUserRow | null>(null);
   const [formData, setFormData] = useState({
     username: '',
+    email: '',
     password: '',
     role: 'Viewer' as 'Admin' | 'Operator' | 'Viewer',
   });
@@ -105,6 +106,7 @@ function UsersAdmin() {
         username: formData.username.trim(),
         password: formData.password,
         role: apiRole(formData.role),
+        email: formData.email.trim() || undefined,
       });
       await load();
       setIsOpen(false);
@@ -124,12 +126,14 @@ function UsersAdmin() {
       return;
     }
     try {
-      await updateAdminUser(editingUser.id, {
+      const updated = await updateAdminUser(editingUser.id, {
         username: formData.username.trim(),
         role: apiRole(formData.role),
         is_active: editingUser.is_active,
         password: formData.password.trim() || undefined,
+        email: formData.email.trim(),
       });
+      setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
       await load();
       setIsOpen(false);
       setEditingUser(null);
@@ -155,8 +159,9 @@ function UsersAdmin() {
     setEditingUser(user);
     setFormData({
       username: user.username,
+      email: user.email ?? '',
       password: '',
-      role: displayRole(user.role) as 'Admin' | 'Operator' | 'Viewer',
+      role: uiRoleFromApi(user.role),
     });
     setIsOpen(true);
   };
@@ -167,6 +172,7 @@ function UsersAdmin() {
         username: user.username,
         role: user.role,
         is_active: !user.is_active,
+        email: user.email ?? '',
       });
       await load();
       toast.success(user.is_active ? 'Đã vô hiệu hóa' : 'Đã kích hoạt');
@@ -176,7 +182,7 @@ function UsersAdmin() {
   };
 
   const resetForm = () => {
-    setFormData({ username: '', password: '', role: 'Viewer' });
+    setFormData({ username: '', email: '', password: '', role: 'Viewer' });
     setFieldErrors({});
   };
 
@@ -189,7 +195,7 @@ function UsersAdmin() {
   };
 
   const getRoleIcon = (role: string) => {
-    switch (displayRole(role)) {
+    switch (uiRoleFromApi(role)) {
       case 'Admin':
         return <Shield className="w-4 h-4" />;
       case 'Operator':
@@ -200,7 +206,7 @@ function UsersAdmin() {
   };
 
   const getRoleBadgeClass = (role: string) => {
-    switch (displayRole(role)) {
+    switch (uiRoleFromApi(role)) {
       case 'Admin':
         return 'bg-red-500/10 text-red-400 border-red-500/20';
       case 'Operator':
@@ -215,8 +221,12 @@ function UsersAdmin() {
       <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Quản lý Users</h1>
-          <p className="text-muted-foreground">
-            Tài khoản đăng nhập dashboard (Argon2). Khác API key cấp cho phần mềm.
+          <p className="text-sm text-muted-foreground mb-4 max-w-2xl">
+            Admin tạo Admin / Operator / Viewer trong workspace. Viewer cũng có thể tự đăng ký tại{' '}
+            <a href="/register" className="text-primary hover:underline">
+              /register
+            </a>{' '}
+            khi server bật <code className="text-xs">ALLOW_VIEWER_REGISTRATION=1</code>.
           </p>
         </div>
         <Dialog open={isOpen} onOpenChange={handleDialogClose}>
@@ -247,6 +257,25 @@ function UsersAdmin() {
                   autoComplete="off"
                 />
                 <FieldError message={fieldErrors.username} />
+              </div>
+              <div>
+                <Label className="text-foreground">Email (OTP quên mật khẩu)</Label>
+                <Input
+                  type="email"
+                  placeholder="user@company.com"
+                  value={formData.email}
+                  onChange={(e) => {
+                    setFormData({ ...formData, email: e.target.value });
+                    clearOneFieldError(setFieldErrors, 'email');
+                  }}
+                  aria-invalid={Boolean(fieldErrors.email)}
+                  className={fieldInputErrorClass(Boolean(fieldErrors.email), 'bg-input border-border text-foreground')}
+                  autoComplete="off"
+                />
+                <FieldError message={fieldErrors.email} />
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Nên gán email khi tạo user — cần cho quên mật khẩu.
+                </p>
               </div>
               <div>
                 <Label className="text-foreground">
@@ -309,6 +338,7 @@ function UsersAdmin() {
             <thead className="bg-slate-900/50 text-[10px] uppercase text-muted-foreground font-bold">
               <tr>
                 <th className="px-6 py-4">Username</th>
+                <th className="px-6 py-4">Email</th>
                 <th className="px-6 py-4">Role</th>
                 <th className="px-6 py-4">Created</th>
                 <th className="px-6 py-4">Status</th>
@@ -319,12 +349,13 @@ function UsersAdmin() {
               {users.map((user) => (
                 <tr key={user.id} className="border-b border-border/50 hover:bg-primary/5">
                   <td className="px-6 py-4 text-slate-300 font-medium">{user.username}</td>
+                  <td className="px-6 py-4 text-slate-400 text-xs">{user.email ?? '—'}</td>
                   <td className="px-6 py-4">
                     <Badge
                       className={`${getRoleBadgeClass(user.role)} border flex items-center gap-1 w-fit`}
                     >
                       {getRoleIcon(user.role)}
-                      {displayRole(user.role)}
+                      {roleLabel(user.role)}
                     </Badge>
                   </td>
                   <td className="px-6 py-4 text-slate-400">{formatDbTimestamp(user.created_at)}</td>

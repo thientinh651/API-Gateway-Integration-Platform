@@ -1,5 +1,5 @@
-import { BrowserRouter, Route, Routes } from 'react-router';
-import { Toaster } from 'sonner';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
+import { AppToaster } from './components/AppToaster';
 import { AdminAuthProvider } from '../contexts/AdminAuthContext';
 import { MainLayout } from './components/layout/MainLayout';
 import { Overview } from './pages/Overview';
@@ -9,11 +9,13 @@ import { ApiDocs } from './pages/ApiDocs';
 import { Settings } from './pages/Settings';
 import { Users } from './pages/Users';
 import { Logs } from './pages/Logs';
-import { AuditLogs } from './pages/AuditLogs';
 import { Integrations } from './pages/Integrations';
 import { ProxyTry } from './pages/ProxyTry';
 import { ProxyQueuePage } from './pages/ProxyQueue';
 import { LoginPage } from './pages/login/LoginPage';
+import { ForgotPassword } from './pages/ForgotPassword';
+import { Register } from './pages/Register';
+import { Profile } from './pages/Profile';
 import { AdminOnly } from './components/auth/AdminOnly';
 import { NavAccessGuard } from './components/auth/NavAccessGuard';
 
@@ -21,7 +23,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <AdminAuthProvider>
-        <Toaster
+        <AppToaster
           dir="ltr"
           position="top-right"
           richColors
@@ -30,8 +32,18 @@ export default function App() {
         />
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<Register />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/" element={<MainLayout />}>
             <Route index element={<Overview />} />
+            <Route
+              path="profile"
+              element={
+                <NavAccessGuard path="/profile">
+                  <Profile />
+                </NavAccessGuard>
+              }
+            />
             <Route
               path="routes"
               element={
@@ -89,22 +101,13 @@ export default function App() {
               path="logs"
               element={
                 <NavAccessGuard path="/logs">
-                  <AdminOnly title="Logs" description="Đăng nhập để xem log hệ thống.">
+                  <AdminOnly title="Log vận hành" description="Đăng nhập để xem log traffic và audit quản trị.">
                     <Logs />
                   </AdminOnly>
                 </NavAccessGuard>
               }
             />
-            <Route
-              path="audit"
-              element={
-                <NavAccessGuard path="/audit">
-                  <AdminOnly title="Audit Logs" description="Đăng nhập để xem nhật ký audit.">
-                    <AuditLogs />
-                  </AdminOnly>
-                </NavAccessGuard>
-              }
-            />
+            <Route path="audit" element={<Navigate to="/logs?kind=admin" replace />} />
             <Route
               path="settings"
               element={

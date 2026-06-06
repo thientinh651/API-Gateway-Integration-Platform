@@ -24,11 +24,14 @@ import {
   type ChartConfig,
 } from '../components/ui/chart';
 import {
+  Activity,
+  AlertTriangle,
   Key,
   ListOrdered,
   RefreshCw,
   Route,
-  ShieldCheck,
+  ShieldX,
+  Timer,
 } from 'lucide-react';
 import {
   ApiClientError,
@@ -38,37 +41,49 @@ import {
   type DashboardStats,
 } from '../../lib/api';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
+import { canManageIntegrations } from '../../lib/rbac';
 import type { GatewayRouteRow } from '../../lib/gatewayRoutes';
 import { formatDbTimestamp } from '../../lib/formatDbTimestamp';
 import { OverviewGuest } from './OverviewGuest';
 import { TechPageHeader } from '../components/tech/TechPageHeader';
 
-const CHART_COLORS = ['#3b82f6', '#f97316', '#a855f7', '#10b981', '#fb923c'];
+const CHART_COLORS = ['#10b981', '#3b82f6', '#f97316', '#ef4444', '#a855f7', '#fb923c'];
 
 const AXIS_TICK = '#94a3b8';
 const GRID_STROKE = '#334155';
 
 const countBarConfig = {
-  count: { label: 'Số lượng', color: CHART_COLORS[0] },
+  count: { label: 'Số lượng', color: CHART_COLORS[1] },
 } satisfies ChartConfig;
 
-const auditPieConfig = {
-  count: { label: 'Sự kiện', color: CHART_COLORS[0] },
+const trafficPieConfig = {
+  count: { label: 'Kết nối', color: CHART_COLORS[0] },
 } satisfies ChartConfig;
 
-const auditHourlyConfig = {
-  count: { label: 'Sự kiện audit', color: CHART_COLORS[0] },
+const trafficHourlyConfig = {
+  count: { label: 'Kết nối', color: CHART_COLORS[1] },
 } satisfies ChartConfig;
 
-const ACTION_VI: Record<string, string> = {
-  admin_login: 'Đăng nhập admin',
-  admin_logout: 'Đăng xuất',
-  route_create: 'Tạo route',
-  route_update: 'Sửa route',
-  route_delete: 'Xóa route',
-  client_key_create: 'Tạo API key',
-  client_key_delete: 'Xóa API key',
-  proxy_queue_retry: 'Retry DLQ',
+const STATUS_VI: Record<string, string> = {
+  '2xx': '2xx Thành công',
+  '3xx': '3xx Chuyển hướng',
+  '4xx': '4xx Client',
+  '5xx': '5xx Server',
+  other: 'Khác',
+};
+
+const OUTCOME_VI: Record<string, string> = {
+  success: 'Thành công',
+  denied: 'Từ chối',
+  upstream_error: 'Lỗi upstream',
+  queued: 'Xếp hàng DLQ',
+};
+
+const INTEGRATION_STATUS_VI: Record<string, string> = {
+  connected: 'Đã kết nối',
+  pending: 'Chờ cấu hình',
+  error: 'Lỗi',
+  disconnected: 'Ngắt kết nối',
 };
 
 function integrationStatusBadge(status: string) {
@@ -84,8 +99,14 @@ function integrationStatusBadge(status: string) {
   }
 }
 
+function truncatePath(path: string, max = 28) {
+  if (path.length <= max) return path;
+  return `${path.slice(0, max - 1)}…`;
+}
+
 function OverviewAdmin() {
   const { user } = useAdminAuth();
+  const showIntegrations = canManageIntegrations(user);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [routes, setRoutes] = useState<GatewayRouteRow[]>([]);
   const [proxyQueueLen, setProxyQueueLen] = useState(0);
@@ -119,56 +140,78 @@ function OverviewAdmin() {
     void load();
   }, [load]);
 
-  const audit = stats?.audit_24h;
+  const traffic = stats?.traffic_24h;
 
-  const auditPieData = useMemo(() => {
-    if (!audit?.total) return [];
-    const rows = [
-      { name: 'Thành công', count: audit.success },
-      { name: 'Lỗi', count: audit.failure },
-    ];
-    return rows.filter((r) => r.count > 0);
-  }, [audit]);
-
-  const auditActionsData = useMemo(
+  const httpStatusPieData = useMemo(
     () =>
-      (stats?.audit_top_actions ?? []).map((a) => ({
-        label: ACTION_VI[a.label] ?? a.label,
-        count: a.count,
-      })),
+      (stats?.traffic_status_buckets ?? [])
+        .filter((b) => b.count > 0)
+        .map((b) => ({
+          name: STATUS_VI[b.label] ?? b.label,
+          count: b.count,
+        })),
     [stats]
   );
 
-  const routeConfigData = useMemo(() => {
-    const queue = routes.filter((r) => (r.queue_on_failure ?? 0) !== 0).length;
-    const retry = routes.filter((r) => (r.retry_max ?? 0) > 0).length;
-    return [
-      { label: 'Tổng route', count: routes.length },
-      { label: 'Queue khi lỗi', count: queue },
-      { label: 'Bật retry', count: retry },
+  const outcomePieData = useMemo(() => {
+    if (!traffic?.total) return [];
+    const rows = [
+      { key: 'success', count: traffic.success },
+      { key: 'denied', count: traffic.denied },
+      { key: 'upstream_error', count: traffic.upstream_error },
+      { key: 'queued', count: traffic.queued },
     ];
-  }, [routes]);
+    return rows
+      .filter((r) => r.count > 0)
+      .map((r) => ({ name: OUTCOME_VI[r.key] ?? r.key, count: r.count }));
+  }, [traffic]);
 
-  const auditHourlyData = useMemo(
+  const trafficHourlyData = useMemo(
     () =>
-      (stats?.audit_hourly ?? []).map((h) => ({
+      (stats?.traffic_hourly ?? []).map((h) => ({
         time: h.label,
         count: h.count,
       })),
     [stats]
   );
 
-  const connectedIntegrations = useMemo(
-    () => (stats?.integrations ?? []).filter((i) => i.status === 'connected').length,
+  const topPathsData = useMemo(
+    () =>
+      (stats?.traffic_top_paths ?? []).map((p) => ({
+        label: truncatePath(p.label),
+        fullPath: p.label,
+        count: p.count,
+      })),
     [stats]
   );
+
+  const methodData = useMemo(
+    () =>
+      (stats?.traffic_methods ?? []).map((m) => ({
+        label: m.label,
+        count: m.count,
+      })),
+    [stats]
+  );
+
+  const integrationPieData = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const row of stats?.integrations ?? []) {
+      const label = INTEGRATION_STATUS_VI[row.status] ?? row.status;
+      map.set(label, (map.get(label) ?? 0) + 1);
+    }
+    return [...map.entries()].map(([name, count]) => ({ name, count }));
+  }, [stats]);
+
+  const successRate =
+    traffic && traffic.total > 0 ? Math.round((traffic.success / traffic.total) * 100) : null;
 
   return (
     <>
       <TechPageHeader
-        codeLine="// dashboard · live metrics"
+        codeLine="// dashboard · traffic · 24h"
         title="Tổng quan"
-        description="Vận hành gateway: route, API key, audit admin, hàng đợi proxy (DLQ)."
+        description="Kết nối API qua gateway: số lượng, HTTP status, từ chối/lỗi upstream, tích hợp CRM."
         actions={
           <Button variant="outline" className="border-border font-mono-tech text-xs" onClick={() => void load()} disabled={loading}>
             <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
@@ -183,63 +226,109 @@ function OverviewAdmin() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         <StatsCard
-          icon={<Route className="text-purple-500" />}
-          iconBg="bg-purple-500/10"
-          title="Routes"
-          value={loading ? '…' : String(stats?.routes_count ?? routes.length)}
-          badge={{ text: 'Data plane', variant: 'info' }}
+          icon={<Activity className="text-blue-500" />}
+          iconBg="bg-blue-500/10"
+          title="Kết nối API 24h"
+          value={loading ? '…' : String(traffic?.total ?? 0)}
+          badge={{
+            text: successRate != null ? `${successRate}% thành công` : '—',
+            variant: successRate != null && successRate >= 90 ? 'success' : 'info',
+          }}
         />
         <StatsCard
-          icon={<Key className="text-violet-500" />}
-          iconBg="bg-violet-500/10"
-          title="Client API keys"
-          value={loading ? '…' : String(stats?.client_keys_count ?? 0)}
-          badge={{ text: 'HMAC', variant: 'info' }}
-        />
-        <StatsCard
-          icon={<ShieldCheck className="text-emerald-500" />}
+          icon={<Route className="text-emerald-500" />}
           iconBg="bg-emerald-500/10"
-          title="Audit 24h"
-          value={loading ? '…' : String(audit?.total ?? 0)}
+          title="Thành công"
+          value={loading ? '…' : String(traffic?.success ?? 0)}
+          badge={{ text: 'outcome: success', variant: 'success' }}
+        />
+        <StatsCard
+          icon={<ShieldX className="text-amber-500" />}
+          iconBg="bg-amber-500/10"
+          title="Từ chối / lỗi"
+          value={loading ? '…' : String((traffic?.denied ?? 0) + (traffic?.upstream_error ?? 0))}
           badge={{
-            text: audit ? `${audit.success} ok / ${audit.failure} lỗi` : '—',
-            variant: audit && audit.failure > 0 ? 'warning' : 'success',
+            text: traffic
+              ? `${traffic.denied} từ chối · ${traffic.upstream_error} upstream`
+              : '—',
+            variant: traffic && traffic.denied + traffic.upstream_error > 0 ? 'warning' : 'success',
           }}
         />
         <StatsCard
-          icon={<ListOrdered className="text-amber-500" />}
-          iconBg="bg-amber-500/10"
-          title="Proxy queue (DLQ)"
-          value={loading ? '…' : String(proxyQueueLen)}
+          icon={<ListOrdered className="text-red-500" />}
+          iconBg="bg-red-500/10"
+          title="DLQ / Queue"
+          value={loading ? '…' : String((traffic?.queued ?? 0) + proxyQueueLen)}
           badge={{
-            text: proxyQueueLen > 0 ? 'Cần xử lý' : 'Trống',
-            variant: proxyQueueLen > 0 ? 'warning' : 'success',
+            text:
+              proxyQueueLen > 0
+                ? `${proxyQueueLen} chờ retry`
+                : traffic?.queued
+                  ? `${traffic.queued} queued 24h`
+                  : 'Trống',
+            variant: proxyQueueLen > 0 || (traffic?.queued ?? 0) > 0 ? 'warning' : 'success',
           }}
         />
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <Card className="p-4 bg-card/80 border-border">
+          <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
+            <Timer className="w-3.5 h-3.5" />
+            Latency TB
+          </div>
+          <p className="text-2xl font-bold text-white">
+            {loading ? '…' : `${traffic?.avg_duration_ms ?? 0} ms`}
+          </p>
+        </Card>
+        <Card className="p-4 bg-card/80 border-border">
+          <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
+            <Route className="w-3.5 h-3.5" />
+            Routes
+          </div>
+          <p className="text-2xl font-bold text-white">{loading ? '…' : String(stats?.routes_count ?? routes.length)}</p>
+        </Card>
+        <Card className="p-4 bg-card/80 border-border">
+          <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
+            <Key className="w-3.5 h-3.5" />
+            API keys
+          </div>
+          <p className="text-2xl font-bold text-white">{loading ? '…' : String(stats?.client_keys_count ?? 0)}</p>
+        </Card>
+        <Card className="p-4 bg-card/80 border-border">
+          <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
+            <AlertTriangle className="w-3.5 h-3.5" />
+            Audit admin 24h
+          </div>
+          <p className="text-2xl font-bold text-white">{loading ? '…' : String(stats?.audit_24h.total ?? 0)}</p>
+          <Link to="/logs?kind=admin" className="text-xs text-primary underline mt-1 inline-block">
+            Xem audit
+          </Link>
+        </Card>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 lg:gap-8 mb-8">
         <Card className="p-4 sm:p-6 bg-card/80 border-border">
           <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
-            Audit 24h — kết quả
+            HTTP status (24h)
           </h3>
           <p className="text-xs text-muted-foreground mb-4">
-            Hành động admin trên gateway (đăng nhập, route, key…).
+            Phân bố mã phản hồi: 2xx OK, 4xx client (401/404…), 5xx upstream.
           </p>
-          {auditPieData.length === 0 ? (
+          {httpStatusPieData.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              Chưa có audit 24h. Thao tác trên{' '}
-              <Link to="/audit" className="text-primary underline">
-                Nhật ký
+              Chưa có kết nối. Thử{' '}
+              <Link to="/proxy-try" className="text-primary underline">
+                gọi proxy
               </Link>{' '}
-              sẽ hiện ở đây.
+              hoặc client thật qua gateway.
             </p>
           ) : (
-            <ChartContainer config={auditPieConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
+            <ChartContainer config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
               <PieChart>
                 <ChartTooltip content={<ChartTooltipContent nameKey="name" />} />
                 <Pie
-                  data={auditPieData}
+                  data={httpStatusPieData}
                   dataKey="count"
                   nameKey="name"
                   cx="50%"
@@ -250,7 +339,7 @@ function OverviewAdmin() {
                   stroke="#0f172a"
                   strokeWidth={2}
                 >
-                  {auditPieData.map((_, i) => (
+                  {httpStatusPieData.map((_, i) => (
                     <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
                   ))}
                 </Pie>
@@ -261,95 +350,48 @@ function OverviewAdmin() {
 
         <Card className="p-4 sm:p-6 bg-card/80 border-border">
           <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
-            Audit — hành động nhiều nhất
-          </h3>
-          <p className="text-xs text-muted-foreground mb-4">Top 8 action trong 24 giờ qua.</p>
-          {auditActionsData.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Chưa có dữ liệu.</p>
-          ) : (
-            <ChartContainer config={countBarConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
-              <BarChart data={auditActionsData} margin={{ top: 8, right: 8, left: 0, bottom: 32 }}>
-                <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
-                <XAxis
-                  dataKey="label"
-                  tickLine={false}
-                  axisLine={false}
-                  fontSize={10}
-                  interval={0}
-                  angle={-25}
-                  textAnchor="end"
-                  height={56}
-                  tick={{ fill: AXIS_TICK }}
-                />
-                <YAxis
-                  tickLine={false}
-                  axisLine={false}
-                  fontSize={11}
-                  allowDecimals={false}
-                  tick={{ fill: AXIS_TICK }}
-                />
-                <ChartTooltip content={<ChartTooltipContent />} />
-                <Bar dataKey="count" radius={[6, 6, 0, 0]} fill={CHART_COLORS[0]} />
-              </BarChart>
-            </ChartContainer>
-          )}
-        </Card>
-
-        <Card className="p-4 sm:p-6 bg-card/80 border-border">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
-            Cấu hình routes
+            Kết quả kết nối (24h)
           </h3>
           <p className="text-xs text-muted-foreground mb-4">
-            Retry / queue-on-failure — tính năng gateway thực tế.
+            Gateway xử lý: thành công, từ chối auth/rate-limit, lỗi upstream, xếp hàng DLQ.
           </p>
-          {routes.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Chưa có route.{' '}
-              <Link to="/routes" className="text-primary underline">
-                Thêm route
-              </Link>
-              .
-            </p>
+          {outcomePieData.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Chưa có dữ liệu.</p>
           ) : (
-            <ChartContainer config={countBarConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
-              <BarChart data={routeConfigData} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
-                <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
-                <XAxis
-                  dataKey="label"
-                  tickLine={false}
-                  axisLine={false}
-                  fontSize={10}
-                  interval={0}
-                  tick={{ fill: AXIS_TICK }}
-                />
-                <YAxis
-                  tickLine={false}
-                  axisLine={false}
-                  fontSize={11}
-                  allowDecimals={false}
-                  tick={{ fill: AXIS_TICK }}
-                />
-                <ChartTooltip content={<ChartTooltipContent />} />
-                <Bar dataKey="count" radius={[6, 6, 0, 0]}>
-                  {routeConfigData.map((_, i) => (
+            <ChartContainer config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
+              <PieChart>
+                <ChartTooltip content={<ChartTooltipContent nameKey="name" />} />
+                <Pie
+                  data={outcomePieData}
+                  dataKey="count"
+                  nameKey="name"
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={55}
+                  outerRadius={90}
+                  paddingAngle={3}
+                  stroke="#0f172a"
+                  strokeWidth={2}
+                >
+                  {outcomePieData.map((_, i) => (
                     <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
                   ))}
-                </Bar>
-              </BarChart>
+                </Pie>
+              </PieChart>
             </ChartContainer>
           )}
         </Card>
 
         <Card className="p-4 sm:p-6 bg-card/80 border-border">
           <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
-            Audit theo giờ (24h)
+            Kết nối theo giờ (24h)
           </h3>
-          <p className="text-xs text-muted-foreground mb-4">Mật độ sự kiện admin theo giờ trong ngày.</p>
-          {auditHourlyData.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Chưa có audit trong 24h.</p>
+          <p className="text-xs text-muted-foreground mb-4">Mật độ request API qua gateway.</p>
+          {trafficHourlyData.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Chưa có traffic trong 24h.</p>
           ) : (
-            <ChartContainer config={auditHourlyConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
-              <LineChart data={auditHourlyData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+            <ChartContainer config={trafficHourlyConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
+              <LineChart data={trafficHourlyData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                 <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
                 <XAxis
                   dataKey="time"
@@ -369,14 +411,134 @@ function OverviewAdmin() {
                 <Line
                   type="monotone"
                   dataKey="count"
-                  stroke={CHART_COLORS[0]}
+                  stroke={CHART_COLORS[1]}
                   strokeWidth={2}
-                  dot={{ r: 3, fill: CHART_COLORS[0] }}
+                  dot={{ r: 3, fill: CHART_COLORS[1] }}
                 />
               </LineChart>
             </ChartContainer>
           )}
         </Card>
+
+        <Card className="p-4 sm:p-6 bg-card/80 border-border">
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
+            Top path (24h)
+          </h3>
+          <p className="text-xs text-muted-foreground mb-4">Endpoint được gọi nhiều nhất.</p>
+          {topPathsData.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Chưa có path nào.</p>
+          ) : (
+            <ChartContainer config={countBarConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
+              <BarChart data={topPathsData} margin={{ top: 8, right: 8, left: 0, bottom: 32 }}>
+                <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
+                <XAxis
+                  dataKey="label"
+                  tickLine={false}
+                  axisLine={false}
+                  fontSize={10}
+                  interval={0}
+                  angle={-25}
+                  textAnchor="end"
+                  height={56}
+                  tick={{ fill: AXIS_TICK }}
+                />
+                <YAxis
+                  tickLine={false}
+                  axisLine={false}
+                  fontSize={11}
+                  allowDecimals={false}
+                  tick={{ fill: AXIS_TICK }}
+                />
+                <ChartTooltip
+                  content={
+                    <ChartTooltipContent
+                      labelFormatter={(_, payload) =>
+                        payload?.[0]?.payload?.fullPath ?? payload?.[0]?.payload?.label
+                      }
+                    />
+                  }
+                />
+                <Bar dataKey="count" radius={[6, 6, 0, 0]} fill={CHART_COLORS[1]} />
+              </BarChart>
+            </ChartContainer>
+          )}
+        </Card>
+
+        <Card className="p-4 sm:p-6 bg-card/80 border-border">
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
+            Method HTTP (24h)
+          </h3>
+          <p className="text-xs text-muted-foreground mb-4">GET, POST, PUT…</p>
+          {methodData.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Chưa có dữ liệu.</p>
+          ) : (
+            <ChartContainer config={countBarConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
+              <BarChart data={methodData} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
+                <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
+                <XAxis
+                  dataKey="label"
+                  tickLine={false}
+                  axisLine={false}
+                  fontSize={10}
+                  tick={{ fill: AXIS_TICK }}
+                />
+                <YAxis
+                  tickLine={false}
+                  axisLine={false}
+                  fontSize={11}
+                  allowDecimals={false}
+                  tick={{ fill: AXIS_TICK }}
+                />
+                <ChartTooltip content={<ChartTooltipContent />} />
+                <Bar dataKey="count" radius={[6, 6, 0, 0]}>
+                  {methodData.map((_, i) => (
+                    <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ChartContainer>
+          )}
+        </Card>
+
+        {showIntegrations ? (
+          <Card className="p-4 sm:p-6 bg-card/80 border-border">
+            <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
+              Tích hợp CRM — trạng thái
+            </h3>
+            <p className="text-xs text-muted-foreground mb-4">Salesforce / Zoho OAuth connection.</p>
+            {integrationPieData.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Chưa cấu hình.{' '}
+                <Link to="/integrations" className="text-primary underline">
+                  Tích hợp
+                </Link>
+                .
+              </p>
+            ) : (
+              <ChartContainer config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
+                <PieChart>
+                  <ChartTooltip content={<ChartTooltipContent nameKey="name" />} />
+                  <Pie
+                    data={integrationPieData}
+                    dataKey="count"
+                    nameKey="name"
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={55}
+                    outerRadius={90}
+                    paddingAngle={3}
+                    stroke="#0f172a"
+                    strokeWidth={2}
+                  >
+                    {integrationPieData.map((_, i) => (
+                      <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                    ))}
+                  </Pie>
+                </PieChart>
+              </ChartContainer>
+            )}
+          </Card>
+        ) : null}
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
@@ -384,9 +546,11 @@ function OverviewAdmin() {
           <Card className="rounded-2xl overflow-hidden bg-card/80 border-border">
             <div className="p-6 border-b border-border flex justify-between items-center">
               <h3 className="font-bold text-white text-sm uppercase tracking-wider">Routes</h3>
-              <Button size="sm" variant="outline" className="border-border" onClick={() => void load()}>
-                Reload
-              </Button>
+              <Link to="/logs">
+                <Button size="sm" variant="outline" className="border-border">
+                  Log traffic
+                </Button>
+              </Link>
             </div>
             <div className="overflow-x-auto max-h-64">
               <table className="w-full text-left text-sm">
@@ -409,39 +573,48 @@ function OverviewAdmin() {
           </Card>
         </div>
 
-        <Card className="rounded-2xl p-6 bg-card/80 border-border">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">Tích hợp CRM</h3>
-          <p className="text-xs text-muted-foreground mb-4">
-            {connectedIntegrations} / {stats?.integrations.length ?? 0} đã kết nối — chi tiết snapshot ở trang Tích hợp.
-          </p>
-          <div className="space-y-4">
-            {(stats?.integrations ?? []).map((row) => (
-              <div key={row.provider} className="border border-border rounded-lg p-3">
-                <div className="flex justify-between items-center mb-2">
-                  <span className="font-medium text-white text-sm">{row.label}</span>
-                  <Badge className={`${integrationStatusBadge(row.status)} border text-xs`}>{row.status}</Badge>
+        {showIntegrations ? (
+          <Card className="rounded-2xl p-6 bg-card/80 border-border">
+            <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">Tích hợp</h3>
+            <p className="text-xs text-muted-foreground mb-4">Chi tiết kết nối OAuth.</p>
+            <div className="space-y-4">
+              {(stats?.integrations ?? []).map((row) => (
+                <div key={row.provider} className="border border-border rounded-lg p-3">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="font-medium text-white text-sm">{row.label}</span>
+                    <Badge className={`${integrationStatusBadge(row.status)} border text-xs`}>{row.status}</Badge>
+                  </div>
+                  {row.last_sync_at ? (
+                    <p className="text-xs text-muted-foreground">Sync: {formatDbTimestamp(row.last_sync_at)}</p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">Chưa sync</p>
+                  )}
                 </div>
-                {row.last_sync_at ? (
-                  <p className="text-xs text-muted-foreground">Sync: {formatDbTimestamp(row.last_sync_at)}</p>
-                ) : (
-                  <p className="text-xs text-muted-foreground">Chưa sync</p>
-                )}
-              </div>
-            ))}
-            <Link to="/integrations">
-              <Button variant="outline" className="w-full border-border" size="sm">
-                Quản lý tích hợp
-              </Button>
-            </Link>
-            {proxyQueueLen > 0 ? (
-              <Link to="/proxy-queue">
-                <Button variant="outline" className="w-full border-amber-500/40 text-amber-300" size="sm">
-                  Xem proxy queue ({proxyQueueLen})
+              ))}
+              <Link to="/integrations">
+                <Button variant="outline" className="w-full border-border" size="sm">
+                  Quản lý tích hợp
                 </Button>
               </Link>
-            ) : null}
-          </div>
-        </Card>
+              {proxyQueueLen > 0 ? (
+                <Link to="/proxy-queue">
+                  <Button variant="outline" className="w-full border-amber-500/40 text-amber-300" size="sm">
+                    DLQ ({proxyQueueLen})
+                  </Button>
+                </Link>
+              ) : null}
+            </div>
+          </Card>
+        ) : proxyQueueLen > 0 ? (
+          <Card className="rounded-2xl p-6 bg-card/80 border-border">
+            <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">DLQ</h3>
+            <Link to="/proxy-queue">
+              <Button variant="outline" className="w-full border-amber-500/40 text-amber-300" size="sm">
+                Hàng đợi ({proxyQueueLen})
+              </Button>
+            </Link>
+          </Card>
+        ) : null}
       </div>
     </>
   );

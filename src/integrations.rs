@@ -5,7 +5,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
 };
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::time::{Duration, Instant};
 
 use crate::admin_auth::{write_audit, write_audit_failure, AdminCtx};
@@ -54,7 +54,7 @@ pub struct SalesforceProviderConfig {
     pub login_url: String,
 }
 
-async fn salesforce_provider_config(pool: &SqlitePool, tenant_id: i64) -> Option<SalesforceProviderConfig> {
+async fn salesforce_provider_config(pool: &PgPool, tenant_id: i64) -> Option<SalesforceProviderConfig> {
     if let Ok(Some(row)) = db::fetch_integration_provider_config(pool, tenant_id, SF_PROVIDER).await {
         if let Ok(json) = decrypt_integration_config(&row.config_encrypted) {
             if let Ok(cfg) = serde_json::from_str::<SalesforceProviderConfig>(&json) {
@@ -99,7 +99,7 @@ fn mask_secret_for_ui(secret: &str) -> String {
     format!("***{tail}")
 }
 
-async fn zoho_provider_config(pool: &SqlitePool, tenant_id: i64) -> Option<ZohoProviderConfig> {
+async fn zoho_provider_config(pool: &PgPool, tenant_id: i64) -> Option<ZohoProviderConfig> {
     if let Ok(Some(row)) = db::fetch_integration_provider_config(pool, tenant_id, ZOHO_PROVIDER).await {
         if let Ok(json) = decrypt_integration_config(&row.config_encrypted) {
             if let Ok(cfg) = serde_json::from_str::<ZohoProviderConfig>(&json) {
@@ -237,10 +237,10 @@ fn api_version() -> &'static str {
     "v59.0"
 }
 
-pub async fn ensure_integration_rows(pool: &SqlitePool, tenant_id: i64) -> Result<(), sqlx::Error> {
+pub async fn ensure_integration_rows(pool: &PgPool, tenant_id: i64) -> Result<(), sqlx::Error> {
     for provider in [SF_PROVIDER, ZOHO_PROVIDER] {
         sqlx::query(
-            "INSERT OR IGNORE INTO integrations (tenant_id, provider, status) VALUES (?, ?, 'disconnected')",
+            "INSERT INTO integrations (tenant_id, provider, status) VALUES ($1, $2, 'disconnected') ON CONFLICT (tenant_id, provider) DO NOTHING",
         )
         .bind(tenant_id)
         .bind(provider)
@@ -491,7 +491,7 @@ fn pkce_challenge(verifier: &str) -> String {
 }
 
 async fn store_oauth_pending(
-    pool: &SqlitePool,
+    pool: &PgPool,
     memory: &std::sync::Arc<dashmap::DashMap<String, OAuthPending>>,
     state: &str,
     pending: OAuthPending,
@@ -516,7 +516,7 @@ async fn store_oauth_pending(
 }
 
 async fn resolve_oauth_pending(
-    pool: &SqlitePool,
+    pool: &PgPool,
     memory: &std::sync::Arc<dashmap::DashMap<String, OAuthPending>>,
     state: &str,
     provider: &str,
@@ -570,7 +570,7 @@ async fn exchange_code(
     serde_json::from_str(&body).map_err(|e| format!("json: {e}"))
 }
 
-pub async fn load_sf_token(pool: &SqlitePool, tenant_id: i64) -> Result<SalesforceTokenConfig, String> {
+pub async fn load_sf_token(pool: &PgPool, tenant_id: i64) -> Result<SalesforceTokenConfig, String> {
     let row = db::fetch_integration(pool, tenant_id, SF_PROVIDER)
         .await
         .map_err(|e| format!("db: {e}"))?
@@ -611,7 +611,7 @@ async fn refresh_access_token(
 }
 
 pub async fn sf_get_with_refresh(
-    pool: &SqlitePool,
+    pool: &PgPool,
     tenant_id: i64,
     path: &str,
 ) -> Result<(serde_json::Value, SalesforceTokenConfig), String> {
@@ -720,7 +720,7 @@ pub fn parse_integration_proxy_path(
 }
 
 async fn ensure_integration_connected(
-    pool: &SqlitePool,
+    pool: &PgPool,
     tenant_id: i64,
     provider: &str,
 ) -> Result<(), String> {
@@ -735,7 +735,7 @@ async fn ensure_integration_connected(
 }
 
 pub async fn sf_request_raw_with_refresh(
-    pool: &SqlitePool,
+    pool: &PgPool,
     tenant_id: i64,
     method: &str,
     path: &str,
@@ -804,7 +804,7 @@ pub async fn sf_request_raw_with_refresh(
 }
 
 pub async fn zoho_request_raw_with_refresh(
-    pool: &SqlitePool,
+    pool: &PgPool,
     tenant_id: i64,
     method: &str,
     path: &str,
@@ -1049,7 +1049,7 @@ fn map_zoho_tasks(items: &[serde_json::Value], project_id: &str) -> Vec<serde_js
 }
 
 async fn save_snapshot(
-    pool: &SqlitePool,
+    pool: &PgPool,
     tenant_id: i64,
     provider: &str,
     entity_type: &str,
@@ -1066,7 +1066,7 @@ async fn save_snapshot(
     Ok(count)
 }
 
-pub async fn sync_salesforce_snapshots(pool: &SqlitePool, tenant_id: i64) -> Result<serde_json::Value, String> {
+pub async fn sync_salesforce_snapshots(pool: &PgPool, tenant_id: i64) -> Result<serde_json::Value, String> {
     ensure_integration_connected(pool, tenant_id, SF_PROVIDER).await?;
     let opp_q = urlencoding::encode(
         "SELECT Id,Name,StageName,Amount,CloseDate FROM Opportunity LIMIT 200",
@@ -1102,7 +1102,7 @@ pub async fn sync_salesforce_snapshots(pool: &SqlitePool, tenant_id: i64) -> Res
     }))
 }
 
-pub async fn sync_zoho_snapshots(pool: &SqlitePool, tenant_id: i64) -> Result<serde_json::Value, String> {
+pub async fn sync_zoho_snapshots(pool: &PgPool, tenant_id: i64) -> Result<serde_json::Value, String> {
     ensure_integration_connected(pool, tenant_id, ZOHO_PROVIDER).await?;
     let token = load_zoho_token(pool, tenant_id).await?;
     let portal_id = token
@@ -1500,7 +1500,7 @@ async fn exchange_zoho_code(
     })
 }
 
-pub async fn load_zoho_token(pool: &SqlitePool, tenant_id: i64) -> Result<ZohoTokenConfig, String> {
+pub async fn load_zoho_token(pool: &PgPool, tenant_id: i64) -> Result<ZohoTokenConfig, String> {
     let row = db::fetch_integration(pool, tenant_id, ZOHO_PROVIDER)
         .await
         .map_err(|e| format!("db: {e}"))?
@@ -1564,7 +1564,7 @@ async fn refresh_zoho_access_token(
 }
 
 pub async fn zoho_get_with_refresh(
-    pool: &SqlitePool,
+    pool: &PgPool,
     tenant_id: i64,
     path: &str,
 ) -> Result<(serde_json::Value, ZohoTokenConfig), String> {
@@ -1867,7 +1867,7 @@ pub struct ZohoProviderConfigWriteBody {
     pub scopes: String,
 }
 
-async fn existing_sf_provider_secret(pool: &SqlitePool, tenant_id: i64) -> Option<String> {
+async fn existing_sf_provider_secret(pool: &PgPool, tenant_id: i64) -> Option<String> {
     if let Ok(Some(row)) = db::fetch_integration_provider_config(pool, tenant_id, SF_PROVIDER).await {
         if let Ok(json) = decrypt_integration_config(&row.config_encrypted) {
             if let Ok(cfg) = serde_json::from_str::<SalesforceProviderConfig>(&json) {
@@ -1881,7 +1881,7 @@ async fn existing_sf_provider_secret(pool: &SqlitePool, tenant_id: i64) -> Optio
     sf_env().map(|e| e.client_secret).filter(|s| !s.trim().is_empty())
 }
 
-async fn existing_zoho_provider_secret(pool: &SqlitePool, tenant_id: i64) -> Option<String> {
+async fn existing_zoho_provider_secret(pool: &PgPool, tenant_id: i64) -> Option<String> {
     if let Ok(Some(row)) = db::fetch_integration_provider_config(pool, tenant_id, ZOHO_PROVIDER).await {
         if let Ok(json) = decrypt_integration_config(&row.config_encrypted) {
             if let Ok(cfg) = serde_json::from_str::<ZohoProviderConfig>(&json) {
@@ -2324,6 +2324,167 @@ pub async fn api_salesforce_disconnect(ctx: &AdminCtx) -> Response {
                 axum::Json(serde_json::json!({ "status": "disconnected", "provider": SF_PROVIDER })),
             )
                 .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeFieldMapping {
+    pub id: String,
+    pub source_entity: String,
+    pub source_field: String,
+    pub target_entity: String,
+    pub target_field: String,
+    pub enabled: bool,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntegrationBridgePublic {
+    pub enabled: bool,
+    pub direction: String,
+    pub mappings: Vec<BridgeFieldMapping>,
+    pub both_connected: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IntegrationBridgeWrite {
+    pub enabled: bool,
+    pub direction: String,
+    pub mappings: Vec<BridgeFieldMapping>,
+}
+
+pub fn default_bridge_mappings() -> Vec<BridgeFieldMapping> {
+    vec![
+        BridgeFieldMapping {
+            id: "opp_name".into(),
+            source_entity: "opportunity".into(),
+            source_field: "name".into(),
+            target_entity: "project".into(),
+            target_field: "name".into(),
+            enabled: true,
+            label: "Tên Opportunity (CRM) → tên Project (PM)".into(),
+        },
+        BridgeFieldMapping {
+            id: "stage_status".into(),
+            source_entity: "opportunity".into(),
+            source_field: "stage".into(),
+            target_entity: "project".into(),
+            target_field: "status".into(),
+            enabled: true,
+            label: "Giai đoạn bán (Stage) → trạng thái dự án".into(),
+        },
+        BridgeFieldMapping {
+            id: "close_due".into(),
+            source_entity: "opportunity".into(),
+            source_field: "close_date".into(),
+            target_entity: "task".into(),
+            target_field: "due_date".into(),
+            enabled: true,
+            label: "Ngày chốt deal → deadline task giao hàng".into(),
+        },
+        BridgeFieldMapping {
+            id: "account_owner".into(),
+            source_entity: "account".into(),
+            source_field: "name".into(),
+            target_entity: "project".into(),
+            target_field: "owner".into(),
+            enabled: false,
+            label: "Tên Account (khách) → owner/context dự án".into(),
+        },
+    ]
+}
+
+async fn integration_both_connected(pool: &PgPool, tenant_id: i64) -> bool {
+    let rows = db::list_integrations(pool, tenant_id).await.unwrap_or_default();
+    let sf = rows.iter().find(|r| r.provider == SF_PROVIDER);
+    let zoho = rows.iter().find(|r| r.provider == ZOHO_PROVIDER);
+    sf.map(|r| r.status.as_str()) == Some("connected")
+        && zoho.map(|r| r.status.as_str()) == Some("connected")
+}
+
+pub async fn api_get_integration_bridge(ctx: &AdminCtx) -> Response {
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "state not initialized",
+        );
+    };
+    let both = integration_both_connected(&st.pool, ctx.tenant_id).await;
+    let row = db::fetch_integration_bridge(&st.pool, ctx.tenant_id)
+        .await
+        .ok()
+        .flatten();
+    let (enabled, direction, mappings) = match row {
+        Some(r) => {
+            let mappings: Vec<BridgeFieldMapping> =
+                serde_json::from_str(&r.mappings_json).unwrap_or_else(|_| default_bridge_mappings());
+            (r.enabled != 0, r.direction, mappings)
+        }
+        None => (false, "salesforce_to_zoho".to_string(), default_bridge_mappings()),
+    };
+    (
+        StatusCode::OK,
+        axum::Json(IntegrationBridgePublic {
+            enabled,
+            direction,
+            mappings,
+            both_connected: both,
+        }),
+    )
+        .into_response()
+}
+
+pub async fn api_put_integration_bridge(ctx: &AdminCtx, body: IntegrationBridgeWrite) -> Response {
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "state not initialized",
+        );
+    };
+    let direction = if body.direction.is_empty() {
+        "salesforce_to_zoho".to_string()
+    } else {
+        body.direction.clone()
+    };
+    let mappings_json = match serde_json::to_string(&body.mappings) {
+        Ok(j) => j,
+        Err(e) => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                &format!("invalid mappings: {e}"),
+            );
+        }
+    };
+    match db::upsert_integration_bridge(
+        &st.pool,
+        ctx.tenant_id,
+        body.enabled,
+        &direction,
+        &mappings_json,
+    )
+    .await
+    {
+        Ok(_) => {
+            write_audit(
+                &st.pool,
+                ctx,
+                "integration.bridge.update",
+                "salesforce↔zoho",
+                "success",
+                None,
+                Some(&format!("enabled={} mappings={}", body.enabled, body.mappings.len())),
+            )
+            .await;
+            api_get_integration_bridge(ctx).await
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

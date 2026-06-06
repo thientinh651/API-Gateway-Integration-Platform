@@ -40,15 +40,11 @@ export function LoginPage() {
       </a>
 
       <TechPanel className="relative z-[1] w-full max-w-md p-6 sm:p-8">
-        <p className="tech-label font-mono-tech text-primary/90 mb-3">admin plane · session</p>
-        <h1 className="text-2xl font-bold text-white mb-1">Đăng nhập quản trị</h1>
-        <p className="text-sm text-muted-foreground mb-6">
-          Xác thực Argon2 · cookie session · RBAC sau login.
-        </p>
+        <h1 className="text-2xl font-bold text-white mb-1">Đăng nhập</h1>
         <LoginForm />
         <p className="mt-6 text-center text-xs text-muted-foreground font-mono-tech">
           <Link to="/" className="text-primary hover:underline">
-            ← / intro
+            ← Trang chủ
           </Link>
         </p>
       </TechPanel>

@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router';
+import { useState } from 'react';
+import { Link, useNavigate } from 'react-router';
 import { Layers } from 'lucide-react';
 import { MobileNav } from './MobileNav';
 import {
@@ -10,9 +10,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '../ui/alert-dialog';
+import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { adminLogout } from '../../../lib/api';
 import { useAdminAuth } from '../../../contexts/AdminAuthContext';
+import { roleBadgeClass, roleLabel } from '../../../lib/rbac';
 
 function initials(name: string) {
   const p = name.trim().split(/\s+/).filter(Boolean);
@@ -21,16 +23,10 @@ function initials(name: string) {
 }
 
 export function Header() {
-  const loc = useLocation();
   const navigate = useNavigate();
   const { user, clearUser } = useAdminAuth();
   const [logoutOpen, setLogoutOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
-
-  const hostLine = useMemo(() => {
-    if (!user) return '';
-    return typeof window !== 'undefined' ? window.location.host : '';
-  }, [user, loc.pathname]);
 
   const logout = async () => {
     setLoggingOut(true);
@@ -44,6 +40,8 @@ export function Header() {
     clearUser();
     navigate('/login');
   };
+
+  const role = roleLabel(user?.role);
 
   return (
     <header className="min-h-14 border-b border-border/80 flex items-center justify-between gap-3 px-4 sm:px-6 lg:px-8 py-2 sticky top-0 bg-background/85 backdrop-blur-xl z-20 pt-[max(0.5rem,env(safe-area-inset-top))] shadow-[0_1px_0_rgba(249,115,22,0.08)]">
@@ -70,25 +68,32 @@ export function Header() {
           </div>
         )}
       </div>
-      <div className="flex items-center gap-2 sm:gap-4 shrink-0">
+      <div className="flex items-center gap-2 sm:gap-3 shrink-0">
         {user ? (
           <>
-            <div className="text-right mr-0 sm:mr-2 hidden min-[400px]:block min-w-0">
-              <p className="text-xs font-bold text-white truncate max-w-[120px] sm:max-w-none">
+            <div className="flex items-center gap-2 min-w-0 max-w-[min(100%,14rem)] sm:max-w-none">
+              <Link
+                to="/profile"
+                className="text-xs font-bold text-white truncate leading-tight min-w-0 max-w-[5.5rem] sm:max-w-[10rem] hover:text-primary transition"
+                title="Tài khoản của tôi"
+              >
                 {user.username}
-              </p>
-              {hostLine ? (
-                <p className="text-[10px] text-muted-foreground truncate max-w-[120px] sm:max-w-none hidden sm:block">
-                  {hostLine}
-                </p>
-              ) : null}
+              </Link>
+              <Badge
+                variant="outline"
+                className={`shrink-0 text-[11px] font-bold uppercase tracking-wide px-2 py-0.5 border ${roleBadgeClass(user.role)}`}
+                title={`Vai trò: ${role}`}
+              >
+                {role}
+              </Badge>
             </div>
-            <div
-              className="w-8 h-8 rounded-full bg-gradient-to-tr from-primary to-amber-400 flex items-center justify-center text-white font-bold text-xs shrink-0"
-              title={user.username}
+            <Link
+              to="/profile"
+              className="w-8 h-8 rounded-full bg-gradient-to-tr from-primary to-amber-400 flex items-center justify-center text-white font-bold text-xs shrink-0 hover:ring-2 hover:ring-primary/50 transition"
+              title={`${user.username} · ${role} — Tài khoản`}
             >
               {initials(user.username)}
-            </div>
+            </Link>
             <button
               type="button"
               className="text-xs text-muted-foreground hover:text-primary transition px-2 py-2 min-h-[44px] touch-manipulation"

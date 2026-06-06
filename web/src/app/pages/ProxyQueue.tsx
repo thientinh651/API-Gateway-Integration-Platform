@@ -42,12 +42,7 @@ function ProxyQueueAdmin() {
     <>
       <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4">
         <div className="min-w-0">
-          <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Proxy Queue (DLQ)</h1>
-          <p className="text-muted-foreground max-w-2xl">
-            Request lỗi (timeout, không kết nối upstream, HTTP 5xx sau retry) khi DLQ bật trong Cài đặt.
-            In-memory — mất khi restart gateway. Demo: gọi{' '}
-            <code className="text-primary text-sm">/v1/api/status/503</code> qua Thử Proxy.
-          </p>
+          <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Proxy Queue</h1>
         </div>
         <Button variant="outline" className="border-border" onClick={() => void load()} disabled={loading}>
           <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
@@ -138,15 +133,11 @@ function ProxyQueueAdmin() {
                   <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground text-sm max-w-lg mx-auto">
                     <p className="mb-2">Chưa có bản ghi — DLQ chỉ nhận request <strong className="text-slate-300">đã gọi qua gateway</strong> và lỗi (timeout, 5xx sau retry…).</p>
                     <p className="text-xs leading-relaxed">
-                      Bật <strong className="text-slate-300">Dead-letter queue</strong> trong Cài đặt là đủ (không bắt buộc bật thêm trên Route).
-                      Demo: route <code className="text-primary">/v1/api</code> → httpbin, rồi{' '}
-                      <strong className="text-slate-300">GET</strong>{' '}
-                      <code className="text-primary">/v1/api/status/503</code> (Thử Proxy + API key) → Refresh.
-                      Queue in-memory — restart gateway hoặc Docker HA 2 instance thì mỗi process một queue riêng.
+                      Bật <strong className="text-slate-300">Dead-letter queue</strong> trong cài đặt.
                     </p>
                   </td>
                 </tr>
-              )}
+              )}  
             </tbody>
           </table>
         </div>

@@ -2,7 +2,7 @@
 
 use axum::{http::StatusCode, response::{IntoResponse, Response}, Json};
 use serde::Serialize;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::admin_auth::AdminCtx;
 use crate::db;
@@ -40,10 +40,27 @@ pub struct Audit24h {
 }
 
 #[derive(Debug, Serialize)]
+pub struct Traffic24h {
+    pub total: i64,
+    pub success: i64,
+    pub denied: i64,
+    pub upstream_error: i64,
+    pub queued: i64,
+    pub avg_duration_ms: f64,
+}
+
+#[derive(Debug, Serialize)]
 pub struct DashboardStats {
     pub routes_count: i64,
     pub client_keys_count: i64,
+    pub traffic_24h: Traffic24h,
+    pub traffic_status_buckets: Vec<LabelCount>,
+    pub traffic_hourly: Vec<LabelCount>,
+    pub traffic_top_paths: Vec<LabelCount>,
+    pub traffic_methods: Vec<LabelCount>,
     pub audit_24h: Audit24h,
+    pub audit_top_actions: Vec<LabelCount>,
+    pub audit_hourly: Vec<LabelCount>,
     pub integrations: Vec<db::IntegrationPublic>,
     pub snapshot_entities: Vec<SnapshotEntityStat>,
     pub snapshot_timeline: Vec<SnapshotTimelinePoint>,
@@ -83,77 +100,161 @@ fn parse_snapshot_array(payload: &str) -> Vec<serde_json::Value> {
     serde_json::from_str::<Vec<serde_json::Value>>(payload).unwrap_or_default()
 }
 
-pub async fn build_dashboard_stats(pool: &SqlitePool, tenant_id: i64) -> Result<DashboardStats, sqlx::Error> {
+pub async fn build_dashboard_stats(
+    pool: &PgPool,
+    tenant_id: i64,
+    include_integrations: bool,
+) -> Result<DashboardStats, sqlx::Error> {
     let routes = db::list_routes_for_tenant(pool, tenant_id).await?;
     let client_keys_count = db::count_client_keys_for_tenant(pool, tenant_id).await?;
     let audit_24h = db::audit_counts_24h(pool, tenant_id).await?;
-    let integration_rows = db::list_integrations(pool, tenant_id).await?;
-    let mut integrations = integrations::list_with_stubs(integration_rows);
-    let zoho_cfg = db::fetch_integration_provider_config(pool, tenant_id, "zoho_projects")
-        .await
-        .ok()
-        .flatten()
-        .is_some();
-    let sf_cfg = db::fetch_integration_provider_config(pool, tenant_id, "salesforce")
-        .await
-        .ok()
-        .flatten()
-        .is_some();
-    for r in &mut integrations {
-        if r.provider == "zoho_projects" {
-            r.available = r.available || zoho_cfg;
-        } else if r.provider == "salesforce" {
-            r.available = r.available || sf_cfg;
+    let traffic_counts = db::traffic_outcome_counts_24h(pool, tenant_id).await?;
+    let traffic_status_rows = db::traffic_status_buckets_24h(pool, tenant_id).await?;
+    let traffic_status_buckets: Vec<LabelCount> = traffic_status_rows
+        .into_iter()
+        .map(|(label, count)| LabelCount { label, count })
+        .collect();
+    let traffic_hourly_rows = db::traffic_hourly_24h(pool, tenant_id).await?;
+    let traffic_hourly: Vec<LabelCount> = traffic_hourly_rows
+        .into_iter()
+        .map(|(label, count)| LabelCount {
+            label: format!("{label}"),
+            count,
+        })
+        .collect();
+    let traffic_path_rows = db::traffic_top_paths_24h(pool, tenant_id, 8).await?;
+    let traffic_top_paths: Vec<LabelCount> = traffic_path_rows
+        .into_iter()
+        .map(|(label, count)| LabelCount { label, count })
+        .collect();
+    let traffic_method_rows = db::traffic_method_counts_24h(pool, tenant_id).await?;
+    let traffic_methods: Vec<LabelCount> = traffic_method_rows
+        .into_iter()
+        .map(|(label, count)| LabelCount { label, count })
+        .collect();
+    let audit_action_rows = db::audit_top_actions_24h(pool, tenant_id, 8).await?;
+    let audit_top_actions: Vec<LabelCount> = audit_action_rows
+        .into_iter()
+        .map(|(label, count)| LabelCount { label, count })
+        .collect();
+    let audit_hourly_rows = db::audit_hourly_24h(pool, tenant_id).await?;
+    let audit_hourly: Vec<LabelCount> = audit_hourly_rows
+        .into_iter()
+        .map(|(label, count)| LabelCount {
+            label: format!("{label}"),
+            count,
+        })
+        .collect();
+    let (
+        integrations,
+        snapshot_entities,
+        snapshot_timeline,
+        salesforce_stages,
+        zoho_project_status,
+        total_snapshot_records,
+    ) = if include_integrations {
+        let integration_rows = db::list_integrations(pool, tenant_id).await?;
+        let mut integrations = integrations::list_with_stubs(integration_rows);
+        let zoho_cfg = db::fetch_integration_provider_config(pool, tenant_id, "zoho_projects")
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+        let sf_cfg = db::fetch_integration_provider_config(pool, tenant_id, "salesforce")
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+        for r in &mut integrations {
+            if r.provider == "zoho_projects" {
+                r.available = r.available || zoho_cfg;
+            } else if r.provider == "salesforce" {
+                r.available = r.available || sf_cfg;
+            }
         }
-    }
 
-    let summaries = db::list_integration_snapshot_summaries(pool, tenant_id, None).await?;
-    let snapshot_entities: Vec<SnapshotEntityStat> = summaries
-        .iter()
-        .map(|s| SnapshotEntityStat {
-            provider: s.provider.clone(),
-            entity_type: s.entity_type.clone(),
-            label: entity_label(&s.provider, &s.entity_type),
-            record_count: s.record_count,
-            fetched_at: s.fetched_at.clone(),
-        })
-        .collect();
+        let summaries = db::list_integration_snapshot_summaries(pool, tenant_id, None).await?;
+        let snapshot_entities: Vec<SnapshotEntityStat> = summaries
+            .iter()
+            .map(|s| SnapshotEntityStat {
+                provider: s.provider.clone(),
+                entity_type: s.entity_type.clone(),
+                label: entity_label(&s.provider, &s.entity_type),
+                record_count: s.record_count,
+                fetched_at: s.fetched_at.clone(),
+            })
+            .collect();
 
-    let recent = db::list_integration_snapshots_recent(pool, tenant_id, 40).await?;
-    let snapshot_timeline: Vec<SnapshotTimelinePoint> = recent
-        .iter()
-        .rev()
-        .map(|r| SnapshotTimelinePoint {
-            fetched_at: r.fetched_at.clone(),
-            provider: r.provider.clone(),
-            entity_type: r.entity_type.clone(),
-            record_count: r.record_count,
-        })
-        .collect();
+        let recent = db::list_integration_snapshots_recent(pool, tenant_id, 40).await?;
+        let snapshot_timeline: Vec<SnapshotTimelinePoint> = recent
+            .iter()
+            .rev()
+            .map(|r| SnapshotTimelinePoint {
+                fetched_at: r.fetched_at.clone(),
+                provider: r.provider.clone(),
+                entity_type: r.entity_type.clone(),
+                record_count: r.record_count,
+            })
+            .collect();
 
-    let mut salesforce_stages = Vec::new();
-    let mut zoho_project_status = Vec::new();
-    if let Ok(Some(opp)) =
-        db::fetch_latest_integration_snapshot(pool, tenant_id, "salesforce", "opportunity").await
-    {
-        salesforce_stages = count_by_field(&parse_snapshot_array(&opp.payload_json), "stage");
-    }
-    if let Ok(Some(proj)) =
-        db::fetch_latest_integration_snapshot(pool, tenant_id, "zoho_projects", "project").await
-    {
-        zoho_project_status = count_by_field(&parse_snapshot_array(&proj.payload_json), "status");
-    }
+        let mut salesforce_stages = Vec::new();
+        let mut zoho_project_status = Vec::new();
+        if let Ok(Some(opp)) =
+            db::fetch_latest_integration_snapshot(pool, tenant_id, "salesforce", "opportunity")
+                .await
+        {
+            salesforce_stages =
+                count_by_field(&parse_snapshot_array(&opp.payload_json), "stage");
+        }
+        if let Ok(Some(proj)) =
+            db::fetch_latest_integration_snapshot(pool, tenant_id, "zoho_projects", "project").await
+        {
+            zoho_project_status =
+                count_by_field(&parse_snapshot_array(&proj.payload_json), "status");
+        }
 
-    let total_snapshot_records: i64 = snapshot_entities.iter().map(|e| e.record_count).sum();
+        let total_snapshot_records: i64 = snapshot_entities.iter().map(|e| e.record_count).sum();
+        (
+            integrations,
+            snapshot_entities,
+            snapshot_timeline,
+            salesforce_stages,
+            zoho_project_status,
+            total_snapshot_records,
+        )
+    } else {
+        (
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            0,
+        )
+    };
 
     Ok(DashboardStats {
         routes_count: routes.len() as i64,
         client_keys_count,
+        traffic_24h: Traffic24h {
+            total: traffic_counts.0,
+            success: traffic_counts.1,
+            denied: traffic_counts.2,
+            upstream_error: traffic_counts.3,
+            queued: traffic_counts.4,
+            avg_duration_ms: (traffic_counts.5 * 10.0).round() / 10.0,
+        },
+        traffic_status_buckets,
+        traffic_hourly,
+        traffic_top_paths,
+        traffic_methods,
         audit_24h: Audit24h {
             total: audit_24h.0,
             success: audit_24h.1,
             failure: audit_24h.2,
         },
+        audit_top_actions,
+        audit_hourly,
         integrations,
         snapshot_entities,
         snapshot_timeline,
@@ -171,7 +272,7 @@ pub async fn api_dashboard_stats(ctx: &AdminCtx) -> Response {
             "state not initialized",
         );
     };
-    match build_dashboard_stats(&st.pool, ctx.tenant_id).await {
+    match build_dashboard_stats(&st.pool, ctx.tenant_id, ctx.is_admin()).await {
         Ok(stats) => (StatusCode::OK, Json(stats)).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

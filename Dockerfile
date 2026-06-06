@@ -23,11 +23,12 @@ COPY --from=rust-build /app/target/release/avaso-gateway /app/avaso-gateway
 COPY --from=web-build /app/web/dist /app/web/dist
 COPY config.yaml /app/config.yaml
 COPY migrations /app/migrations
-ENV DATABASE_URL=sqlite:data/gateway.db?mode=rwc \
+ENV DATABASE_URL=postgres://avaso:avaso@postgres:5432/avaso_gateway \
+    REDIS_URL=redis://redis:6379 \
+    PG_POOL_MAX=5 \
     PORT=3000 \
     BIND_HOST=0.0.0.0 \
     COOKIE_SECURE=false \
     INSTANCE_NAME=gateway
 EXPOSE 3000
-VOLUME ["/app/data"]
 CMD ["/app/avaso-gateway"]

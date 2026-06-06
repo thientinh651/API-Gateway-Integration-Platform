@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { toast } from 'sonner';
 import { Play, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { Button } from '../components/ui/button';
@@ -24,11 +24,6 @@ import {
   tryDataPlaneRequest,
   type ProxyTryResult,
 } from '../../lib/proxyTry';
-import {
-  getTestApiKey,
-  getTestSecretKey,
-  setTestHmacKeys,
-} from '../../lib/proxyTryStorage';
 
 const METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as const;
 
@@ -56,7 +51,7 @@ function ResultPanel({
   if (!result || !mode) {
     return (
       <p className="text-sm text-muted-foreground">
-        Chưa có kết quả. Dùng một trong hai nút bên trên để gửi request.
+        Chưa có kết quả.
       </p>
     );
   }
@@ -91,11 +86,6 @@ export function ProxyTry() {
   const [result, setResult] = useState<ProxyTryResult | null>(null);
   const [lastMode, setLastMode] = useState<'no_key' | 'with_key' | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-
-  useEffect(() => {
-    setApiKey(getTestApiKey());
-    setSecretKey(getTestSecretKey());
-  }, []);
 
   const run = async (mode: 'no_key' | 'with_key') => {
     const nextErrors: Record<string, string> = {};
@@ -136,29 +126,10 @@ export function ProxyTry() {
     }
   };
 
-  const saveKeyForTab = () => {
-    if (!apiKey.trim()) {
-      failClientValidation(setFieldErrors, { api_key: 'Nhập API Key trước khi lưu' });
-      return;
-    }
-    setFieldErrors((prev) => {
-      if (!prev.api_key) return prev;
-      const next = { ...prev };
-      delete next.api_key;
-      return next;
-    });
-    setTestHmacKeys(apiKey.trim(), secretKey.trim() || null);
-    toast.success('Đã lưu cặp key trong tab (sessionStorage).');
-  };
-
   return (
     <>
       <div className="mb-8">
         <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Thử gọi Proxy (Data plane)</h1>
-        <p className="text-muted-foreground max-w-2xl">
-          Gửi request qua gateway giống client thật — không cần terminal. Prefix mặc định{' '}
-          <code className="text-primary text-sm">/v1/api</code>; cần route khớp trên Quản lý Route.
-        </p>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -237,25 +208,6 @@ export function ProxyTry() {
                 autoComplete="off"
               />
               <FieldError message={fieldErrors.secret_key} />
-              <div className="mt-2 flex gap-2">
-                <Button type="button" variant="outline" size="sm" className="border-border" onClick={saveKeyForTab}>
-                  Lưu key trong tab
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="text-muted-foreground"
-                  onClick={() => {
-                    setTestHmacKeys(null, null);
-                    setApiKey('');
-                    setSecretKey('');
-                    toast.message('Đã xóa key khỏi tab.');
-                  }}
-                >
-                  Xóa key đã lưu
-                </Button>
-              </div>
             </div>
             <div className="flex flex-col sm:flex-row gap-3 pt-2">
               <Button
@@ -287,7 +239,6 @@ export function ProxyTry() {
               <Play className="w-5 h-5 text-primary" />
               Kết quả
             </CardTitle>
-            <CardDescription>So sánh 401 (không key) và 200 (có key hợp lệ).</CardDescription>
           </CardHeader>
           <CardContent>
             <ResultPanel result={result} mode={lastMode} />

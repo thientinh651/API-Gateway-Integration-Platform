@@ -17,6 +17,7 @@ export function apiUrl(path: string): string {
 
 export type AdminMe = {
   username: string;
+  email?: string | null;
   role?: string;
   tenant_id?: number;
   user_id?: number;
@@ -24,6 +25,103 @@ export type AdminMe = {
 
 export async function adminMe(): Promise<AdminMe> {
   return fetchJson<AdminMe>('/api/me');
+}
+
+export type UpdateProfileBody = {
+  username?: string;
+  email?: string;
+  password?: string;
+  current_password?: string;
+};
+
+export type UpdateProfileResponse = AdminMe & {
+  status: string;
+  password_changed?: boolean;
+};
+
+export async function updateAdminProfile(body: UpdateProfileBody): Promise<UpdateProfileResponse> {
+  return fetchJson<UpdateProfileResponse>('/api/me', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+async function publicFetchJson<T>(input: string, init?: RequestInit): Promise<T> {
+  const r = await fetch(apiUrl(input), {
+    ...init,
+    credentials: 'omit',
+    headers: { 'Content-Type': 'application/json', ...init?.headers },
+  });
+  const t = await r.text().catch(() => '');
+  if (!r.ok) {
+    throw parseApiError(r.status, t);
+  }
+  if (!t) return undefined as T;
+  return JSON.parse(t) as T;
+}
+
+export type PasswordResetDelivery = 'email' | 'dev_log' | 'none';
+
+export async function requestPasswordReset(body: {
+  identifier: string;
+}): Promise<{
+  status: string;
+  message: string;
+  username?: string;
+  email_masked?: string;
+  delivery?: PasswordResetDelivery;
+}> {
+  return publicFetchJson('/api/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function verifyResetOtp(body: {
+  username: string;
+  otp: string;
+}): Promise<{ status: string; message: string; username: string; reset_token: string }> {
+  return publicFetchJson('/api/verify-reset-otp', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function resetPasswordWithToken(body: {
+  reset_token: string;
+  password: string;
+}): Promise<{ status: string; message: string }> {
+  return publicFetchJson('/api/reset-password', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function registerViewer(body: {
+  username: string;
+  email: string;
+  password: string;
+}): Promise<AdminMe> {
+  const j = await fetchJson<{
+    status: string;
+    username: string;
+    role?: string;
+    tenant_id?: number;
+    user_id?: number;
+    email?: string | null;
+  }>('/api/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return {
+    username: j.username,
+    email: j.email,
+    role: j.role,
+    tenant_id: j.tenant_id,
+    user_id: j.user_id,
+  };
 }
 
 export async function adminLogin(body: { username: string; password: string }): Promise<AdminMe> {
@@ -45,6 +143,11 @@ export async function adminLogout(): Promise<void> {
 }
 
 function adminHeaders(base?: HeadersInit): Headers {
+  return new Headers(base);
+}
+
+/** Chỉ dùng cho curl/automation — dashboard dùng cookie session (credentials: include). */
+export function adminHeadersWithApiKey(base?: HeadersInit): Headers {
   const headers = new Headers(base);
   const envKey = import.meta.env.VITE_ADMIN_X_API_KEY as string | undefined;
   const storedKey =
@@ -208,6 +311,7 @@ export type AdminUserRow = {
   tenant_id: number;
   is_active: boolean;
   created_at: string;
+  email?: string | null;
 };
 
 export function fetchAdminUsers(): Promise<AdminUserRow[]> {
@@ -218,6 +322,7 @@ export async function createAdminUser(body: {
   username: string;
   password: string;
   role: string;
+  email?: string;
 }): Promise<AdminUserRow> {
   return fetchJson<AdminUserRow>('/api/users', {
     method: 'POST',
@@ -233,6 +338,7 @@ export async function updateAdminUser(
     role: string;
     is_active: boolean;
     password?: string;
+    email?: string;
   }
 ): Promise<AdminUserRow> {
   return fetchJson<AdminUserRow>(`/api/users/${id}`, {
@@ -294,6 +400,7 @@ export type TransactionLogsQuery = {
   limit?: number;
   method?: string;
   status?: 'all' | '2xx' | '4xx' | '5xx';
+  outcome?: 'all' | 'success' | 'failure';
   search?: string;
 };
 
@@ -302,6 +409,7 @@ export function fetchTransactionLogs(q?: TransactionLogsQuery): Promise<Transact
   if (q?.limit) params.set('limit', String(q.limit));
   if (q?.method && q.method !== 'all') params.set('method', q.method);
   if (q?.status && q.status !== 'all') params.set('status', q.status);
+  if (q?.outcome && q.outcome !== 'all') params.set('outcome', q.outcome);
   if (q?.search?.trim()) params.set('search', q.search.trim());
   const qs = params.toString();
   return fetchJson<TransactionLogRow[]>(`/api/transaction-logs${qs ? `?${qs}` : ''}`);
@@ -392,6 +500,39 @@ export function fetchIntegrations(): Promise<IntegrationRow[]> {
   return fetchJson<IntegrationRow[]>('/api/integrations');
 }
 
+export type BridgeFieldMapping = {
+  id: string;
+  source_entity: string;
+  source_field: string;
+  target_entity: string;
+  target_field: string;
+  enabled: boolean;
+  label: string;
+};
+
+export type IntegrationBridgeConfig = {
+  enabled: boolean;
+  direction: string;
+  mappings: BridgeFieldMapping[];
+  both_connected: boolean;
+};
+
+export function fetchIntegrationBridge(): Promise<IntegrationBridgeConfig> {
+  return fetchJson<IntegrationBridgeConfig>('/api/integrations/bridge');
+}
+
+export function updateIntegrationBridge(body: {
+  enabled: boolean;
+  direction: string;
+  mappings: BridgeFieldMapping[];
+}): Promise<IntegrationBridgeConfig> {
+  return fetchJson<IntegrationBridgeConfig>('/api/integrations/bridge', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
 export function salesforceConnectUrl(): string {
   return apiUrl('/api/integrations/salesforce/connect');
 }
@@ -478,6 +619,18 @@ export function fetchIntegrationSnapshots(provider?: string): Promise<Integratio
 export type DashboardStats = {
   routes_count: number;
   client_keys_count: number;
+  traffic_24h: {
+    total: number;
+    success: number;
+    denied: number;
+    upstream_error: number;
+    queued: number;
+    avg_duration_ms: number;
+  };
+  traffic_status_buckets: Array<{ label: string; count: number }>;
+  traffic_hourly: Array<{ label: string; count: number }>;
+  traffic_top_paths: Array<{ label: string; count: number }>;
+  traffic_methods: Array<{ label: string; count: number }>;
   audit_24h: { total: number; success: number; failure: number };
   audit_top_actions: Array<{ label: string; count: number }>;
   audit_hourly: Array<{ label: string; count: number }>;

@@ -142,8 +142,13 @@ export function ApiDocs() {
 
   const adminEndpoints = [
     { method: 'POST', path: '/api/login', description: 'Đăng nhập admin', auth: 'Không', body: '{"username":"admin","password":"***"}' },
+    { method: 'POST', path: '/api/register', description: 'Đăng ký Viewer (ALLOW_VIEWER_REGISTRATION=1)', auth: 'Không', body: '{"username":"...","email":"...","password":"***"}' },
     { method: 'POST', path: '/api/logout', description: 'Đăng xuất', auth: 'Session cookie', body: null },
-    { method: 'GET', path: '/api/me', description: 'Thông tin user hiện tại', auth: 'Session / X-API-Key admin', body: null },
+    { method: 'GET', path: '/api/me', description: 'Thông tin user hiện tại', auth: 'Session', body: null },
+    { method: 'PUT', path: '/api/me', description: 'Cập nhật hồ sơ (username/email/mật khẩu)', auth: 'Mọi role (session)', body: '{"username":"?","email":"?","password":"?","current_password":"*"}' },
+    { method: 'POST', path: '/api/forgot-password', description: 'Gửi OTP quên mật khẩu', auth: 'Không', body: '{"identifier":"username hoặc email"}' },
+    { method: 'POST', path: '/api/verify-reset-otp', description: 'Xác minh OTP (bước 2)', auth: 'Không', body: '{"username":"...","otp":"123456"}' },
+    { method: 'POST', path: '/api/reset-password', description: 'Đặt mật khẩu mới (bước 3)', auth: 'Không', body: '{"reset_token":"...","password":"***"}' },
     { method: 'GET', path: '/api/routes', description: 'Danh sách routes', auth: 'Viewer+', body: null },
     { method: 'POST', path: '/api/routes', description: 'Tạo route', auth: 'Admin', body: '{"path":"/v1/api/foo","target":"https://...","timeout_secs":30}' },
     { method: 'PUT', path: '/api/routes/{id}', description: 'Cập nhật route', auth: 'Operator+', body: 'RouteWriteBody' },
@@ -164,7 +169,7 @@ export function ApiDocs() {
     { method: 'PUT', path: '/api/settings', description: 'Cập nhật settings', auth: 'Admin', body: 'GatewaySettingsWriteBody' },
     { method: 'GET', path: '/api/dashboard/stats', description: 'Thống kê Overview', auth: 'Viewer+ (session)', body: null },
     { method: 'GET', path: '/api/proxy', description: 'Demo upstream JSONPlaceholder (không phải gateway logic)', auth: 'Viewer+', body: null },
-    { method: 'GET', path: '/api/integrations', description: 'Trạng thái SF/Zoho', auth: 'Viewer+', body: null },
+    { method: 'GET', path: '/api/integrations', description: 'Trạng thái SF/Zoho', auth: 'Admin', body: null },
     { method: 'GET', path: '/api/integrations/salesforce/connect', description: 'Bắt đầu OAuth SF', auth: 'Admin', body: null },
     { method: 'POST', path: '/api/integrations/salesforce/sync', description: 'Sync snapshot SF', auth: 'Admin', body: null },
     { method: 'GET', path: '/api/integrations/zoho/connect', description: 'Bắt đầu OAuth Zoho', auth: 'Admin', body: null },
@@ -201,11 +206,7 @@ export function ApiDocs() {
         title="Tài liệu API"
         description={
           <>
-            Gateway có <strong className="text-blue-300 font-normal">hai nhóm API</strong> tách biệt:{' '}
-            <strong className="text-blue-300 font-normal">ứng dụng bên ngoài</strong> gọi proxy (khóa client + chữ ký
-            HMAC) và <strong className="text-primary font-normal">quản trị</strong> trên dashboard (
-            <code className="text-primary font-mono-tech text-sm">/api/*</code> — sau khi đăng nhập hoặc dùng khóa
-            admin). Chọn tab bên dưới để xem từng nhóm.
+           Document API
           </>
         }
       />

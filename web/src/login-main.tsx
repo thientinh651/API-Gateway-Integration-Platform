@@ -3,14 +3,14 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
 import { LoginPage } from './app/pages/login/LoginPage';
 import { AdminAuthProvider } from './contexts/AdminAuthContext';
-import { Toaster } from 'sonner';
+import { AppToaster } from './app/components/AppToaster';
 import './styles/index.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
       <AdminAuthProvider>
-      <Toaster
+      <AppToaster
         dir="ltr"
         position="top-right"
         richColors

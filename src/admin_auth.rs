@@ -1,10 +1,11 @@
-//! Admin session context, RBAC, and audit helpers.
+//! Admin session context, RBAC, tenant isolation, and audit helpers.
 
 use axum::http::{HeaderMap, Method, StatusCode};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::db::{self, AdminUserRow};
-use crate::{json_error, AdminSession};
+use crate::json_error;
+use crate::session::{self, SessionError, SessionStore};
 
 #[derive(Clone, Debug)]
 pub struct AdminCtx {
@@ -16,17 +17,6 @@ pub struct AdminCtx {
 }
 
 impl AdminCtx {
-    /// Dev/automation: `X-API-Key` matches gateway admin setting → full admin on tenant 1.
-    pub fn from_admin_api_key() -> Self {
-        Self {
-            user_id: 0,
-            username: "api-key".into(),
-            tenant_id: 1,
-            role: "admin".into(),
-            via_api_key: true,
-        }
-    }
-
     pub fn from_user(row: &AdminUserRow) -> Self {
         Self {
             user_id: row.id,
@@ -40,6 +30,25 @@ impl AdminCtx {
     pub fn is_admin(&self) -> bool {
         normalize_role(&self.role) == "admin"
     }
+
+    pub fn is_operator(&self) -> bool {
+        normalize_role(&self.role) == "operator"
+    }
+
+    pub fn is_viewer(&self) -> bool {
+        normalize_role(&self.role) == "viewer"
+    }
+
+    /// Chỉ khi `ALLOW_ADMIN_API_KEY=1` — automation/curl, không dùng UI.
+    pub fn from_automation_api_key() -> Self {
+        Self {
+            user_id: 0,
+            username: "api-key".into(),
+            tenant_id: 1,
+            role: "admin".into(),
+            via_api_key: true,
+        }
+    }
 }
 
 pub fn normalize_role(role: &str) -> String {
@@ -50,41 +59,100 @@ fn api_path(path: &str) -> &str {
     path.strip_prefix("/api").unwrap_or(path)
 }
 
-/// Operator/viewer restrictions on admin API (`req.uri().path()` may be `/routes` or `/api/routes`).
+fn is_get(method: &Method) -> bool {
+    *method == Method::GET || *method == Method::HEAD
+}
+
+fn is_write(method: &Method) -> bool {
+    matches!(
+        *method,
+        Method::POST | Method::PUT | Method::PATCH | Method::DELETE
+    )
+}
+
+/// Automation only — tắt mặc định; không bypass tenant/user thật.
+pub fn admin_api_key_enabled() -> bool {
+    std::env::var("ALLOW_ADMIN_API_KEY")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Đăng ký công khai — chỉ tạo role `viewer`, workspace riêng.
+pub fn viewer_registration_enabled() -> bool {
+    std::env::var("ALLOW_VIEWER_REGISTRATION")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Viewer: không client keys, logs, queue, users, settings, integrations, proxy mutate.
 pub fn rbac_allow(method: &Method, path: &str, role: &str) -> bool {
     let role = normalize_role(role);
     let p = api_path(path);
+    let get = is_get(method);
+    let write = is_write(method);
+
     if role == "admin" {
         return true;
     }
+
     if role == "viewer" {
-        return *method == Method::GET;
-    }
-    if p.starts_with("/users") {
-        return false;
-    }
-    if p.starts_with("/integrations") {
-        if p == "/integrations" && *method == Method::GET {
-            return true;
-        }
-        if (p == "/integrations/salesforce/test" || p == "/integrations/zoho/test")
-            && *method == Method::GET
-        {
-            return role == "admin";
-        }
-        if p.contains("/connect") || p.contains("/disconnect") || p.contains("/sync") {
+        if write {
             return false;
         }
-        return *method == Method::GET;
+        if p.starts_with("/client-keys")
+            || p.starts_with("/users")
+            || p.starts_with("/settings")
+            || p.starts_with("/crypto/")
+            || p.starts_with("/transaction-logs")
+            || p.starts_with("/audit-logs")
+            || p.starts_with("/proxy-queue")
+            || p.starts_with("/integrations")
+            || p == "/reload-config"
+        {
+            return false;
+        }
+        return get
+            && (p == "/routes"
+                || p.starts_with("/routes/")
+                || p == "/dashboard/stats"
+                || p == "/me"
+                || p == "/ping");
     }
-    if *method == Method::GET {
+
+    // operator — vận hành trong tenant, không quản trị user/settings/integrations
+    if p.starts_with("/users")
+        || p.starts_with("/settings")
+        || p.starts_with("/integrations")
+        || p == "/reload-config"
+    {
+        return false;
+    }
+    if p.starts_with("/audit-logs") || p.starts_with("/transaction-logs") {
+        return get;
+    }
+    if p.starts_with("/client-keys") || p.starts_with("/crypto/") {
+        if p == "/crypto/public-key" && get {
+            return true;
+        }
+        if p == "/client-keys" && get {
+            return true;
+        }
+        if p == "/client-keys" && *method == Method::POST {
+            return true;
+        }
+        if p == "/client-keys/encrypted" && *method == Method::POST {
+            return true;
+        }
+        if p.starts_with("/client-keys/") && *method == Method::DELETE {
+            return true;
+        }
+        return false;
+    }
+    if get {
         return true;
     }
-    if p.starts_with("/settings") {
-        return false;
-    }
-    if p == "/reload-config" {
-        return false;
+    if p.starts_with("/proxy-queue") {
+        return *method == Method::POST || *method == Method::DELETE;
     }
     if p == "/routes" && *method == Method::POST {
         return false;
@@ -92,14 +160,22 @@ pub fn rbac_allow(method: &Method, path: &str, role: &str) -> bool {
     if p.starts_with("/routes/") && *method == Method::DELETE {
         return false;
     }
-    true
+    write
+}
+
+pub fn can_access_client_keys(role: &str) -> bool {
+    let r = normalize_role(role);
+    r == "admin" || r == "operator"
+}
+
+pub fn can_manage_client_keys(role: &str) -> bool {
+    can_access_client_keys(role)
 }
 
 fn first_ip_from_list(value: &str) -> String {
     value.split(',').next().unwrap_or(value).trim().to_string()
 }
 
-/// Client IP từ reverse proxy (Nginx: X-Real-IP, X-Forwarded-For).
 pub fn client_ip(headers: &HeaderMap) -> Option<String> {
     if let Some(v) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
         let ip = first_ip_from_list(v);
@@ -119,7 +195,6 @@ pub fn client_ip(headers: &HeaderMap) -> Option<String> {
             return Some(ip);
         }
     }
-    // RFC 7239 Forwarded: for=1.2.3.4;proto=https
     if let Some(v) = headers.get("forwarded").and_then(|v| v.to_str().ok()) {
         for part in v.split(';') {
             let part = part.trim();
@@ -135,7 +210,7 @@ pub fn client_ip(headers: &HeaderMap) -> Option<String> {
 }
 
 pub async fn write_audit_event(
-    pool: &SqlitePool,
+    pool: &PgPool,
     tenant_id: i64,
     actor: &str,
     role: &str,
@@ -163,7 +238,7 @@ pub async fn write_audit_event(
 }
 
 pub async fn write_audit(
-    pool: &SqlitePool,
+    pool: &PgPool,
     ctx: &AdminCtx,
     action: &str,
     resource: &str,
@@ -186,7 +261,7 @@ pub async fn write_audit(
 }
 
 pub async fn write_audit_failure(
-    pool: &SqlitePool,
+    pool: &PgPool,
     ctx: &AdminCtx,
     action: &str,
     resource: &str,
@@ -196,26 +271,50 @@ pub async fn write_audit_failure(
     write_audit(pool, ctx, action, resource, "failure", source_ip, details).await;
 }
 
-pub fn resolve_session_ctx(sessions: &dashmap::DashMap<String, AdminSession>, sid: &str) -> Option<AdminCtx> {
-    let ent = sessions.get(sid)?;
-    if ent.valid_until < std::time::Instant::now() {
-        return None;
+pub async fn resolve_session_ctx(
+    store: &SessionStore,
+    pool: &PgPool,
+    sid: &str,
+) -> Result<Option<AdminCtx>, SessionError> {
+    let Some(mut rec) = store.get(sid).await? else {
+        return Ok(None);
+    };
+
+    let now = session::now_unix_ts();
+    let recheck = session::db_recheck_secs();
+    if now.saturating_sub(rec.last_db_check) >= recheck {
+        match db::fetch_admin_user_by_id(pool, rec.user_id, rec.tenant_id).await {
+            Ok(Some(user)) if user.is_active != 0 => {
+                rec.username = user.username;
+                rec.role = user.role;
+                rec.tenant_id = user.tenant_id.unwrap_or(1);
+                rec.last_db_check = now;
+                store.save(sid, &rec).await?;
+            }
+            _ => {
+                let _ = store.destroy(sid, rec.user_id).await;
+                return Ok(None);
+            }
+        }
     }
-    Some(AdminCtx {
-        user_id: ent.user_id,
-        username: ent.username.clone(),
-        tenant_id: ent.tenant_id,
-        role: ent.role.clone(),
+
+    store.touch(sid).await?;
+
+    Ok(Some(AdminCtx {
+        user_id: rec.user_id,
+        username: rec.username,
+        tenant_id: rec.tenant_id,
+        role: rec.role,
         via_api_key: false,
-    })
+    }))
 }
 
-pub async fn load_user_ctx(pool: &SqlitePool, username: &str) -> Option<AdminCtx> {
-    let row = db::fetch_admin_user_by_username(pool, username).await.ok()??;
-    if row.is_active == 0 {
-        return None;
-    }
-    Some(AdminCtx::from_user(&row))
+pub fn session_unavailable_response() -> axum::response::Response {
+    json_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "session_store_unavailable",
+        "Session store (Redis) không khả dụng — thử lại sau",
+    )
 }
 
 pub fn forbidden_response() -> axum::response::Response {
@@ -244,38 +343,43 @@ mod tests {
     fn admin_full_access() {
         assert!(allow(Method::DELETE, "/api/users/1", "admin"));
         assert!(allow(Method::POST, "/api/routes", "admin"));
-        assert!(allow(Method::PUT, "/api/settings", "admin"));
+        assert!(allow(Method::GET, "/api/client-keys", "admin"));
     }
 
     #[test]
-    fn viewer_read_only() {
+    fn viewer_read_only_own_scope() {
         assert!(allow(Method::GET, "/api/routes", "viewer"));
         assert!(!allow(Method::POST, "/api/routes", "viewer"));
-        assert!(!allow(Method::PUT, "/api/routes/1", "viewer"));
-        assert!(!allow(Method::DELETE, "/api/client-keys/1", "viewer"));
+        assert!(!allow(Method::GET, "/api/client-keys", "viewer"));
+        assert!(!allow(Method::GET, "/api/transaction-logs", "viewer"));
+        assert!(!allow(Method::GET, "/api/audit-logs", "viewer"));
+        assert!(!allow(Method::GET, "/api/proxy-queue", "viewer"));
     }
 
     #[test]
-    fn operator_can_update_routes_not_create() {
-        assert!(allow(Method::GET, "/routes", "operator"));
-        assert!(allow(Method::PUT, "/api/routes/3", "operator"));
-        assert!(!allow(Method::POST, "/api/routes", "operator"));
-        assert!(!allow(Method::DELETE, "/api/routes/3", "operator"));
-    }
-
-    #[test]
-    fn operator_blocked_users_and_settings() {
+    fn operator_no_users_settings_integrations() {
+        assert!(allow(Method::GET, "/api/routes", "operator"));
+        assert!(allow(Method::POST, "/api/client-keys", "operator"));
         assert!(!allow(Method::GET, "/api/users", "operator"));
         assert!(!allow(Method::PUT, "/api/settings", "operator"));
-        assert!(!allow(Method::POST, "/api/reload-config", "operator"));
+        assert!(!allow(Method::GET, "/api/integrations", "operator"));
+        assert!(!allow(Method::GET, "/api/integrations/salesforce/test", "operator"));
+        assert!(!allow(Method::POST, "/api/integrations/salesforce/sync", "operator"));
     }
 
     #[test]
-    fn operator_integrations_read_only_except_test_get_for_admin() {
-        assert!(allow(Method::GET, "/api/integrations", "operator"));
-        assert!(!allow(Method::POST, "/api/integrations/salesforce/sync", "operator"));
-        assert!(!allow(Method::GET, "/api/integrations/salesforce/connect", "operator"));
-        assert!(!allow(Method::GET, "/api/integrations/salesforce/test", "operator"));
+    fn viewer_no_integrations() {
+        assert!(!allow(Method::GET, "/api/integrations", "viewer"));
+        assert!(!allow(Method::GET, "/api/integrations/bridge", "viewer"));
+    }
+
+    #[test]
+    fn viewer_registration_default_off() {
+        std::env::remove_var("ALLOW_VIEWER_REGISTRATION");
+        assert!(!super::viewer_registration_enabled());
+        std::env::set_var("ALLOW_VIEWER_REGISTRATION", "1");
+        assert!(super::viewer_registration_enabled());
+        std::env::remove_var("ALLOW_VIEWER_REGISTRATION");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 [Unit]
 Description=Avaso API Gateway (Rust)
 Documentation=file:///root/avaso-gateway/README.md
-After=network-online.target
+After=network-online.target postgresql.service redis-server.service
 Wants=network-online.target
 # NFR-20: giới hạn restart loop khi crash liên tục
 StartLimitIntervalSec=120
@@ -13,13 +13,14 @@ User=root
 Group=root
 WorkingDirectory=/root/avaso-gateway
 EnvironmentFile=-/etc/avaso-gateway/env
+EnvironmentFile=-/etc/avaso-gateway/smtp.env
 ExecStart=/root/avaso-gateway/target/release/avaso-gateway
 # NFR-20: tự khởi động lại khi crash / thoát bất thường
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=15
-# Tuỳ chọn: trần RAM (bỏ comment nếu cần)
-# MemoryMax=512M
+# Trần RAM gateway — tránh OOM kéo sập cả VPS (Droplet 2GB)
+MemoryMax=384M
 
 [Install]
 WantedBy=multi-user.target

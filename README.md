@@ -1,6 +1,6 @@
 # AVASO Gateway
 
-API Gateway đơn node — Rust (Axum) + SQLite + React admin UI. Production demo: [thientinh.io.vn](https://thientinh.io.vn).
+API Gateway đơn node — Rust (Axum) + PostgreSQL + Redis + React admin UI. Production demo: [thientinh.io.vn](https://thientinh.io.vn).
 
 ## Tính năng chính
 
@@ -23,13 +23,14 @@ Client ──► Nginx (TLS) ──► avaso-gateway :3000 (localhost)
                               └── /*            → static web/dist/ (SPA)
 ```
 
-- Route lưu **SQLite** (`data/gateway.db`), seed lần đầu từ `config.yaml`.
-- Session admin, replay cache, proxy queue: **in-memory** (mất khi restart).
+- Route / users / integrations lưu **PostgreSQL**; seed lần đầu từ `config.yaml`.
+- **Session admin:** Redis (`REDIS_URL`, module `src/session.rs`) — key `gw:session:{id}`, TTL 24h; dùng chung giữa nhiều instance.
+- HMAC replay cache, proxy queue: **in-memory** (mất khi restart).
 
 ## Quickstart (dev)
 
 ```bash
-# Backend
+# Backend — cần Redis session (docker compose up -d redis hoặc redis-server)
 cp .env.example .env   # chỉnh secret trước khi public
 cargo run
 
@@ -40,7 +41,7 @@ cd web && npm install && npm run dev
 
 Mở `http://127.0.0.1:3000/` (sau build) hoặc `http://127.0.0.1:5173/` (dev).
 
-**Lưu ý:** `ADMIN_PASSWORD` trong `.env` chỉ bootstrap lần đầu khi bảng `admin_users` trống. Đổi pass sau login qua UI Users — sửa `.env` không đổi pass DB.
+**Lưu ý:** `ADMIN_PASSWORD` trong `.env` chỉ bootstrap lần đầu khi bảng `dashboard_users` trống. Đổi pass sau login qua UI Users — sửa `.env` không đổi pass DB.
 
 ## Kiểm thử
 

@@ -5,10 +5,13 @@ mod dashboard;
 mod gateway_rsa;
 mod integrations;
 mod metrics;
+mod password_reset;
 mod proxy_ext;
+mod session;
 
-use admin_auth::{write_audit, write_audit_event, write_audit_failure, AdminCtx};
+use admin_auth::{session_unavailable_response, write_audit, write_audit_event, write_audit_failure, AdminCtx};
 use integrations::OAuthPending;
+use session::{SessionRecord, SessionStore, SessionStoreStatus};
 use axum::{
     body::Body,
     extract::{Extension, Json, Path},
@@ -24,7 +27,7 @@ use axum::{
 };
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::{
     io::ErrorKind,
     net::SocketAddr,
@@ -240,29 +243,17 @@ struct UpdateSettingsBody {
     queue_enabled: bool,
 }
 
-const SESSION_COOKIE: &str = "gw_sid";
-const SESSION_MAX_AGE_SECS: u64 = 86400;
-
-#[derive(Clone)]
-struct AdminSession {
-    user_id: i64,
-    username: String,
-    tenant_id: i64,
-    role: String,
-    valid_until: Instant,
-}
-
 #[derive(Clone)]
 struct AppState {
-    pool: SqlitePool,
+    pool: PgPool,
     config: Arc<RwLock<AppConfig>>,
     http: reqwest::Client,
     rl: Arc<DashMap<String, TokenBucket>>,
-    /// Session id (opaque) → admin browser session (HttpOnly cookie).
-    admin_sessions: Arc<DashMap<String, AdminSession>>,
+    /// Admin browser sessions — Redis (module `session`).
+    session_store: Arc<SessionStore>,
     /// HMAC X-Signature replay guard (TTL = timestamp skew window).
     hmac_replay: Arc<DashMap<String, Instant>>,
-    /// OAuth CSRF state → pending tenant/actor.
+    /// OAuth CSRF cache (primary store: SQLite oauth_pending_states).
     oauth_pending: Arc<DashMap<String, OAuthPending>>,
     proxy_queue: proxy_ext::ProxyQueue,
     gateway_metrics: Arc<metrics::GatewayMetrics>,
@@ -732,7 +723,7 @@ fn parse_u32_setting(raw: Option<String>, default: u32) -> u32 {
 }
 
 async fn load_runtime_settings(
-    pool: &SqlitePool,
+    pool: &PgPool,
     yaml: &YamlBootstrap,
 ) -> Result<RuntimeSettings, sqlx::Error> {
     let rate_limit_enabled = parse_bool_setting(
@@ -783,7 +774,7 @@ async fn load_runtime_settings(
 }
 
 async fn persist_runtime_settings(
-    pool: &SqlitePool,
+    pool: &PgPool,
     body: &UpdateSettingsBody,
 ) -> Result<(), sqlx::Error> {
     db::upsert_setting(
@@ -850,7 +841,7 @@ fn settings_response_from_config(cfg: &AppConfig) -> SettingsResponse {
         system_info: SettingsSystemInfo {
             version: env!("CARGO_PKG_VERSION"),
             runtime: "Rust/Tokio",
-            database: "SQLite",
+            database: "PostgreSQL",
             bind_port: current_bind_port(),
             log_format: "tracing JSON",
             has_admin_api_key: !cfg.admin_api_key_sha256.is_empty(),
@@ -896,7 +887,7 @@ fn validate_settings_write(body: &UpdateSettingsBody) -> Option<Response> {
     }
 }
 
-async fn build_app_config(pool: &SqlitePool) -> Result<AppConfig, sqlx::Error> {
+async fn build_app_config(pool: &PgPool) -> Result<AppConfig, sqlx::Error> {
     let yaml = read_yaml_bootstrap("config.yaml");
     let routes = db::load_route_rows(pool).await?;
     let client_credentials = db::load_client_credentials(pool).await?;
@@ -925,11 +916,12 @@ async fn main() {
         .init();
 
     let database_url =
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:data/gateway.db".into());
+        std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://avaso:avaso@127.0.0.1:5432/avaso_gateway".into());
 
     let pool = db::connect(&database_url)
         .await
-        .expect("open sqlite database");
+        .expect("open postgres database");
     db::migrate(&pool)
         .await
         .expect("run migrations");
@@ -967,12 +959,14 @@ async fn main() {
         .await
         .expect("load config from database");
 
+    let session_store = session::init_session_store().await;
+
     let state = AppState {
         pool,
         config: Arc::new(RwLock::new(initial)),
         http: reqwest::Client::new(),
         rl: Arc::new(DashMap::new()),
-        admin_sessions: Arc::new(DashMap::new()),
+        session_store,
         hmac_replay: Arc::new(DashMap::new()),
         oauth_pending: Arc::new(DashMap::new()),
         proxy_queue: proxy_ext::ProxyQueue::new(),
@@ -1038,6 +1032,10 @@ async fn main() {
             "/integrations/zoho/disconnect",
             post(api_zoho_disconnect),
         )
+        .route(
+            "/integrations/bridge",
+            get(api_get_integration_bridge).put(api_put_integration_bridge),
+        )
         .route("/settings", get(api_get_settings).put(api_update_settings))
         .route("/dashboard/stats", get(api_dashboard_stats))
         .route("/reload-config", post(api_reload_config))
@@ -1048,7 +1046,11 @@ async fn main() {
         .route("/ping", get(admin_api_ping))
         .route("/login", post(admin_login))
         .route("/logout", post(admin_logout))
-        .route("/me", get(admin_me))
+        .route("/me", get(admin_me).put(api_update_me))
+        .route("/register", post(api_register_viewer))
+        .route("/forgot-password", post(api_forgot_password))
+        .route("/verify-reset-otp", post(api_verify_reset_otp))
+        .route("/reset-password", post(api_reset_password))
         .route(
             "/integrations/salesforce/callback",
             get(api_salesforce_callback),
@@ -1107,6 +1109,7 @@ async fn main() {
     println!("🚀 Gateway đang lắng nghe: http://{addr}/");
     println!("📊 Dashboard: http://{addr}/");
     println!("💾 Database: {}", database_url);
+    println!("🗄️  Session store: Redis ({})", session::redis_url_from_env().split('@').last().unwrap_or("redis"));
     println!("🔐 Admin: GET /api/ping (kiểm tra triển khai) | POST /api/login …");
     println!("   GET /api/me | POST /api/logout");
     println!("   CORS: thêm domain UI production → CORS_ALLOWED_ORIGINS (vd https://thientinh.io.vn)");
@@ -1128,7 +1131,8 @@ fn cookie_secure_flag() -> bool {
 
 fn session_cookie_value(token: &str, max_age_secs: u64) -> String {
     let mut s = format!(
-        "{SESSION_COOKIE}={token}; HttpOnly; Path=/; SameSite=Lax; Max-Age={max_age_secs}"
+        "{}={token}; HttpOnly; Path=/; SameSite=Lax; Max-Age={max_age_secs}",
+        session::SESSION_COOKIE
     );
     if cookie_secure_flag() {
         s.push_str("; Secure");
@@ -1137,7 +1141,10 @@ fn session_cookie_value(token: &str, max_age_secs: u64) -> String {
 }
 
 fn session_cookie_clear_value() -> String {
-    let mut s = format!("{SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0");
+    let mut s = format!(
+        "{}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0",
+        session::SESSION_COOKIE
+    );
     if cookie_secure_flag() {
         s.push_str("; Secure");
     }
@@ -1148,7 +1155,7 @@ fn gw_sid_from_headers(headers: &HeaderMap) -> Option<String> {
     let raw = headers.get(COOKIE)?.to_str().ok()?;
     for part in raw.split(';') {
         let p = part.trim();
-        if let Some(val) = p.strip_prefix(&format!("{SESSION_COOKIE}=")) {
+        if let Some(val) = p.strip_prefix(&format!("{}=", session::SESSION_COOKIE)) {
             let v = val.trim();
             if !v.is_empty() {
                 return Some(v.to_string());
@@ -1159,11 +1166,13 @@ fn gw_sid_from_headers(headers: &HeaderMap) -> Option<String> {
 }
 
 async fn resolve_admin_ctx(headers: &HeaderMap) -> Result<AdminCtx, Response> {
-    if let Some(key) = headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
-        if let Some(st) = STATE.get() {
-            let expected = st.config.read().await.admin_api_key_sha256.clone();
-            if db::sha256_hex(key) == expected {
-                return Ok(AdminCtx::from_admin_api_key());
+    if admin_auth::admin_api_key_enabled() {
+        if let Some(key) = headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
+            if let Some(st) = STATE.get() {
+                let expected = st.config.read().await.admin_api_key_sha256.clone();
+                if db::sha256_hex(key) == expected {
+                    return Ok(AdminCtx::from_automation_api_key());
+                }
             }
         }
     }
@@ -1181,10 +1190,12 @@ async fn resolve_admin_ctx(headers: &HeaderMap) -> Result<AdminCtx, Response> {
             "gateway state not initialized",
         ));
     };
-    if let Some(ctx) = admin_auth::resolve_session_ctx(&st.admin_sessions, &sid) {
-        return Ok(ctx);
+    match admin_auth::resolve_session_ctx(&st.session_store, &st.pool, &sid).await {
+        Ok(Some(ctx)) => return Ok(ctx),
+        Err(_) => return Err(session_unavailable_response()),
+        Ok(None) => {}
     }
-    st.admin_sessions.remove(&sid);
+    let _ = st.session_store.destroy_by_sid(&sid).await;
     Err(json_error(
         StatusCode::UNAUTHORIZED,
         "unauthorized",
@@ -1278,6 +1289,93 @@ struct LoginBody {
     password: String,
 }
 
+async fn establish_admin_session(
+    headers: &HeaderMap,
+    admin: &db::AdminUserRow,
+    audit_action: &str,
+) -> Response {
+    let ip = admin_auth::client_ip(headers);
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "gateway state not initialized",
+        );
+    };
+
+    if admin.is_active == 0 {
+        let ctx = AdminCtx::from_user(admin);
+        write_audit_failure(
+            &st.pool,
+            &ctx,
+            audit_action,
+            "session",
+            ip.as_deref(),
+            Some("account_disabled"),
+        )
+        .await;
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Tài khoản đã bị vô hiệu hóa",
+        );
+    }
+
+    let username = admin.username.clone();
+    let ctx = AdminCtx::from_user(admin);
+    let sid = uuid::Uuid::new_v4().to_string();
+    let record = SessionRecord {
+        user_id: ctx.user_id,
+        username: username.clone(),
+        tenant_id: ctx.tenant_id,
+        role: ctx.role.clone(),
+        last_db_check: 0,
+    };
+    if let Err(e) = st.session_store.revoke_all_for_user(ctx.user_id).await {
+        tracing::warn!(error = %e, user_id = ctx.user_id, "revoke prior sessions failed");
+    }
+    if let Err(e) = st.session_store.create(&sid, record).await {
+        tracing::error!(error = %e, "cannot persist session to redis");
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "session_store_unavailable",
+            "Không thể tạo phiên — session store (Redis) không khả dụng",
+        );
+    }
+    write_audit(
+        &st.pool,
+        &ctx,
+        audit_action,
+        "session",
+        "success",
+        ip.as_deref(),
+        None,
+    )
+    .await;
+    let cookie_line = session_cookie_value(&sid, session::SESSION_MAX_AGE_SECS);
+    let Ok(hv) = HeaderValue::from_str(&cookie_line) else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "invalid cookie header",
+        );
+    };
+    let mut res = (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "ok",
+            "username": username,
+            "role": ctx.role,
+            "tenant_id": ctx.tenant_id,
+            "user_id": ctx.user_id,
+            "email": admin.email
+        })),
+    )
+        .into_response();
+    res.headers_mut().append(SET_COOKIE, hv);
+    res
+}
+
 async fn admin_login(headers: HeaderMap, Json(body): Json<LoginBody>) -> impl IntoResponse {
     let user = body.username.trim();
     let pass = body.password.as_str();
@@ -1328,7 +1426,8 @@ async fn admin_login(headers: HeaderMap, Json(body): Json<LoginBody>) -> impl In
 
     let row = match db::fetch_admin_user_by_username(&st.pool, user).await {
         Ok(r) => r,
-        Err(_) => {
+        Err(e) => {
+            tracing::error!(error = %e, username = %user, "fetch_admin_user_by_username failed");
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal_error",
@@ -1385,69 +1484,858 @@ async fn admin_login(headers: HeaderMap, Json(body): Json<LoginBody>) -> impl In
         );
     }
 
-    if admin.is_active == 0 {
-        let ctx = AdminCtx::from_user(&admin);
-        write_audit_failure(
-            &st.pool,
-            &ctx,
-            "login",
-            "session",
-            ip.as_deref(),
-            Some("account_disabled"),
-        )
-        .await;
+    establish_admin_session(&headers, &admin, "login").await
+}
+
+#[derive(Debug, Deserialize)]
+struct RegisterViewerBody {
+    username: String,
+    password: String,
+    email: String,
+}
+
+async fn api_register_viewer(headers: HeaderMap, Json(body): Json<RegisterViewerBody>) -> impl IntoResponse {
+    let ip = admin_auth::client_ip(&headers);
+    if !admin_auth::viewer_registration_enabled() {
         return json_error(
             StatusCode::FORBIDDEN,
-            "forbidden",
-            "Tài khoản đã bị vô hiệu hóa",
+            "registration_disabled",
+            "Đăng ký công khai đang tắt — nhờ Quản trị viên tạo tài khoản hoặc bật ALLOW_VIEWER_REGISTRATION=1",
         );
     }
 
-    let username = admin.username.clone();
-    let ctx = AdminCtx::from_user(&admin);
-    let sid = uuid::Uuid::new_v4().to_string();
-    let until = Instant::now() + Duration::from_secs(SESSION_MAX_AGE_SECS);
-    st.admin_sessions.insert(
-        sid.clone(),
-        AdminSession {
-            user_id: ctx.user_id,
-            username: username.clone(),
-            tenant_id: ctx.tenant_id,
-            role: ctx.role.clone(),
-            valid_until: until,
-        },
-    );
-    write_audit(
-        &st.pool,
-        &ctx,
-        "login",
-        "session",
-        "success",
-        ip.as_deref(),
-        None,
-    )
-    .await;
-    let cookie_line = session_cookie_value(&sid, SESSION_MAX_AGE_SECS);
-    let Ok(hv) = HeaderValue::from_str(&cookie_line) else {
+    let username = body.username.trim();
+    let pass = body.password.trim();
+    let email_raw = body.email.trim();
+    let mut fields = serde_json::Map::new();
+    if username.is_empty() {
+        fields.insert(
+            "username".into(),
+            serde_json::Value::String("Nhập tên đăng nhập".into()),
+        );
+    } else if username.len() > 64 {
+        fields.insert(
+            "username".into(),
+            serde_json::Value::String("Username tối đa 64 ký tự".into()),
+        );
+    }
+    if pass.len() < 6 {
+        fields.insert(
+            "password".into(),
+            serde_json::Value::String("Mật khẩu tối thiểu 6 ký tự".into()),
+        );
+    }
+    let email = password_reset::normalize_email(email_raw);
+    if email.is_none() && !email_raw.is_empty() || email_raw.is_empty() {
+        fields.insert(
+            "email".into(),
+            serde_json::Value::String(
+                if email_raw.is_empty() {
+                    "Nhập email".into()
+                } else {
+                    "Email không hợp lệ".into()
+                },
+            ),
+        );
+    }
+    if !fields.is_empty() {
+        if let Some(st) = STATE.get() {
+            write_audit_event(
+                &st.pool,
+                1,
+                username,
+                "-",
+                "register",
+                "session",
+                "failure",
+                ip.as_deref(),
+                Some("validation_failed"),
+            )
+            .await;
+        }
+        return json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "Dữ liệu đăng ký không hợp lệ",
+            fields,
+        );
+    }
+    let email = email.expect("validated above");
+
+    let Some(st) = STATE.get() else {
         return json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal_error",
-            "invalid cookie header",
+            "gateway state not initialized",
         );
     };
-    let mut res = (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "status": "ok",
-            "username": username,
-            "role": ctx.role,
-            "tenant_id": ctx.tenant_id,
-            "user_id": ctx.user_id
-        })),
+
+    match db::admin_email_taken(&st.pool, &email, 0).await {
+        Ok(true) => {
+            fields.insert(
+                "email".into(),
+                serde_json::Value::String("Email đã tồn tại".into()),
+            );
+            return json_error_fields(
+                StatusCode::CONFLICT,
+                "email_taken",
+                "Email đã được dùng",
+                fields,
+            );
+        }
+        Ok(false) => {}
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("{e}"),
+            );
+        }
+    }
+
+    let password_hash = match db::hash_password(pass) {
+        Ok(h) => h,
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("hash: {e}"),
+            );
+        }
+    };
+
+    let tenant_id = match db::create_personal_tenant(&st.pool, username).await {
+        Ok(tid) => tid,
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("tenant: {e}"),
+            );
+        }
+    };
+
+    let role = "viewer";
+    match db::insert_admin_user(
+        &st.pool,
+        username,
+        &password_hash,
+        role,
+        tenant_id,
+        Some(&email),
     )
-        .into_response();
-    res.headers_mut().append(SET_COOKIE, hv);
-    res
+    .await
+    {
+        Ok(id) => {
+            write_audit_event(
+                &st.pool,
+                tenant_id,
+                username,
+                role,
+                "register",
+                "session",
+                "success",
+                ip.as_deref(),
+                Some("viewer_self_register"),
+            )
+            .await;
+            match db::fetch_admin_user_by_id(&st.pool, id, tenant_id).await {
+                Ok(Some(row)) => {
+                    let mut res = establish_admin_session(&headers, &row, "register").await;
+                    if res.status() == StatusCode::OK {
+                        *res.status_mut() = StatusCode::CREATED;
+                    }
+                    res
+                }
+                Ok(None) | Err(_) => (
+                    StatusCode::CREATED,
+                    Json(serde_json::json!({
+                        "status": "ok",
+                        "username": username,
+                        "role": role,
+                        "tenant_id": tenant_id,
+                        "user_id": id,
+                        "email": email
+                    })),
+                )
+                    .into_response(),
+            }
+        }
+        Err(e) => {
+            if let sqlx::Error::Database(ref d) = e {
+                if d.is_unique_violation() {
+                    fields.insert(
+                        "username".into(),
+                        serde_json::Value::String("Username đã tồn tại".into()),
+                    );
+                    write_audit_event(
+                        &st.pool,
+                        1,
+                        username,
+                        "-",
+                        "register",
+                        "session",
+                        "failure",
+                        ip.as_deref(),
+                        Some("username_exists"),
+                    )
+                    .await;
+                    return json_error_fields(
+                        StatusCode::CONFLICT,
+                        "username_exists",
+                        "Username đã được dùng",
+                        fields,
+                    );
+                }
+            }
+            tracing::error!(error = %e, "register viewer failed");
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "Không tạo được tài khoản",
+            )
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateMeBody {
+    username: Option<String>,
+    email: Option<String>,
+    password: Option<String>,
+    current_password: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ForgotPasswordBody {
+    identifier: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VerifyResetOtpBody {
+    username: String,
+    otp: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResetPasswordBody {
+    reset_token: String,
+    password: String,
+}
+
+async fn api_update_me(headers: HeaderMap, Json(body): Json<UpdateMeBody>) -> impl IntoResponse {
+    let Some(sid) = gw_sid_from_headers(&headers) else {
+        return json_error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "Not logged in",
+        );
+    };
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "gateway state not initialized",
+        );
+    };
+
+    let ctx = match admin_auth::resolve_session_ctx(&st.session_store, &st.pool, &sid).await {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            return json_error(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "Session expired or invalid",
+            );
+        }
+        Err(_) => return session_unavailable_response(),
+    };
+
+    if ctx.via_api_key {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "API key automation không đổi hồ sơ — dùng session đăng nhập",
+        );
+    }
+
+    let new_username = body
+        .username
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let email_patch: Option<Option<String>> = match &body.email {
+        None => None,
+        Some(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                Some(None)
+            } else if let Some(em) = password_reset::normalize_email(t) {
+                Some(Some(em))
+            } else {
+                let mut f = serde_json::Map::new();
+                f.insert(
+                    "email".into(),
+                    serde_json::Value::String("Email không hợp lệ".into()),
+                );
+                return json_error_fields(
+                    StatusCode::BAD_REQUEST,
+                    "validation_failed",
+                    "Dữ liệu hồ sơ không hợp lệ",
+                    f,
+                );
+            }
+        }
+    };
+    let new_pass = body
+        .password
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let current_pass = body.current_password.as_deref().unwrap_or("").trim();
+
+    let mut fields = serde_json::Map::new();
+    if new_username.is_none() && new_pass.is_none() && email_patch.is_none() {
+        fields.insert(
+            "username".into(),
+            serde_json::Value::String("Không có thay đổi nào".into()),
+        );
+    }
+    let username_changing = new_username
+        .as_deref()
+        .map(|u| u != ctx.username.as_str())
+        .unwrap_or(false);
+    if (new_pass.is_some() || username_changing) && current_pass.is_empty() {
+        fields.insert(
+            "current_password".into(),
+            serde_json::Value::String("Nhập mật khẩu hiện tại để xác nhận".into()),
+        );
+    }
+    if let Some(ref p) = new_pass {
+        if p.len() < 6 {
+            fields.insert(
+                "password".into(),
+                serde_json::Value::String("Mật khẩu mới tối thiểu 6 ký tự".into()),
+            );
+        }
+    }
+    if !fields.is_empty() {
+        return json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "Dữ liệu hồ sơ không hợp lệ",
+            fields,
+        );
+    }
+
+    let row = match db::fetch_admin_user_by_id(&st.pool, ctx.user_id, ctx.tenant_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return json_error(
+                StatusCode::NOT_FOUND,
+                "user_not_found",
+                "Tài khoản không tồn tại",
+            );
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("{e}") })),
+            )
+                .into_response();
+        }
+    };
+
+    let final_username = new_username.unwrap_or_else(|| ctx.username.clone());
+    let email_changing = match (&email_patch, &row.email) {
+        (Some(None), Some(_)) => true,
+        (Some(None), None) => false,
+        (Some(Some(new)), old) => old.as_deref() != Some(new.as_str()),
+        (None, _) => false,
+    };
+    if email_changing && current_pass.is_empty() {
+        return json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "Dữ liệu hồ sơ không hợp lệ",
+            serde_json::Map::from_iter([(
+                "current_password".into(),
+                serde_json::Value::String("Nhập mật khẩu hiện tại để đổi email".into()),
+            )]),
+        );
+    }
+    if (new_pass.is_some() || username_changing || email_changing)
+        && !db::verify_password(current_pass, &row.password_hash)
+    {
+        write_audit_failure(
+            &st.pool,
+            &ctx,
+            "profile_update",
+            "me",
+            admin_auth::client_ip(&headers).as_deref(),
+            Some("invalid_current_password"),
+        )
+        .await;
+        return json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "invalid_current_password",
+            "Mật khẩu hiện tại không đúng",
+            serde_json::Map::from_iter([(
+                "current_password".into(),
+                serde_json::Value::String("Mật khẩu hiện tại không đúng".into()),
+            )]),
+        );
+    }
+    if let Some(Some(ref em)) = email_patch {
+        match db::admin_email_taken(&st.pool, em, ctx.user_id).await {
+            Ok(true) => {
+                return json_error_fields(
+                    StatusCode::CONFLICT,
+                    "email_taken",
+                    "Email đã được sử dụng",
+                    serde_json::Map::from_iter([(
+                        "email".into(),
+                        serde_json::Value::String("Email đã tồn tại".into()),
+                    )]),
+                );
+            }
+            Ok(false) => {}
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("{e}") })),
+                )
+                    .into_response();
+            }
+        }
+    }
+    if final_username != ctx.username {
+        match db::admin_username_taken(&st.pool, &final_username, ctx.user_id).await {
+            Ok(true) => {
+                return json_error_fields(
+                    StatusCode::CONFLICT,
+                    "username_taken",
+                    "Username đã được sử dụng",
+                    serde_json::Map::from_iter([(
+                        "username".into(),
+                        serde_json::Value::String("Username đã tồn tại".into()),
+                    )]),
+                );
+            }
+            Ok(false) => {}
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("{e}") })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let pass_hash = if let Some(ref p) = new_pass {
+        match db::hash_password(p) {
+            Ok(h) => Some(h),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("hash: {e}") })),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        None
+    };
+
+    let email_db: Option<Option<&str>> = email_patch
+        .as_ref()
+        .map(|o| o.as_deref());
+
+    match db::update_own_profile(
+        &st.pool,
+        ctx.user_id,
+        ctx.tenant_id,
+        &final_username,
+        email_db,
+        pass_hash.as_deref(),
+    )
+    .await
+    {
+        Ok(0) => json_error(
+            StatusCode::NOT_FOUND,
+            "user_not_found",
+            "Tài khoản không tồn tại hoặc đã bị vô hiệu hóa",
+        ),
+        Ok(_) => {
+            if pass_hash.is_some() {
+                if let Err(e) = st.session_store.revoke_all_for_user(ctx.user_id).await {
+                    tracing::warn!(error = %e, user_id = ctx.user_id, "revoke sessions after password change failed");
+                }
+            } else if let Ok(Some(mut rec)) = st.session_store.get(&sid).await {
+                rec.username = final_username.clone();
+                rec.last_db_check = session::now_unix_ts();
+                let _ = st.session_store.save(&sid, &rec).await;
+            }
+
+            write_audit(
+                &st.pool,
+                &ctx,
+                if pass_hash.is_some() {
+                    "profile_password_change"
+                } else {
+                    "profile_update"
+                },
+                "me",
+                "success",
+                admin_auth::client_ip(&headers).as_deref(),
+                Some(&final_username),
+            )
+            .await;
+
+            let out_email = email_patch
+                .map(|o| o)
+                .unwrap_or_else(|| row.email.clone());
+            Json(serde_json::json!({
+                "status": "ok",
+                "username": final_username,
+                "email": out_email,
+                "role": ctx.role,
+                "tenant_id": ctx.tenant_id,
+                "user_id": ctx.user_id,
+                "password_changed": pass_hash.is_some(),
+            }))
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_forgot_password(
+    headers: HeaderMap,
+    Json(body): Json<ForgotPasswordBody>,
+) -> impl IntoResponse {
+    let id = body.identifier.trim();
+    if id.is_empty() {
+        return json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "Thiếu thông tin",
+            serde_json::Map::from_iter([(
+                "identifier".into(),
+                serde_json::Value::String("Nhập username hoặc email".into()),
+            )]),
+        );
+    }
+
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "gateway state not initialized",
+        );
+    };
+
+    let delivery = password_reset::otp_delivery_mode();
+    let row = if id.contains('@') {
+        match db::fetch_admin_user_by_email(&st.pool, id).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(error = %e, "forgot-password lookup failed");
+                return forgot_password_generic_ok(delivery);
+            }
+        }
+    } else {
+        match db::fetch_admin_user_by_username(&st.pool, id).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(error = %e, "forgot-password lookup failed");
+                return forgot_password_generic_ok(delivery);
+            }
+        }
+    };
+
+    let Some(user) = row else {
+        return forgot_password_generic_ok(delivery);
+    };
+
+    if user.is_active == 0 {
+        return forgot_password_generic_ok(delivery);
+    }
+
+    let Some(ref email) = user.email else {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "no_email",
+            "Tài khoản chưa có email — đăng nhập (nếu còn nhớ pass) hoặc nhờ Admin cấp email trong Quản lý Users.",
+        );
+    };
+
+    if delivery == "none" {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "mail_unavailable",
+            "Hệ thống chưa cấu hình SMTP. Bật PASSWORD_RESET_DEV_LOG=1 (dev) hoặc SMTP_* (production).",
+        );
+    }
+
+    let mut conn = st.session_store.redis();
+    match password_reset::issue_password_reset_otp(&mut conn, &user.username, user.id, email).await
+    {
+        Ok(()) => {
+            write_audit_event(
+                &st.pool,
+                user.tenant_id.unwrap_or(1),
+                &user.username,
+                &user.role,
+                "forgot_password",
+                "session",
+                "success",
+                admin_auth::client_ip(&headers).as_deref(),
+                Some("otp_sent"),
+            )
+            .await;
+            let message = if delivery == "email" {
+                format!(
+                    "Mã OTP đã gửi tới {} — kiểm tra hộp thư (có thể trong Spam).",
+                    password_reset::mask_email(email)
+                )
+            } else {
+                "Mã OTP đã tạo. Server chưa cấu hình SMTP — Admin xem: journalctl -u avaso-gateway -f".into()
+            };
+            Json(serde_json::json!({
+                "status": "ok",
+                "message": message,
+                "username": user.username,
+                "email_masked": password_reset::mask_email(email),
+                "delivery": delivery
+            }))
+            .into_response()
+        }
+        Err(password_reset::PasswordResetError::RateLimited) => json_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "Quá nhiều yêu cầu — thử lại sau 15 phút",
+        ),
+        Err(password_reset::PasswordResetError::MailUnavailable) => json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "mail_unavailable",
+            "Không gửi được OTP — kiểm tra cấu hình SMTP",
+        ),
+        Err(password_reset::PasswordResetError::MailSend(e)) => {
+            tracing::warn!(error = %e, "forgot-password mail failed");
+            json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "mail_send_failed",
+                "Gửi email thất bại — thử lại sau",
+            )
+        }
+    }
+}
+
+fn forgot_password_generic_ok(delivery: &str) -> Response {
+    let message = if delivery == "dev_log" {
+        "Nếu tài khoản tồn tại, mã OTP đã tạo — server dev: journalctl -u avaso-gateway."
+    } else {
+        "Nếu tài khoản tồn tại và có email, mã OTP đã được gửi — kiểm tra hộp thư."
+    };
+    Json(serde_json::json!({
+        "status": "ok",
+        "message": message,
+        "delivery": delivery
+    }))
+    .into_response()
+}
+
+async fn api_verify_reset_otp(Json(body): Json<VerifyResetOtpBody>) -> impl IntoResponse {
+    let username = body.username.trim();
+    let otp = body.otp.trim();
+    let mut fields = serde_json::Map::new();
+    if username.is_empty() {
+        fields.insert(
+            "username".into(),
+            serde_json::Value::String("Thiếu username".into()),
+        );
+    }
+    if otp.len() != 6 || !otp.chars().all(|c| c.is_ascii_digit()) {
+        fields.insert(
+            "otp".into(),
+            serde_json::Value::String("OTP gồm 6 chữ số".into()),
+        );
+    }
+    if !fields.is_empty() {
+        return json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "Dữ liệu không hợp lệ",
+            fields,
+        );
+    }
+
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "gateway state not initialized",
+        );
+    };
+
+    let mut conn = st.session_store.redis();
+    let issued = match password_reset::verify_otp_and_create_ticket(&mut conn, username, otp).await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, "verify-reset-otp redis failed");
+            return json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "session_store_unavailable",
+                "Redis không khả dụng",
+            );
+        }
+    };
+
+    match issued {
+        Ok(token) => Json(serde_json::json!({
+            "status": "ok",
+            "message": "OTP hợp lệ — nhập mật khẩu mới",
+            "username": username,
+            "reset_token": token
+        }))
+        .into_response(),
+        Err(password_reset::VerifyOtpResult::NotFound) => json_error(
+            StatusCode::BAD_REQUEST,
+            "otp_invalid",
+            "OTP hết hạn hoặc không hợp lệ — gửi lại mã",
+        ),
+        Err(password_reset::VerifyOtpResult::WrongOtp) => json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "otp_invalid",
+            "OTP không đúng",
+            serde_json::Map::from_iter([(
+                "otp".into(),
+                serde_json::Value::String("Mã OTP không đúng".into()),
+            )]),
+        ),
+        Err(password_reset::VerifyOtpResult::TooManyAttempts) => json_error(
+            StatusCode::BAD_REQUEST,
+            "otp_locked",
+            "Nhập sai quá nhiều lần — yêu cầu mã OTP mới",
+        ),
+        Err(password_reset::VerifyOtpResult::Ok(_)) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "Lỗi xác minh OTP",
+        ),
+    }
+}
+
+async fn api_reset_password(Json(body): Json<ResetPasswordBody>) -> impl IntoResponse {
+    let token = body.reset_token.trim();
+    let pass = body.password.trim();
+    let mut fields = serde_json::Map::new();
+    if token.is_empty() {
+        fields.insert(
+            "reset_token".into(),
+            serde_json::Value::String("Phiên đặt lại mật khẩu không hợp lệ — xác minh OTP lại".into()),
+        );
+    }
+    if pass.len() < 6 {
+        fields.insert(
+            "password".into(),
+            serde_json::Value::String("Mật khẩu mới tối thiểu 6 ký tự".into()),
+        );
+    }
+    if !fields.is_empty() {
+        return json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "Dữ liệu không hợp lệ",
+            fields,
+        );
+    }
+
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "gateway state not initialized",
+        );
+    };
+
+    let mut conn = st.session_store.redis();
+    let ticket = match password_reset::consume_reset_ticket(&mut conn, token).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(error = %e, "reset-password redis failed");
+            return json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "session_store_unavailable",
+                "Redis không khả dụng",
+            );
+        }
+    };
+
+    let Some(ticket) = ticket else {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "reset_token_invalid",
+            "Phiên đặt lại mật khẩu hết hạn — xác minh OTP lại",
+        );
+    };
+
+    let user_id = ticket.user_id;
+
+    let hash = match db::hash_password(pass) {
+        Ok(h) => h,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("hash: {e}") })),
+            )
+                .into_response();
+        }
+    };
+
+    match db::set_user_password(&st.pool, user_id, &hash).await {
+        Ok(0) => json_error(
+            StatusCode::NOT_FOUND,
+            "user_not_found",
+            "Tài khoản không tồn tại",
+        ),
+        Ok(_) => {
+            let _ = st.session_store.revoke_all_for_user(user_id).await;
+            if let Ok(Some(u)) = db::fetch_admin_user_by_id_any(&st.pool, user_id).await {
+                write_audit_event(
+                    &st.pool,
+                    u.tenant_id.unwrap_or(1),
+                    &u.username,
+                    &u.role,
+                    "reset_password",
+                    "session",
+                    "success",
+                    None,
+                    Some("otp_verified"),
+                )
+                .await;
+            }
+            Json(serde_json::json!({
+                "status": "ok",
+                "message": "Đã đặt lại mật khẩu — đăng nhập lại."
+            }))
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
 }
 
 async fn admin_me(headers: HeaderMap) -> impl IntoResponse {
@@ -1465,35 +2353,35 @@ async fn admin_me(headers: HeaderMap) -> impl IntoResponse {
             "gateway state not initialized",
         );
     };
-    let Some(ent) = st.admin_sessions.get(&sid) else {
-        return json_error(
+    match admin_auth::resolve_session_ctx(&st.session_store, &st.pool, &sid).await {
+        Ok(Some(ctx)) => {
+            let email = db::fetch_admin_user_by_id(&st.pool, ctx.user_id, ctx.tenant_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|r| r.email);
+            Json(serde_json::json!({
+                "username": ctx.username,
+                "email": email,
+                "role": ctx.role,
+                "tenant_id": ctx.tenant_id,
+                "user_id": ctx.user_id
+            }))
+            .into_response()
+        }
+        Ok(None) => json_error(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
             "Session expired or invalid",
-        );
-    };
-    if ent.valid_until < Instant::now() {
-        drop(ent);
-        st.admin_sessions.remove(&sid);
-        return json_error(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "Session expired",
-        );
+        ),
+        Err(_) => session_unavailable_response(),
     }
-    Json(serde_json::json!({
-        "username": ent.username,
-        "role": ent.role,
-        "tenant_id": ent.tenant_id,
-        "user_id": ent.user_id
-    }))
-    .into_response()
 }
 
 async fn admin_logout(headers: HeaderMap) -> impl IntoResponse {
     if let Some(sid) = gw_sid_from_headers(&headers) {
         if let Some(st) = STATE.get() {
-            st.admin_sessions.remove(&sid);
+            let _ = st.session_store.destroy_by_sid(&sid).await;
         }
     }
     let Ok(hv) = HeaderValue::from_str(&session_cookie_clear_value()) else {
@@ -1522,15 +2410,44 @@ async fn health_handler() -> Response {
     if !enabled {
         return json_error(StatusCode::NOT_FOUND, "disabled", "health endpoint disabled");
     }
+
+    let (db_ok, redis_ok) = if let Some(st) = STATE.get() {
+        (
+            db::ping(&st.pool).await,
+            st.session_store.ping().await == SessionStoreStatus::Up,
+        )
+    } else {
+        (false, false)
+    };
+
+    let overall = if db_ok && redis_ok {
+        "ok"
+    } else {
+        "degraded"
+    };
+
     let mut body = serde_json::json!({
-        "status": "ok",
+        "status": overall,
         "service": "avaso-gateway",
         "version": env!("CARGO_PKG_VERSION"),
+        "components": {
+            "database": { "status": if db_ok { "up" } else { "down" } },
+            "session_store": {
+                "status": if redis_ok { "up" } else { "down" },
+                "backend": "redis"
+            }
+        }
     });
     if let Some(inst) = gateway_instance_name() {
         body["instance"] = serde_json::Value::String(inst);
     }
-    Json(body).into_response()
+
+    let code = if overall == "ok" {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (code, Json(body)).into_response()
 }
 
 /// Public: xác minh Nginx → gateway đúng binary (có route /api/*). Không cần auth.
@@ -1539,6 +2456,12 @@ async fn admin_api_ping() -> Json<serde_json::Value> {
         "status": "ok",
         "service": "avaso-gateway",
         "version": env!("CARGO_PKG_VERSION"),
+        "features": {
+            "forgot_password": true,
+            "register_viewer": admin_auth::viewer_registration_enabled(),
+            "password_reset_dev_log": password_reset::password_reset_dev_log(),
+            "dashboard_users_table": true
+        }
     }))
 }
 
@@ -1731,10 +2654,45 @@ struct RouteWriteBody {
     retry_max: i32,
     #[serde(default = "default_retry_status")]
     retry_on_status: String,
-    #[serde(default = "default_one")]
+    #[serde(default = "default_one", deserialize_with = "deserialize_i32_or_bool")]
     retry_on_timeout: i32,
     #[serde(default)]
     queue_on_failure: bool,
+}
+
+/// FE có thể gửi `true`/`false` hoặc `0`/`1`.
+fn deserialize_i32_or_bool<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, Unexpected};
+    struct I32OrBool;
+    impl<'de> de::Visitor<'de> for I32OrBool {
+        type Value = i32;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("boolean or integer 0/1")
+        }
+        fn visit_bool<E>(self, v: bool) -> Result<i32, E> {
+            Ok(if v { 1 } else { 0 })
+        }
+        fn visit_i64<E>(self, v: i64) -> Result<i32, E> {
+            Ok(if v != 0 { 1 } else { 0 })
+        }
+        fn visit_u64<E>(self, v: u64) -> Result<i32, E> {
+            Ok(if v != 0 { 1 } else { 0 })
+        }
+        fn visit_str<E>(self, v: &str) -> Result<i32, E>
+        where
+            E: de::Error,
+        {
+            match v.trim().to_lowercase().as_str() {
+                "1" | "true" => Ok(1),
+                "0" | "false" => Ok(0),
+                _ => Err(de::Error::invalid_value(Unexpected::Str(v), &self)),
+            }
+        }
+    }
+    deserializer.deserialize_any(I32OrBool)
 }
 
 fn route_policy_from_body(body: &RouteWriteBody) -> (String, String, i32, String, i32, i32) {
@@ -2001,6 +2959,9 @@ async fn api_delete_route(
 }
 
 async fn api_list_client_keys(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !admin_auth::can_access_client_keys(&ctx.role) {
+        return admin_auth::forbidden_response();
+    }
     let st = match STATE.get() {
         Some(s) => s.clone(),
         None => {
@@ -2011,7 +2972,8 @@ async fn api_list_client_keys(Extension(ctx): Extension<AdminCtx>) -> impl IntoR
                 .into_response();
         }
     };
-    match db::list_client_keys(&st.pool, ctx.tenant_id).await {
+    let admin_scope = ctx.is_admin();
+    match db::list_client_keys_scoped(&st.pool, ctx.tenant_id, Some(ctx.user_id), admin_scope).await {
         Ok(rows) => Json(rows).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2101,6 +3063,7 @@ async fn api_create_client_key(
         &secret_key,
         ctx.tenant_id,
         &integration_type,
+        ctx.user_id,
     )
     .await
     {
@@ -2260,6 +3223,7 @@ async fn api_create_client_key_encrypted(
         &secret_key,
         ctx.tenant_id,
         &integration_type,
+        ctx.user_id,
     )
     .await
     {
@@ -2303,6 +3267,9 @@ async fn api_delete_client_key(
     Extension(ctx): Extension<AdminCtx>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
+    if !admin_auth::can_manage_client_keys(&ctx.role) {
+        return admin_auth::forbidden_response();
+    }
     let st = match STATE.get() {
         Some(s) => s.clone(),
         None => {
@@ -2313,6 +3280,26 @@ async fn api_delete_client_key(
                 .into_response();
         }
     };
+    if !ctx.is_admin() {
+        match db::fetch_client_key_owner(&st.pool, id, ctx.tenant_id).await {
+            Ok(Some(owner)) if owner == ctx.user_id => {}
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({ "error": "client key not found" })),
+                )
+                    .into_response();
+            }
+            Ok(Some(_)) => return admin_auth::forbidden_response(),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("{e}") })),
+                )
+                    .into_response();
+            }
+        }
+    }
     match db::delete_client_key(&st.pool, id, ctx.tenant_id).await {
         Ok(0) => (
             StatusCode::NOT_FOUND,
@@ -2354,6 +3341,7 @@ struct CreateUserBody {
     username: String,
     password: String,
     role: String,
+    email: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2363,6 +3351,28 @@ struct UpdateUserBody {
     #[serde(default = "default_user_active")]
     is_active: bool,
     password: Option<String>,
+    email: Option<String>,
+}
+
+fn parse_optional_email_field(raw: &Option<String>) -> Result<Option<Option<String>>, serde_json::Map<String, serde_json::Value>> {
+    let Some(s) = raw else {
+        return Ok(None);
+    };
+    let t = s.trim();
+    if t.is_empty() {
+        return Ok(Some(None));
+    }
+    match password_reset::normalize_email(t) {
+        Some(em) => Ok(Some(Some(em))),
+        None => {
+            let mut fields = serde_json::Map::new();
+            fields.insert(
+                "email".into(),
+                serde_json::Value::String("Email không hợp lệ".into()),
+            );
+            Err(fields)
+        }
+    }
 }
 
 fn default_user_active() -> bool {
@@ -2380,7 +3390,7 @@ async fn api_list_users(Extension(ctx): Extension<AdminCtx>) -> impl IntoRespons
                 .into_response();
         }
     };
-    match db::list_admin_users_for_tenant(&st.pool, ctx.tenant_id).await {
+    match db::list_dashboard_users_for_tenant(&st.pool, ctx.tenant_id).await {
         Ok(rows) => Json(rows).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2449,8 +3459,61 @@ async fn api_create_user(
                 .into_response();
         }
     };
-    match db::insert_admin_user(&st.pool, username, &password_hash, &role, ctx.tenant_id).await {
+    let email_patch = match parse_optional_email_field(&body.email) {
+        Ok(v) => v,
+        Err(fields) => {
+            return json_error_fields(
+                StatusCode::BAD_REQUEST,
+                "validation_failed",
+                "Dữ liệu user không hợp lệ",
+                fields,
+            );
+        }
+    };
+    if let Some(Some(ref em)) = email_patch {
+        match db::admin_email_taken(&st.pool, em, 0).await {
+            Ok(true) => {
+                fields.insert(
+                    "email".into(),
+                    serde_json::Value::String("Email đã tồn tại".into()),
+                );
+                return json_error_fields(
+                    StatusCode::CONFLICT,
+                    "email_taken",
+                    "Email đã được dùng",
+                    fields,
+                );
+            }
+            Ok(false) => {}
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("{e}") })),
+                )
+                    .into_response();
+            }
+        }
+    }
+    let tenant_id = if role == "admin" {
+        match db::create_personal_tenant(&st.pool, username).await {
+            Ok(tid) => tid,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("tenant: {e}") })),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        ctx.tenant_id
+    };
+    let email_ins = email_patch.as_ref().and_then(|o| o.as_deref());
+    match db::insert_admin_user(&st.pool, username, &password_hash, &role, tenant_id, email_ins).await {
         Ok(id) => {
+            if role == "admin" {
+                let _ = integrations::ensure_integration_rows(&st.pool, tenant_id).await;
+            }
             write_audit(
                 &st.pool,
                 &ctx,
@@ -2461,7 +3524,7 @@ async fn api_create_user(
                 Some(&role),
             )
             .await;
-            match db::list_admin_users_for_tenant(&st.pool, ctx.tenant_id).await {
+            match db::list_dashboard_users_for_tenant(&st.pool, ctx.tenant_id).await {
                 Ok(rows) => {
                     if let Some(u) = rows.into_iter().find(|u| u.id == id) {
                         return (StatusCode::CREATED, Json(u)).into_response();
@@ -2545,6 +3608,26 @@ async fn api_update_user(
         );
     }
     let role = role.unwrap();
+    let Some(target) = db::fetch_admin_user_by_id_any(&st.pool, id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "user_not_found" })),
+        )
+            .into_response();
+    };
+    let target_tenant = target.tenant_id.unwrap_or(1);
+    if target_tenant != ctx.tenant_id {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "User không thuộc workspace của bạn — không thể sửa",
+        );
+    }
+    let existing = Some(target);
     let pass_hash = if let Some(ref p) = body.password {
         let t = p.trim();
         if t.is_empty() {
@@ -2575,13 +3658,49 @@ async fn api_update_user(
     } else {
         None
     };
+    let email_patch = match parse_optional_email_field(&body.email) {
+        Ok(v) => v,
+        Err(fields) => {
+            return json_error_fields(
+                StatusCode::BAD_REQUEST,
+                "validation_failed",
+                "Dữ liệu user không hợp lệ",
+                fields,
+            );
+        }
+    };
+    if let Some(Some(ref em)) = email_patch {
+        match db::admin_email_taken(&st.pool, em, id).await {
+            Ok(true) => {
+                return json_error_fields(
+                    StatusCode::CONFLICT,
+                    "email_taken",
+                    "Email đã được dùng",
+                    serde_json::Map::from_iter([(
+                        "email".into(),
+                        serde_json::Value::String("Email đã tồn tại".into()),
+                    )]),
+                );
+            }
+            Ok(false) => {}
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("{e}") })),
+                )
+                    .into_response();
+            }
+        }
+    }
+    let email_db: Option<Option<&str>> = email_patch.as_ref().map(|o| o.as_deref());
     match db::update_admin_user(
         &st.pool,
         id,
-        ctx.tenant_id,
+        target_tenant,
         username,
         &role,
         body.is_active,
+        email_db,
         pass_hash.as_deref(),
     )
     .await
@@ -2592,6 +3711,17 @@ async fn api_update_user(
         )
             .into_response(),
         Ok(_) => {
+            let should_revoke = pass_hash.is_some()
+                || !body.is_active
+                || existing
+                    .as_ref()
+                    .map(|u| normalize_user_role(&u.role).as_deref() != Some(role.as_str()))
+                    .unwrap_or(false);
+            if should_revoke {
+                if let Err(e) = st.session_store.revoke_all_for_user(id).await {
+                    tracing::warn!(error = %e, user_id = id, "revoke sessions after user update failed");
+                }
+            }
             write_audit(
                 &st.pool,
                 &ctx,
@@ -2602,15 +3732,25 @@ async fn api_update_user(
                 Some(&role),
             )
             .await;
-            match db::list_admin_users_for_tenant(&st.pool, ctx.tenant_id).await {
-                Ok(rows) => {
-                    if let Some(u) = rows.into_iter().find(|u| u.id == id) {
-                        return (StatusCode::OK, Json(u)).into_response();
-                    }
+            match db::fetch_dashboard_user_public(&st.pool, id, target_tenant).await {
+                Ok(Some(u)) => return (StatusCode::OK, Json(u)).into_response(),
+                Ok(None) => {
+                    tracing::error!(user_id = id, tenant_id = target_tenant, "update_user: row missing after update");
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal_error",
+                        "Đã cập nhật nhưng không đọc lại được user — thử tải lại trang",
+                    );
                 }
-                Err(_) => {}
+                Err(e) => {
+                    tracing::error!(error = %e, user_id = id, "fetch user after update failed");
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal_error",
+                        &format!("{e}"),
+                    );
+                }
             }
-            StatusCode::OK.into_response()
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2648,6 +3788,9 @@ async fn api_delete_user(
         )
             .into_response(),
         Ok(_) => {
+            if let Err(e) = st.session_store.revoke_all_for_user(id).await {
+                tracing::warn!(error = %e, user_id = id, "revoke sessions after user delete failed");
+            }
             write_audit(
                 &st.pool,
                 &ctx,
@@ -2819,6 +3962,7 @@ struct TransactionLogsQuery {
     limit: Option<i64>,
     method: Option<String>,
     status: Option<String>,
+    outcome: Option<String>,
     search: Option<String>,
 }
 
@@ -2854,6 +3998,7 @@ async fn api_list_transaction_logs(
         query.method.as_deref(),
         status_min,
         status_max,
+        query.outcome.as_deref(),
         query.search.as_deref(),
     )
     .await
@@ -2868,6 +4013,9 @@ async fn api_list_transaction_logs(
 }
 
 async fn api_list_integrations(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations").await;
+    }
     integrations::api_list_integrations(&ctx).await
 }
 
@@ -3015,6 +4163,23 @@ async fn api_list_integration_snapshots(
         return audit_admin_denied(&ctx, "integrations/snapshots").await;
     }
     integrations::api_list_snapshots(&ctx, query).await
+}
+
+async fn api_get_integration_bridge(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/bridge").await;
+    }
+    integrations::api_get_integration_bridge(&ctx).await
+}
+
+async fn api_put_integration_bridge(
+    Extension(ctx): Extension<AdminCtx>,
+    axum::Json(body): axum::Json<integrations::IntegrationBridgeWrite>,
+) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/bridge").await;
+    }
+    integrations::api_put_integration_bridge(&ctx, body).await
 }
 
 async fn api_dashboard_stats(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {

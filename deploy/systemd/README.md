@@ -56,7 +56,18 @@ npm run build
 # Gateway đọc web/dist/ — không cần restart nếu chỉ đổi static
 ```
 
-## 6. Cập nhật sau khi sửa code Rust
+## 6. SMTP — OTP quên mật khẩu (Gmail)
+
+```bash
+# Gmail: bật 2FA → App Passwords
+sudo ./scripts/setup-smtp-gmail.sh '<16-char-app-password>'
+```
+
+Script ghi `/etc/avaso-gateway/smtp.env` (chmod 600), tắt `PASSWORD_RESET_DEV_LOG`, restart service, gửi mail thử.
+
+Dev không SMTP: `PASSWORD_RESET_DEV_LOG=1` trong `/etc/avaso-gateway/env` → OTP in `journalctl -u avaso-gateway -f`.
+
+## 7. Cập nhật sau khi sửa code Rust
 
 ```bash
 cd /root/avaso-gateway
@@ -64,7 +75,7 @@ cargo build --release
 sudo systemctl restart avaso-gateway
 ```
 
-## 7. Dừng bản chạy tay (trước khi bật systemd)
+## 8. Dừng bản chạy tay (trước khi bật systemd)
 
 ```bash
 pkill -9 -f avaso-gateway || true
@@ -73,7 +84,7 @@ ss -tlnp | grep ':3000'
 
 Chỉ nên có **một** listener (systemd).
 
-## 8. Test rate limit (429)
+## 9. Test rate limit (429)
 
 `config.yaml` đã có `rate_limit.enabled: true` (rps/burst). Spam request có key:
 
@@ -88,11 +99,11 @@ echo
 
 Kỳ vọng: một số dòng **429** + log `reason=rate_limit_exceeded`.
 
-## 9. NFR-20 (ổn định 24h + auto-restart)
+## 10. NFR-20 (ổn định 24h + auto-restart)
 
 Xem chi tiết: [`NFR20_STABILITY.md`](NFR20_STABILITY.md) và script `scripts/nfr20-soak-test.sh`.
 
-## 10. Lỗi thường gặp
+## 11. Lỗi thường gặp
 
 | Triệu chứng | Xử lý |
 |-------------|--------|

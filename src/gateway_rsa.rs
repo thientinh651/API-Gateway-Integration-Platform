@@ -13,7 +13,7 @@ use rsa::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::sync::OnceLock;
 
 const SETTING_PRIVATE: &str = "gateway_rsa_private_pkcs8";
@@ -112,9 +112,9 @@ pub fn encrypt_for_gateway_public(plaintext: &[u8]) -> Result<CryptoEnvelope, St
     })
 }
 
-pub async fn ensure_gateway_rsa_keys(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+pub async fn ensure_gateway_rsa_keys(pool: &PgPool) -> Result<(), sqlx::Error> {
     let exists: Option<String> =
-        sqlx::query_scalar("SELECT v FROM gateway_settings WHERE k = ? LIMIT 1")
+        sqlx::query_scalar("SELECT v FROM gateway_settings WHERE k = $1 LIMIT 1")
             .bind(SETTING_PRIVATE)
             .fetch_optional(pool)
             .await?;
@@ -146,7 +146,7 @@ pub async fn ensure_gateway_rsa_keys(pool: &SqlitePool) -> Result<(), sqlx::Erro
 }
 
 async fn store_keypair(
-    pool: &SqlitePool,
+    pool: &PgPool,
     private: &RsaPrivateKey,
     public: &RsaPublicKey,
 ) -> Result<(), sqlx::Error> {
@@ -164,7 +164,7 @@ async fn store_keypair(
         (SETTING_KEY_ID, key_id.as_str()),
     ] {
         sqlx::query(
-            "INSERT INTO gateway_settings (k, v) VALUES (?, ?)
+            "INSERT INTO gateway_settings (k, v) VALUES ($1, $2)
              ON CONFLICT(k) DO UPDATE SET v = excluded.v",
         )
         .bind(k)
@@ -175,9 +175,9 @@ async fn store_keypair(
     Ok(())
 }
 
-pub async fn init_rsa_from_db(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+pub async fn init_rsa_from_db(pool: &PgPool) -> Result<(), sqlx::Error> {
     ensure_gateway_rsa_keys(pool).await?;
-    let pem: String = sqlx::query_scalar("SELECT v FROM gateway_settings WHERE k = ? LIMIT 1")
+    let pem: String = sqlx::query_scalar("SELECT v FROM gateway_settings WHERE k = $1 LIMIT 1")
         .bind(SETTING_PRIVATE)
         .fetch_one(pool)
         .await?;
@@ -194,15 +194,15 @@ fn private_key() -> Result<&'static RsaPrivateKey, String> {
         .ok_or_else(|| "gateway RSA private key not loaded".into())
 }
 
-pub async fn public_key_response(pool: &SqlitePool) -> Result<GatewayPublicKeyResponse, String> {
-    let key_id: String = sqlx::query_scalar("SELECT v FROM gateway_settings WHERE k = ? LIMIT 1")
+pub async fn public_key_response(pool: &PgPool) -> Result<GatewayPublicKeyResponse, String> {
+    let key_id: String = sqlx::query_scalar("SELECT v FROM gateway_settings WHERE k = $1 LIMIT 1")
         .bind(SETTING_KEY_ID)
         .fetch_optional(pool)
         .await
         .map_err(|e| format!("db: {e}"))?
         .unwrap_or_else(|| "default".into());
     let public_pem: String =
-        sqlx::query_scalar("SELECT v FROM gateway_settings WHERE k = ? LIMIT 1")
+        sqlx::query_scalar("SELECT v FROM gateway_settings WHERE k = $1 LIMIT 1")
             .bind(SETTING_PUBLIC)
             .fetch_optional(pool)
             .await

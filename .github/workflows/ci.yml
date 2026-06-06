@@ -10,6 +10,16 @@ jobs:
   rust:
     name: Rust test & build
     runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -18,6 +28,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: cargo test
+        env:
+          REDIS_URL: redis://127.0.0.1:6379
         run: cargo test --verbose
 
       - name: cargo build release

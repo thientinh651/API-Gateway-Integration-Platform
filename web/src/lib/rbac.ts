@@ -1,6 +1,6 @@
 import type { AdminMe } from './api';
 
-export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+export type HttpMethod = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
 
 /** Mirror `admin_auth::rbac_allow` — path có hoặc không prefix `/api`. */
 export function normalizeRole(role?: string): string {
@@ -18,34 +18,61 @@ export function rbacAllow(method: HttpMethod, path: string, role?: string): bool
   const r = normalizeRole(role);
   const p = stripApiPrefix(path);
   const m = method.toUpperCase() as HttpMethod;
+  const get = m === 'GET' || m === 'HEAD';
+  const write = m === 'POST' || m === 'PUT' || m === 'PATCH' || m === 'DELETE';
 
   if (r === 'admin') return true;
-  if (r === 'viewer') return m === 'GET';
 
-  // operator
-  if (p.startsWith('/users')) return false;
-
-  if (p.startsWith('/integrations')) {
-    if (p === '/integrations' && m === 'GET') return true;
+  if (r === 'viewer') {
+    if (write) return false;
     if (
-      (p === '/integrations/salesforce/test' || p === '/integrations/zoho/test') &&
-      m === 'GET'
+      p.startsWith('/client-keys') ||
+      p.startsWith('/users') ||
+      p.startsWith('/settings') ||
+      p.startsWith('/crypto/') ||
+      p.startsWith('/transaction-logs') ||
+      p.startsWith('/audit-logs') ||
+      p.startsWith('/proxy-queue') ||
+      p.startsWith('/integrations') ||
+      p === '/reload-config'
     ) {
       return false;
     }
-    if (p.includes('/connect') || p.includes('/disconnect') || p.includes('/sync')) {
-      return false;
-    }
-    return m === 'GET';
+    return get && (p === '/routes' || p.startsWith('/routes/') || p === '/dashboard/stats' || p === '/me' || p === '/ping');
   }
 
-  if (m === 'GET') return true;
-  if (p.startsWith('/settings')) return false;
-  if (p === '/reload-config') return false;
+  // operator — không users/settings/integrations
+  if (
+    p.startsWith('/users') ||
+    p.startsWith('/settings') ||
+    p.startsWith('/integrations') ||
+    p === '/reload-config'
+  ) {
+    return false;
+  }
+  if (p.startsWith('/audit-logs') || p.startsWith('/transaction-logs')) {
+    return get;
+  }
+  if (p.startsWith('/client-keys') || p.startsWith('/crypto/')) {
+    if (p === '/crypto/public-key' && get) return true;
+    if (p === '/client-keys' && get) return true;
+    if (p === '/client-keys' && m === 'POST') return true;
+    if (p === '/client-keys/encrypted' && m === 'POST') return true;
+    if (p.startsWith('/client-keys/') && m === 'DELETE') return true;
+    return false;
+  }
+  if (get) return true;
+  if (p.startsWith('/proxy-queue')) {
+    return m === 'POST' || m === 'DELETE';
+  }
   if (p === '/routes' && m === 'POST') return false;
   if (p.startsWith('/routes/') && m === 'DELETE') return false;
+  return write;
+}
 
-  return true;
+export function canAccessClientKeys(user: AdminMe | null): boolean {
+  const r = normalizeRole(user?.role);
+  return r === 'admin' || r === 'operator';
 }
 
 export function canCreateRoute(user: AdminMe | null): boolean {
@@ -60,17 +87,16 @@ export function canDeleteRoute(user: AdminMe | null): boolean {
   return rbacAllow('DELETE', '/api/routes/1', user?.role);
 }
 
-/** @deprecated Prefer canCreateRoute / canUpdateRoute / canDeleteRoute */
 export function canWriteRoutes(user: AdminMe | null): boolean {
   return canCreateRoute(user);
 }
 
 export function canWriteClientKeys(user: AdminMe | null): boolean {
-  return rbacAllow('POST', '/api/client-keys', user?.role);
+  return canAccessClientKeys(user) && rbacAllow('POST', '/api/client-keys', user?.role);
 }
 
 export function canDeleteClientKeys(user: AdminMe | null): boolean {
-  return rbacAllow('DELETE', '/api/client-keys/1', user?.role);
+  return canAccessClientKeys(user) && rbacAllow('DELETE', '/api/client-keys/1', user?.role);
 }
 
 export function canManageUsers(user: AdminMe | null): boolean {
@@ -89,11 +115,22 @@ export function canManageIntegrations(user: AdminMe | null): boolean {
   return normalizeRole(user?.role) === 'admin';
 }
 
+export function canViewLogs(user: AdminMe | null): boolean {
+  return rbacAllow('GET', '/api/transaction-logs', user?.role);
+}
+
+export function canViewAudit(user: AdminMe | null): boolean {
+  return rbacAllow('GET', '/api/audit-logs', user?.role);
+}
+
+export function canViewJournal(user: AdminMe | null): boolean {
+  return canViewLogs(user) || canViewAudit(user);
+}
+
 export function isViewer(user: AdminMe | null): boolean {
   return normalizeRole(user?.role) === 'viewer';
 }
 
-/** Admin API GET tương ứng trang dashboard — dùng lọc menu & guard route. */
 const NAV_PAGE_GET_API: Record<string, string> = {
   '/routes': '/api/routes',
   '/auth': '/api/client-keys',
@@ -101,28 +138,45 @@ const NAV_PAGE_GET_API: Record<string, string> = {
   '/integrations': '/api/integrations',
   '/users': '/api/users',
   '/logs': '/api/transaction-logs',
-  '/audit': '/api/audit-logs',
   '/settings': '/api/settings',
 };
 
-/**
- * Trang có trong menu chỉ khi role đọc được API chính của trang (khớp backend).
- * Khách: Tổng quan + Tài liệu API. Trang cần đăng nhập: ẩn khi chưa login.
- */
 export function canAccessNavPath(path: string, user: AdminMe | null): boolean {
-  if (path === '/' || path === '/api-docs') return true;
-  if (path === '/proxy-try') return user != null;
+  if (path === '/' || path === '/api-docs' || path === '/register') return true;
+  if (path === '/profile') return user != null;
+  if (path === '/proxy-try') {
+    return user != null && canAccessClientKeys(user);
+  }
   if (!user) return false;
 
   const api = NAV_PAGE_GET_API[path];
   if (!api) return false;
   if (path === '/users') return canManageUsers(user);
+  if (path === '/integrations') return canManageIntegrations(user);
+  if (path === '/auth') return canAccessClientKeys(user);
+  if (path === '/logs') return canViewJournal(user);
+  if (path === '/proxy-queue') return rbacAllow('GET', '/api/proxy-queue', user.role);
   return rbacAllow('GET', api, user.role);
 }
 
+/** Nhãn UI — khớp thuật ngữ LVTN (mục 2.3.1). */
 export function roleLabel(role?: string): string {
   const r = normalizeRole(role);
   if (r === 'admin') return 'Admin';
   if (r === 'operator') return 'Operator';
   return 'Viewer';
+}
+
+export function roleBadgeClass(role?: string): string {
+  const r = normalizeRole(role);
+  if (r === 'admin') return 'bg-red-500/15 text-red-300 border-red-500/35';
+  if (r === 'operator') return 'bg-blue-500/15 text-blue-300 border-blue-500/35';
+  return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/35';
+}
+
+export function roleDescription(role?: string): string {
+  const r = normalizeRole(role);
+  if (r === 'admin') return 'Toàn quyền trong workspace của bạn';
+  if (r === 'operator') return 'Vận hành route/key — chỉ tài nguyên do bạn tạo (key)';
+  return 'Chỉ xem route — không API key, log, queue, tích hợp';
 }

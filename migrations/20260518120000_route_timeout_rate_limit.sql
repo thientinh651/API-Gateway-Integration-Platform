@@ -1,2 +1,0 @@
-ALTER TABLE gateway_routes ADD COLUMN timeout_secs INTEGER NOT NULL DEFAULT 30;
-ALTER TABLE gateway_routes ADD COLUMN rate_limit_per_min INTEGER NOT NULL DEFAULT 100;

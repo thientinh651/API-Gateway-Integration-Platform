@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -152,9 +152,20 @@ export function LoginForm() {
           Ghi nhớ tên đăng nhập
         </Label>
       </div>
+      <div className="text-right">
+        <Link to="/forgot-password" className="text-xs text-primary hover:underline">
+          Quên mật khẩu?
+        </Link>
+      </div>
       <Button type="submit" disabled={busy} className="w-full bg-primary hover:bg-primary/90">
         {busy ? 'Đang đăng nhập…' : 'Đăng nhập'}
       </Button>
+      <p className="text-center text-xs text-muted-foreground pt-1">
+        Chưa có tài khoản Viewer?{' '}
+        <Link to="/register" className="text-primary hover:underline">
+          Đăng ký
+        </Link>
+      </p>
     </form>
   );
 }

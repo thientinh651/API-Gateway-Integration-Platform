@@ -5,7 +5,6 @@ import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import { canDeleteClientKeys, canWriteClientKeys } from '../../lib/rbac';
 import {
   ApiClientError,
-  createClientKey,
   deleteClientKey,
   fetchClientKeys,
   type ClientKeyMeta,
@@ -13,7 +12,6 @@ import {
 import { ApiKeySummaryCards } from './auth/ApiKeySummaryCards';
 import { ApiKeysDataTable } from './auth/ApiKeysDataTable';
 import { CreateApiKeyDialog } from './auth/CreateApiKeyDialog';
-import { CreateApiKeyRsaDialog } from './auth/CreateApiKeyRsaDialog';
 import type { ApiKeyRow } from './auth/apiKeyTypes';
 import { integrationTypeLabel } from './auth/clientKeyIntegrationTypes';
 
@@ -72,18 +70,10 @@ function AuthAdmin() {
       <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Bảo mật & Authentication</h1>
-          <p className="text-muted-foreground">
-            Hai cách cấp credential (giống WSO2 đơn giản): (1) HTTPS thường + HMAC; (2){' '}
-            <strong className="text-foreground">RSA public encrypt</strong> → gateway private decrypt
-            khi đăng ký secret.
-          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           {allowCreateKeys ? (
-            <>
-              <CreateApiKeyDialog onKeysChanged={() => void reload()} />
-              <CreateApiKeyRsaDialog onKeysChanged={() => void reload()} />
-            </>
+            <CreateApiKeyDialog onKeysChanged={() => void reload()} />
           ) : (
             <p className="text-xs text-muted-foreground self-center">Viewer: không tạo API key.</p>
           )}

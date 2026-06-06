@@ -20,7 +20,8 @@ Dùng khi bảo vệ: **không thay WSO2**, chứng minh **đủ / vượt FR** 
 | Tích hợp | FR-I4 | OAuth Zoho | Connect Zoho; Test |
 | Tích hợp | FR-I5–I6 | Sync snapshot | Nút Sync; **Tổng quan** chart |
 | Tích hợp | FR-I7–I8 | UI trạng thái + KPI | Trang Tích hợp + Overview |
-| Tích hợp | FR-I9 | Viewer read-only | User viewer → 403 connect |
+| Tích hợp | FR-I9 | Chỉ Admin cấu hình | Operator/Viewer → 403 `/api/integrations/*` |
+| Quản trị | F-19 | Hồ sơ cá nhân | Trang **Tài khoản**, `PUT /api/me` |
 | Tích hợp | FR-I10 | Audit integration | Audit: `integration.connect`, `integration.sync` |
 | Data-plane SF/Zoho | — | `/v1/api/sf/*`, `/v1/api/zoho/*` | Client HMAC → CRM API qua gateway |
 | Vận hành | — | Production | https://thientinh.io.vn; systemd; `docs/XU_LY_502_BAD_GATEWAY.md` |

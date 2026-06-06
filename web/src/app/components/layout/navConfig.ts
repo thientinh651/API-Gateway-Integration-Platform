@@ -8,7 +8,6 @@ import {
   Settings,
   Users,
   ScrollText,
-  FileText,
   Plug,
   type LucideIcon,
 } from 'lucide-react';
@@ -24,7 +23,6 @@ export const NAV_ITEMS: NavItem[] = [
   { path: '/api-docs', icon: FileCode, label: 'Tài liệu API' },
   { path: '/integrations', icon: Plug, label: 'Tích hợp' },
   { path: '/users', icon: Users, label: 'Quản lý Users' },
-  { path: '/logs', icon: ScrollText, label: 'Logs' },
-  { path: '/audit', icon: FileText, label: 'Audit Logs' },
+  { path: '/logs', icon: ScrollText, label: 'Log vận hành' },
   { path: '/settings', icon: Settings, label: 'Cài đặt hệ thống' },
 ];

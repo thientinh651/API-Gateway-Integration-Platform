@@ -31,3 +31,74 @@ html[dir='ltr'] {
   right: 0 !important;
   transform: translate(35%, -35%) !important;
 }
+
+/* Sonner stack — mở/gom mượt (Apple-like) */
+.avaso-toaster[data-sonner-toaster] {
+  --toast-expand-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --toast-collapse-ease: cubic-bezier(0.45, 0.05, 0.2, 1);
+  --toast-expand-ms: 580ms;
+  --toast-collapse-ms: 700ms;
+  transition: transform var(--toast-expand-ms) var(--toast-expand-ease) !important;
+}
+
+.avaso-toaster[data-sonner-toaster]:is(:hover, .avaso-toast-collapsing) {
+  transform: translateY(-8px);
+}
+
+.avaso-toaster[data-sonner-toaster] [data-sonner-toast][data-mounted='true']:not([data-removed='true']) {
+  transform-origin: top right;
+  will-change: transform, height, opacity;
+  transition:
+    transform var(--toast-collapse-ms) var(--toast-collapse-ease),
+    height var(--toast-collapse-ms) var(--toast-collapse-ease),
+    opacity 480ms ease,
+    box-shadow 420ms ease !important;
+  transition-delay: calc((4 - min(var(--index, 0), 4)) * 46ms) !important;
+}
+
+/* Mở: toast sau trước, toast trước sau */
+.avaso-toaster[data-sonner-toaster]:is(:hover, .avaso-toast-collapsing)
+  [data-sonner-toast][data-mounted='true']:not([data-removed='true']) {
+  transition-duration: var(--toast-expand-ms), var(--toast-expand-ms), 420ms, 360ms !important;
+  transition-timing-function: var(--toast-expand-ease), var(--toast-expand-ease), ease, ease !important;
+  transition-delay: calc(min(var(--index, 0), 4) * 34ms) !important;
+}
+
+/* Gom stack: bỏ scale âm Sonner (gây giật), dùng peek nhẹ */
+.avaso-toaster[data-sonner-toaster]:not(:hover):not(.avaso-toast-collapsing)
+  [data-sonner-toast][data-expanded='false'][data-front='false'][data-mounted='true'] {
+  --peek-scale: calc(1 - min(var(--toasts-before, 0), 4) * 0.028);
+  --y: translateY(calc(var(--lift-amount) * var(--toasts-before) * 0.9)) scale(var(--peek-scale)) !important;
+}
+
+/* Mở stack */
+.avaso-toaster[data-sonner-toaster]:is(:hover, .avaso-toast-collapsing)
+  [data-sonner-toast][data-mounted='true'] {
+  --y: translateY(calc(var(--lift) * var(--offset))) !important;
+  height: var(--initial-height) !important;
+}
+
+.avaso-toaster[data-sonner-toaster] [data-sonner-toast][data-front='false'][data-styled='true'] > * {
+  opacity: 0.38;
+  transition: opacity 460ms var(--toast-expand-ease) !important;
+}
+
+.avaso-toaster[data-sonner-toaster]:is(:hover, .avaso-toast-collapsing)
+  [data-sonner-toast][data-styled='true'] > * {
+  opacity: 1 !important;
+  transition-delay: calc(min(var(--index, 0), 4) * 28ms) !important;
+}
+
+.avaso-toaster[data-sonner-toaster]:not(:hover):not(.avaso-toast-collapsing)
+  [data-sonner-toast][data-front='false'][data-styled='true'] > * {
+  transition-delay: calc((4 - min(var(--index, 0), 4)) * 38ms) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .avaso-toaster[data-sonner-toaster],
+  .avaso-toaster[data-sonner-toaster] [data-sonner-toast],
+  .avaso-toaster[data-sonner-toaster] [data-sonner-toast] > * {
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+  }
+}

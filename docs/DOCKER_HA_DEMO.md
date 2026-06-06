@@ -12,7 +12,7 @@ Không thay Kubernetes trên VPS 2GB; **đủ chứng minh HA** cho đồ án.
 Client → Nginx (:8080 host)
            ├─ round-robin → middleware-instance-1 :3000
            └─ round-robin → middleware-instance-2 :3000
-                    └─ volume chung gateway-data (SQLite routes/keys/integrations)
+                    └─ PostgreSQL + Redis (shared — routes/keys/integrations/sessions)
 ```
 
 | Thành phần | File |
@@ -61,7 +61,7 @@ hey -n 500 -c 20 http://127.0.0.1:8080/health
 
 ### Tại sao không Kubernetes?
 
-> Ứng dụng đã **đóng gói Docker Image** độc lập. Em cấu hình **HA Active-Active**: nhiều container sau **Nginx Load Balancer**. Trên **single-node 2GB RAM**, Kubernetes chiếm phần lớn tài nguyên cho control plane; **Docker Compose** đủ dự phòng cho đồ án và giữ throughput data-plane cao. Rust stateless ở tầng xử lý request; cấu hình route/key/integration **tập trung SQLite volume chung**. Lên EKS sau này chủ yếu đổi manifest hạ tầng.
+> Ứng dụng đã **đóng gói Docker Image** độc lập. Em cấu hình **HA Active-Active**: nhiều container sau **Nginx Load Balancer**, **một PostgreSQL** và **Redis** dùng chung. Trên **single-node 2GB RAM**, Kubernetes chiếm phần lớn tài nguyên cho control plane; **Docker Compose** đủ dự phòng cho đồ án. Rust stateless ở tầng xử lý request; state tập trung **PostgreSQL + Redis**. Lên EKS sau này chủ yếu đổi manifest hạ tầng.
 
 ### "1 server sập thì sao?"
 
@@ -71,9 +71,9 @@ hey -n 500 -c 20 http://127.0.0.1:8080/health
 
 | Thành phần | HA demo |
 |------------|---------|
-| Route, key, integration token | Volume SQLite chung — OK demo |
-| Admin session, replay cache, DLQ | **In-memory từng instance** — `/api` dùng **ip_hash** sticky; data-plane round-robin OK |
-| Ghi SQLite đồng thời 2 instance | Chỉ phù hợp tải demo; production nên Postgres |
+| Route, key, integration token | **PostgreSQL** — 2 instance ghi an toàn |
+| Admin session | **Redis** dùng chung — không cần sticky session |
+| Replay cache, DLQ | **In-memory từng instance** — data-plane round-robin OK |
 
 ---
 
