@@ -1,14 +1,17 @@
+import { useRef } from 'react';
 import { Outlet } from 'react-router';
 import { useAdminAuth } from '../../../contexts/AdminAuthContext';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
+import { ScrollToTopButton } from './ScrollToTopButton';
 
 export function MainLayout() {
   const { user } = useAdminAuth();
+  const mainRef = useRef<HTMLElement>(null);
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar />
-      <main className="flex-grow overflow-y-auto bg-background relative">
+      <main ref={mainRef} className="flex-grow overflow-y-auto bg-background relative">
         <div className="pointer-events-none absolute inset-0 tech-grid-bg-subtle opacity-40" aria-hidden />
         <Header />
         <div
@@ -20,6 +23,7 @@ export function MainLayout() {
         >
           <Outlet />
         </div>
+        <ScrollToTopButton scrollRoot={mainRef} />
       </main>
     </div>
   );

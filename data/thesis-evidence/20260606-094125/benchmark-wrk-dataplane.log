@@ -1,0 +1,55 @@
+==> wrk data-plane HMAC (30s)
+benchmark_at=2026-06-06T09:41:56+00:00
+url=http://127.0.0.1:3000/v1/api/get
+requests=30
+concurrency=10
+duration=15s
+rss_kb_before=36680
+---
+Tool: wrk
+Running 15s test @ http://127.0.0.1:3000/v1/api/get
+  10 threads and 10 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency   457.32ms  661.61ms   1.96s    77.92%
+    Req/Sec     3.99      4.25    20.00     86.49%
+  Latency Distribution
+     50%    6.49ms
+     75%  829.96ms
+     90%    1.68s 
+     99%    1.96s 
+  84 requests in 15.08s, 33.69KB read
+  Socket errors: connect 0, read 0, write 0, timeout 7
+  Non-2xx or 3xx responses: 46
+Requests/sec:      5.57
+Transfer/sec:      2.23KB
+Tool: signed curl (HMAC e2e, unique query/replay-safe)
+signed_requests_ok=0
+signed_requests_fail=60
+signed_avg_latency_ms=0
+---
+rss_kb_after=37420
+rss_delta_kb=740
+--- metrics json ---
+{"data_plane":{"denied_total":46,"errors_total":0,"requests_total":85,"success_total":39},"format":"json","latency_ms":{"count":85,"histogram":{"le_10":46,"le_100":46,"le_1000":60,"le_25":46,"le_250":48,"le_2500":79,"le_5":46,"le_50":46,"le_500":50,"le_5000":83,"le_inf":85},"sum":65270},"prometheus":"/metrics?format=prometheus","service":"avaso-gateway","uptime_secs":168}--- metrics prometheus ---
+# HELP gateway_uptime_seconds Process uptime.
+# TYPE gateway_uptime_seconds gauge
+gateway_uptime_seconds 168
+# HELP gateway_data_plane_requests_total Data-plane requests.
+# TYPE gateway_data_plane_requests_total counter
+gateway_data_plane_requests_total 85
+# HELP gateway_data_plane_success_total Successful data-plane requests.
+# TYPE gateway_data_plane_success_total counter
+gateway_data_plane_success_total 39
+# HELP gateway_data_plane_denied_total Denied data-plane requests.
+# TYPE gateway_data_plane_denied_total counter
+gateway_data_plane_denied_total 46
+# HELP gateway_data_plane_errors_total Data-plane upstream/other errors.
+# TYPE gateway_data_plane_errors_total counter
+gateway_data_plane_errors_total 0
+# HELP gateway_request_duration_ms Request latency histogram (ms).
+# TYPE gateway_request_duration_ms histogram
+gateway_request_duration_ms_bucket{le="5"} 46
+gateway_request_duration_ms_bucket{le="10"} 46
+gateway_request_duration_ms_bucket{le="25"} 46
+
+Saved: /tmp/x/result-20260606-094156.txt

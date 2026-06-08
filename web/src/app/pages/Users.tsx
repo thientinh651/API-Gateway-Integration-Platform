@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
+import { ConfirmDangerButton } from '../components/forms/ConfirmDangerButton';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import {
@@ -38,6 +39,7 @@ import {
   failClientValidation,
   fieldInputErrorClass,
   handleFormApiError,
+  isValidEmail,
 } from '../../lib/formValidation';
 import { FieldError } from '../components/forms/FieldError';
 
@@ -91,6 +93,9 @@ function UsersAdmin() {
     }
     if (editingUser && formData.password.trim() && formData.password.trim().length < 6) {
       errors.password = 'Mật khẩu tối thiểu 6 ký tự';
+    }
+    if (formData.email.trim() && !isValidEmail(formData.email.trim())) {
+      errors.email = 'Email không hợp lệ';
     }
     return errors;
   };
@@ -376,15 +381,16 @@ function UsersAdmin() {
                       >
                         <Edit className="w-4 h-4" />
                       </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => void handleDelete(user.id)}
+                      <ConfirmDangerButton
+                        title="Xóa user?"
+                        description={`Xóa tài khoản "${user.username}" — không hoàn tác.`}
+                        confirmLabel="Xóa user"
+                        onConfirm={() => handleDelete(user.id)}
                         className="text-red-400"
                         disabled={me?.user_id === user.id}
                       >
                         <Trash2 className="w-4 h-4" />
-                      </Button>
+                      </ConfirmDangerButton>
                     </div>
                   </td>
                 </tr>

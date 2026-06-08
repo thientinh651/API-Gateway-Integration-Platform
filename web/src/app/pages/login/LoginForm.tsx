@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router';
+import { Link, useLocation, useNavigate } from 'react-router';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -28,10 +28,13 @@ function applyApiFieldErrors(fields?: Record<string, string>): FieldErrors {
 
 export function LoginForm() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { refresh } = useAdminAuth();
-  const [username, setUsername] = useState(() =>
-    typeof window !== 'undefined' ? getSavedUsername() ?? '' : ''
-  );
+  const prefilledUsername =
+    (location.state as { username?: string } | null)?.username?.trim() ||
+    getSavedUsername() ||
+    '';
+  const [username, setUsername] = useState(prefilledUsername);
   const [password, setPassword] = useState('');
   const [remember, setRemember] = useState(() =>
     typeof window !== 'undefined' ? localStorage.getItem(SAVED_USERNAME_KEY) != null : false

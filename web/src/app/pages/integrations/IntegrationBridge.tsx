@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowLeftRight, ChevronDown, ChevronUp, Settings2 } from 'lucide-react';
+import { ArrowLeftRight, ChevronDown, ChevronUp, Play, Settings2 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   fetchIntegrationBridge,
+  runIntegrationBridge,
   updateIntegrationBridge,
   type BridgeFieldMapping,
   type IntegrationBridgeConfig,
@@ -24,12 +25,14 @@ type Props = {
   isAdmin: boolean;
   sfConnected: boolean;
   zohoConnected: boolean;
+  onApplied?: () => void;
 };
 
-export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected }: Props) {
+export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected, onApplied }: Props) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [running, setRunning] = useState(false);
   const [bridge, setBridge] = useState<IntegrationBridgeConfig | null>(null);
 
   const load = useCallback(async () => {
@@ -65,7 +68,13 @@ export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected }: Props
         mappings: bridge.mappings,
       });
       setBridge(saved);
-      toast.success('Đã lưu cấu hình bridge');
+      if (!saved.enabled) {
+        toast.warning('Đã lưu map — tick "Bật bridge" rồi Lưu lại để chạy');
+      } else if (!saved.both_connected) {
+        toast.success('Đã lưu — chờ SF + Zoho connected');
+      } else {
+        toast.success('Bridge đã bật — sync snapshot hoặc Chạy bridge');
+      }
     } catch (e) {
       toastApiError(e);
     } finally {
@@ -73,8 +82,35 @@ export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected }: Props
     }
   };
 
+  const runBridge = async () => {
+    setRunning(true);
+    try {
+      const res = await runIntegrationBridge();
+      toast.success(`Bridge OK — ${res.records} bản ghi mapped_deals`);
+      onApplied?.();
+    } catch (e) {
+      toastApiError(e);
+    } finally {
+      setRunning(false);
+    }
+  };
+
   const activeCount = bridge?.mappings.filter((m) => m.enabled).length ?? 0;
   const bridgeLive = bridge?.enabled && bridge.both_connected;
+
+  const statusHint = (() => {
+    if (!bridge) return null;
+    if (!bridge.enabled) {
+      return 'Map đã lưu nhưng bridge chưa bật — tick ô "Bật bridge" rồi Lưu.';
+    }
+    if (!bridge.both_connected) {
+      return 'Bridge đã bật — cần connected cả Salesforce và Zoho.';
+    }
+    if (activeCount === 0) {
+      return 'Bật ít nhất một field map rồi Lưu.';
+    }
+    return 'Sẵn sàng: sync snapshot SF (Opportunity) rồi bấm Chạy bridge — hoặc sync tự chạy nếu đủ điều kiện.';
+  })();
 
   return (
     <div className="flex flex-col items-center justify-center px-2 lg:px-4 py-4 lg:py-0 min-w-[120px] lg:min-w-[180px]">
@@ -118,17 +154,21 @@ export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected }: Props
             <div>
               <h3 className="text-sm font-bold text-white">Cấu hình mũi tên (field map)</h3>
               <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
-                Khi deal thắng ở Salesforce, gateway map snapshot sang Zoho Projects — tên dự án,
-                trạng thái, deadline task. Phase demo: lưu rule; sync snapshot từng hệ riêng, bridge
-                định nghĩa cách hai bên &quot;hiểu&quot; nhau.
+                Map snapshot Salesforce (Opportunity/Account) sang dạng Zoho Project/Task. Lưu rule →
+                bật bridge → sync SF → Chạy bridge (xuất hiện trong Snapshot báo cáo).
               </p>
             </div>
           </div>
 
-          {!bridge.both_connected ? (
-            <p className="text-xs text-amber-400/90 mb-3 rounded border border-amber-500/25 bg-amber-500/10 px-2 py-1.5">
-              Cần <strong>connected</strong> cả Salesforce và Zoho trước khi bật bridge thực tế.
-              Vẫn có thể lưu map trước.
+          {statusHint ? (
+            <p
+              className={`text-xs mb-3 rounded border px-2 py-1.5 ${
+                bridgeLive && activeCount > 0
+                  ? 'text-emerald-400/90 border-emerald-500/25 bg-emerald-500/10'
+                  : 'text-amber-400/90 border-amber-500/25 bg-amber-500/10'
+              }`}
+            >
+              {statusHint}
             </p>
           ) : null}
 
@@ -168,14 +208,26 @@ export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected }: Props
           </div>
 
           {isAdmin ? (
-            <Button
-              size="sm"
-              className="w-full bg-primary hover:bg-primary/90"
-              disabled={saving}
-              onClick={() => void save()}
-            >
-              {saving ? 'Đang lưu…' : 'Lưu cấu hình bridge'}
-            </Button>
+            <div className="flex flex-col gap-2">
+              <Button
+                size="sm"
+                className="w-full bg-primary hover:bg-primary/90"
+                disabled={saving}
+                onClick={() => void save()}
+              >
+                {saving ? 'Đang lưu…' : 'Lưu cấu hình bridge'}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-full border-cyan-500/30"
+                disabled={running || !bridgeLive || activeCount === 0}
+                onClick={() => void runBridge()}
+              >
+                <Play className="w-3.5 h-3.5 mr-2" />
+                {running ? 'Đang chạy…' : 'Chạy bridge (tạo mapped_deals)'}
+              </Button>
+            </div>
           ) : (
             <p className="text-xs text-muted-foreground text-center">Viewer: chỉ xem map.</p>
           )}

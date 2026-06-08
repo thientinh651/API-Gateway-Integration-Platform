@@ -1,0 +1,176 @@
+<mxfile host="app.diagrams.net" agent="avaso-gateway" version="22.1.0" type="device">
+  <diagram id="bao-ve-kien-truc" name="Bao ve - Kien truc thuc te">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="AVASO Gateway — Kiến trúc thực tế (khớp code)&#xa;Production: thientinh.io.vn | Data plane + Admin plane" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=16;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="400" y="20" width="800" height="50" as="geometry"/>
+        </mxCell>
+
+        <!-- CLIENT -->
+        <mxCell id="lane_client" value="Client" style="swimlane;horizontal=0;startSize=30;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="40" y="90" width="200" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="app" value="Mobile App /&#xa;Partner System" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656" vertex="1" parent="lane_client">
+          <mxGeometry x="30" y="40" width="140" height="60" as="geometry"/>
+        </mxCell>
+
+        <!-- EDGE -->
+        <mxCell id="lane_edge" value="Edge (TLS)" style="swimlane;horizontal=0;startSize=30;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="280" y="90" width="180" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="nginx" value="Nginx&#xa;HTTPS :443" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450" vertex="1" parent="lane_edge">
+          <mxGeometry x="25" y="40" width="130" height="60" as="geometry"/>
+        </mxCell>
+
+        <!-- DATA PLANE -->
+        <mxCell id="lane_dp" value="AVASO Gateway — Data Plane (/v1/api/*)" style="swimlane;startSize=30;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="500" y="90" width="520" height="280" as="geometry"/>
+        </mxCell>
+        <mxCell id="hmac" value="1. HMAC-SHA256&#xa;+ Anti-replay" style="rounded=1;whiteSpace=wrap;html=1" vertex="1" parent="lane_dp">
+          <mxGeometry x="20" y="50" width="110" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="rl" value="2. Rate Limit&#xa;(Token Bucket)" style="rounded=1;whiteSpace=wrap;html=1" vertex="1" parent="lane_dp">
+          <mxGeometry x="145" y="50" width="110" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="route" value="3. Longest&#xa;Prefix Match" style="rounded=1;whiteSpace=wrap;html=1" vertex="1" parent="lane_dp">
+          <mxGeometry x="270" y="50" width="110" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="pipe" value="4. Pipeline&#xa;Transform → Retry → DLQ" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00" vertex="1" parent="lane_dp">
+          <mxGeometry x="395" y="50" width="110" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="txlog" value="5. Async Tx Log&#xa;(tokio::spawn → PG)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656" vertex="1" parent="lane_dp">
+          <mxGeometry x="145" y="150" width="160" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="dp_note" value="Không JWT | Không SIGHUP/YAML runtime | Không Redis Pub/Sub" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=11;fontColor=#666666" vertex="1" parent="lane_dp">
+          <mxGeometry x="20" y="220" width="480" height="30" as="geometry"/>
+        </mxCell>
+
+        <!-- UPSTREAM -->
+        <mxCell id="lane_up" value="Upstream / SaaS" style="swimlane;horizontal=0;startSize=30;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="1060" y="90" width="220" height="280" as="geometry"/>
+        </mxCell>
+        <mxCell id="upstream" value="Backend API&#xa;(microservice)" style="rounded=1;whiteSpace=wrap;html=1" vertex="1" parent="lane_up">
+          <mxGeometry x="35" y="45" width="150" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="zoho" value="Zoho Projects&#xa;(OAuth proxy)" style="rounded=1;whiteSpace=wrap;html=1" vertex="1" parent="lane_up">
+          <mxGeometry x="35" y="110" width="150" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="sf" value="Salesforce&#xa;(OAuth proxy)" style="rounded=1;whiteSpace=wrap;html=1" vertex="1" parent="lane_up">
+          <mxGeometry x="35" y="175" width="150" height="50" as="geometry"/>
+        </mxCell>
+
+        <!-- CONTROL PLANE -->
+        <mxCell id="lane_cp" value="Control Plane — Admin (/api/* + React SPA)" style="swimlane;startSize=30;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="40" y="420" width="700" height="200" as="geometry"/>
+        </mxCell>
+        <mxCell id="ui" value="React Dashboard&#xa;Routes | Keys | Users | Logs&#xa;Integrations | Proxy Try" style="rounded=1;whiteSpace=wrap;html=1" vertex="1" parent="lane_cp">
+          <mxGeometry x="20" y="50" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="session" value="Session + RBAC&#xa;Cookie HttpOnly&#xa;Admin / Operator / Viewer" style="rounded=1;whiteSpace=wrap;html=1" vertex="1" parent="lane_cp">
+          <mxGeometry x="250" y="50" width="180" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="crud" value="CRUD API&#xa;Route / Key / User&#xa;Forgot pwd OTP (Brevo)" style="rounded=1;whiteSpace=wrap;html=1" vertex="1" parent="lane_cp">
+          <mxGeometry x="460" y="50" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="reload" value="reload_runtime_config()&#xa;(RAM, không restart)" style="shape=note;whiteSpace=wrap;html=1;size=14;fillColor=#e1d5e7;strokeColor=#9673a6" vertex="1" parent="lane_cp">
+          <mxGeometry x="250" y="145" width="200" height="45" as="geometry"/>
+        </mxCell>
+
+        <!-- DATA -->
+        <mxCell id="lane_data" value="Data Stores" style="swimlane;startSize=30;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="780" y="420" width="500" height="200" as="geometry"/>
+        </mxCell>
+        <mxCell id="pg" value="PostgreSQL&#xa;routes, users, keys&#xa;audit, tx_logs, integrations" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=12;fillColor=#dae8fc;strokeColor=#6c8ebf" vertex="1" parent="lane_data">
+          <mxGeometry x="30" y="50" width="200" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="redis" value="Redis&#xa;session admin&#xa;OTP quên MK" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=12;fillColor=#f8cecc;strokeColor=#b85450" vertex="1" parent="lane_data">
+          <mxGeometry x="280" y="50" width="180" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- LEGEND -->
+        <mxCell id="legend" value="15 chức năng lớn | Rust/Axum/Tokio | WSO2-inspired simplified&#xa;File: docs/diagrams/BAO_VE_KIEN_TRUC.drawio | docs/KIEN_TRUC_THUC_TE.md" style="text;html=1;strokeColor=#666666;fillColor=#f5f5f5;align=left;verticalAlign=top;spacingLeft=8;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="40" y="660" width="1240" height="50" as="geometry"/>
+        </mxCell>
+
+        <!-- EDGES data plane -->
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;endArrow=block" edge="1" parent="1" source="app" target="nginx">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e1l" value="HTTPS + HMAC headers" style="edgeLabel;html=1;align=center" vertex="1" connectable="0" parent="e1">
+          <mxGeometry relative="1" x="-0.1" y="1" as="geometry"><mxPoint as="offset"/></mxGeometry>
+        </mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;endArrow=block" edge="1" parent="1" source="nginx" target="hmac">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;endArrow=block" edge="1" parent="1" source="hmac" target="rl">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;endArrow=block" edge="1" parent="1" source="rl" target="route">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;endArrow=block" edge="1" parent="1" source="route" target="pipe">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;endArrow=block" edge="1" parent="1" source="pipe" target="upstream">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e6b" style="edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;endArrow=block" edge="1" parent="1" source="route" target="zoho">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e6c" style="edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;endArrow=block" edge="1" parent="1" source="route" target="sf">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;strokeColor=#d79b00;endArrow=block" edge="1" parent="1" source="pipe" target="txlog">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;endArrow=block" edge="1" parent="1" source="txlog" target="pg">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- EDGES control plane -->
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;strokeColor=#d6b656;endArrow=block" edge="1" parent="1" source="ui" target="session">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;strokeColor=#d6b656;endArrow=block" edge="1" parent="1" source="session" target="crud">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;strokeColor=#d6b656;endArrow=block" edge="1" parent="1" source="crud" target="pg">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;strokeColor=#b85450;endArrow=block" edge="1" parent="1" source="session" target="redis">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e13" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;strokeColor=#9673a6;endArrow=block" edge="1" parent="1" source="reload" target="route">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="760" y="610"/>
+              <mxPoint x="760" y="320"/>
+              <mxPoint x="610" y="320"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e13l" value="sau CRUD route" style="edgeLabel;html=1;fontColor=#9673a6" vertex="1" connectable="0" parent="e13">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset"/></mxGeometry>
+        </mxCell>
+
+        <!-- Admin to gateway -->
+        <mxCell id="e14" style="edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;strokeColor=#666666;endArrow=block" edge="1" parent="1" source="ui" target="nginx">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="140" y="400"/>
+              <mxPoint x="370" y="400"/>
+              <mxPoint x="370" y="150"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e14l" value="/api/* admin" style="edgeLabel;html=1" vertex="1" connectable="0" parent="e14">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset"/></mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

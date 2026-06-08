@@ -26,6 +26,13 @@ import { formatDbTimestamp, formatDbTimestampForExport } from '../../lib/formatD
 type LogKind = 'traffic' | 'admin';
 type KindFilter = 'all' | LogKind;
 
+const HTTP_STATUS_FILTER_HINT: Record<string, string> = {
+  all: 'Mọi mã phản hồi HTTP',
+  '2xx': 'Thành công — 200, 201… (request OK)',
+  '4xx': 'Lỗi phía client — 401 auth, 404 route, 429 rate limit…',
+  '5xx': 'Lỗi upstream/server — 502, 504 timeout…',
+};
+
 type UnifiedLogEntry =
   | { kind: 'traffic'; sortKey: string; row: TransactionLogRow }
   | { kind: 'admin'; sortKey: string; row: AuditLogRow };
@@ -104,6 +111,26 @@ function getStatusBadgeClass(status: number) {
   return 'bg-slate-500/10 text-slate-400 border-slate-500/20';
 }
 
+/** Grid 6 cột — header tách khỏi body, sticky ổn định (không dùng table thead). */
+const LOG_GRID =
+  'grid w-full min-w-[640px] grid-cols-[13%_10%_27%_22%_13%_15%] items-center';
+const LOG_CELL = 'px-4 sm:px-6 py-3 min-w-0';
+const LOG_HEAD =
+  'text-[10px] uppercase text-muted-foreground font-bold whitespace-nowrap bg-slate-950';
+
+function LogColumnHeader() {
+  return (
+    <div className={`${LOG_GRID} border-b border-slate-700/60 bg-slate-950`}>
+      <div className={`${LOG_CELL} ${LOG_HEAD}`}>Thời gian</div>
+      <div className={`${LOG_CELL} ${LOG_HEAD}`}>Loại</div>
+      <div className={`${LOG_CELL} ${LOG_HEAD}`}>Sự kiện</div>
+      <div className={`${LOG_CELL} ${LOG_HEAD} hidden sm:block`}>Chi tiết</div>
+      <div className={`${LOG_CELL} ${LOG_HEAD} hidden sm:block`}>IP</div>
+      <div className={`${LOG_CELL} ${LOG_HEAD}`}>Kết quả</div>
+    </div>
+  );
+}
+
 function getMethodColor(method: string) {
   const colors: Record<string, string> = {
     GET: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
@@ -127,11 +154,17 @@ export function Logs() {
   const [kindFilter, setKindFilter] = useState<KindFilter>(() => {
     const k = params.get('kind');
     if (k === 'admin' || k === 'traffic') return k;
+    const r = params.get('result');
+    if (r === 'success' || r === 'failure') return 'traffic';
     return 'all';
   });
   const [methodFilter, setMethodFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [resultFilter, setResultFilter] = useState('all');
+  const [resultFilter, setResultFilter] = useState(() => {
+    const r = params.get('result');
+    if (r === 'success' || r === 'failure') return r;
+    return 'all';
+  });
 
   const effectiveKind = useMemo((): KindFilter => {
     if (kindFilter === 'traffic' && !showTraffic) return showAdmin ? 'admin' : 'all';
@@ -205,14 +238,14 @@ export function Logs() {
     setParams(next, { replace: true });
   }, [effectiveKind, params, setParams]);
 
-  const trafficCount = entries.filter((e) => e.kind === 'traffic').length;
-  const adminCount = entries.filter((e) => e.kind === 'admin').length;
-
   const showMethodStatusFilters =
     showTraffic && (effectiveKind === 'all' || effectiveKind === 'traffic');
   const showResultFilter =
     (showTraffic && (effectiveKind === 'all' || effectiveKind === 'traffic')) ||
     (showAdmin && (effectiveKind === 'all' || effectiveKind === 'admin'));
+
+  const trafficCount = entries.filter((e) => e.kind === 'traffic').length;
+  const adminCount = entries.filter((e) => e.kind === 'admin').length;
 
   return (
     <>
@@ -220,7 +253,9 @@ export function Logs() {
         <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Log vận hành</h1>
       </div>
 
-      <Card className="rounded-2xl bg-card/80 backdrop-blur-sm border-border p-4 sm:p-6 mb-6 space-y-4">
+      <Card className="rounded-2xl bg-card/80 backdrop-blur-sm border-border p-0">
+        <div className="sticky top-0 z-30 isolate rounded-t-2xl bg-card shadow-[0_12px_28px_-14px_rgba(0,0,0,0.65)]">
+          <div className="p-4 sm:p-6 space-y-4 border-b border-border/80 bg-card/98 backdrop-blur-md">
         <div className="flex flex-wrap gap-3">
           <div className="relative flex-1 min-w-[200px]">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -272,9 +307,9 @@ export function Logs() {
                 </SelectTrigger>
                 <SelectContent className="bg-card border-border">
                   <SelectItem value="all">Mọi HTTP</SelectItem>
-                  <SelectItem value="2xx">2xx</SelectItem>
-                  <SelectItem value="4xx">4xx</SelectItem>
-                  <SelectItem value="5xx">5xx</SelectItem>
+                  <SelectItem value="2xx">2xx — OK (200–299)</SelectItem>
+                  <SelectItem value="4xx">4xx — Lỗi client (401, 404…)</SelectItem>
+                  <SelectItem value="5xx">5xx — Lỗi server (502, 504…)</SelectItem>
                 </SelectContent>
               </Select>
             </>
@@ -328,137 +363,133 @@ export function Logs() {
             <code className="text-slate-400">result</code>. HTTP 200 chỉ hiện khi thành công.
           </p>
         ) : null}
-      </Card>
+        {showMethodStatusFilters && statusFilter !== 'all' ? (
+          <p className="text-xs text-muted-foreground">
+            Lọc HTTP: {HTTP_STATUS_FILTER_HINT[statusFilter]}
+          </p>
+        ) : showMethodStatusFilters ? (
+          <p className="text-xs text-muted-foreground">
+            HTTP: <strong className="text-slate-300">2xx</strong> = OK ·{' '}
+            <strong className="text-slate-300">4xx</strong> = client (401/404/429) ·{' '}
+            <strong className="text-slate-300">5xx</strong> = upstream/server
+          </p>
+        ) : null}
+          </div>
+          <LogColumnHeader />
+        </div>
 
-      <Card className="rounded-2xl overflow-hidden bg-card/80 backdrop-blur-sm border-border">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-slate-900/50 text-[10px] uppercase text-muted-foreground font-bold">
-              <tr>
-                <th className="px-4 sm:px-6 py-4">Thời gian</th>
-                <th className="px-4 sm:px-6 py-4">Loại</th>
-                <th className="px-4 sm:px-6 py-4">Sự kiện</th>
-                <th className="px-4 sm:px-6 py-4 hidden md:table-cell">Chi tiết</th>
-                <th className="px-4 sm:px-6 py-4 hidden lg:table-cell">IP</th>
-                <th className="px-4 sm:px-6 py-4">Kết quả</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={6} className="px-6 py-10 text-center text-muted-foreground">
-                    Đang tải…
-                  </td>
-                </tr>
-              ) : entries.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-6 py-10 text-center text-muted-foreground">
-                    Không có bản ghi — thử đổi bộ lọc hoặc thực hiện thao tác / gọi API.
-                  </td>
-                </tr>
-              ) : (
-                entries.map((entry) => {
-                  if (entry.kind === 'traffic') {
-                    const log = entry.row;
-                    return (
-                      <tr
-                        key={`t-${log.id}`}
-                        className="border-b border-border/50 hover:bg-primary/5"
-                      >
-                        <td className="px-4 sm:px-6 py-3 text-slate-400 font-mono text-xs whitespace-nowrap">
-                          {formatDbTimestamp(log.created_at)}
-                        </td>
-                        <td className="px-4 sm:px-6 py-3">
-                          <Badge className="bg-cyan-500/10 text-cyan-400 border-cyan-500/25 border text-[10px]">
-                            Traffic
-                          </Badge>
-                        </td>
-                        <td className="px-4 sm:px-6 py-3">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <Badge
-                              className={`${getMethodColor(log.method)} border font-mono text-[10px]`}
-                            >
-                              {log.method}
-                            </Badge>
-                            <span className="font-mono text-xs text-slate-300 truncate max-w-[14rem]">
-                              {log.path}
-                            </span>
-                          </div>
-                          <p className="text-[10px] text-muted-foreground mt-1 font-mono">
-                            {log.request_id}
-                          </p>
-                        </td>
-                        <td className="px-4 sm:px-6 py-3 hidden md:table-cell text-xs text-slate-400">
-                          {log.duration_ms}ms
-                          {log.api_key_masked ? ` · ${log.api_key_masked}` : ''}
-                        </td>
-                        <td className="px-4 sm:px-6 py-3 hidden lg:table-cell font-mono text-xs text-slate-500">
-                          {log.client_ip ?? '—'}
-                        </td>
-                        <td className="px-4 sm:px-6 py-3">
-                          <Badge className={`${getStatusBadgeClass(log.status)} border font-mono`}>
-                            {log.status}
-                          </Badge>
-                          {log.outcome !== 'success' ? (
-                            <p className="text-[10px] text-red-400/90 mt-0.5 font-mono">{log.outcome}</p>
-                          ) : null}
-                        </td>
-                      </tr>
-                    );
-                  }
-
-                  const log = entry.row;
-                  return (
-                    <tr
-                      key={`a-${log.id}`}
-                      className="border-b border-border/50 hover:bg-primary/5"
-                    >
-                      <td className="px-4 sm:px-6 py-3 text-slate-400 font-mono text-xs whitespace-nowrap">
-                        {formatDbTimestamp(log.created_at)}
-                      </td>
-                      <td className="px-4 sm:px-6 py-3">
-                        <Badge className="bg-violet-500/10 text-violet-400 border-violet-500/25 border text-[10px]">
-                          Quản trị
-                        </Badge>
-                      </td>
-                      <td className="px-4 sm:px-6 py-3">
-                        <p className="font-mono text-xs text-primary">{log.action}</p>
-                        <p className="text-xs text-slate-400 truncate max-w-[14rem]">{log.resource}</p>
-                      </td>
-                      <td className="px-4 sm:px-6 py-3 hidden md:table-cell text-xs text-slate-400">
-                        {log.actor}
-                        <span className="text-muted-foreground"> · {log.role}</span>
-                        {log.details ? (
-                          <p className="text-[10px] text-muted-foreground truncate max-w-[12rem] mt-0.5">
-                            {log.details}
-                          </p>
-                        ) : null}
-                      </td>
-                      <td className="px-4 sm:px-6 py-3 hidden lg:table-cell font-mono text-xs text-slate-500">
-                        {log.source_ip ?? '—'}
-                      </td>
-                      <td className="px-4 sm:px-6 py-3">
+        <div className="text-sm">
+          {loading ? (
+            <p className="px-6 py-10 text-center text-muted-foreground">Đang tải…</p>
+          ) : entries.length === 0 ? (
+            <p className="px-6 py-10 text-center text-muted-foreground">
+              Không có bản ghi — thử đổi bộ lọc hoặc thực hiện thao tác / gọi API.
+            </p>
+          ) : (
+            entries.map((entry) => {
+              if (entry.kind === 'traffic') {
+                const log = entry.row;
+                return (
+                  <div
+                    key={`t-${log.id}`}
+                    className={`${LOG_GRID} border-b border-border/50 hover:bg-primary/5`}
+                  >
+                    <div className={`${LOG_CELL} text-slate-400 font-mono text-xs whitespace-nowrap`}>
+                      {formatDbTimestamp(log.created_at)}
+                    </div>
+                    <div className={LOG_CELL}>
+                      <Badge className="bg-cyan-500/10 text-cyan-400 border-cyan-500/25 border text-[10px]">
+                        Traffic
+                      </Badge>
+                    </div>
+                    <div className={LOG_CELL}>
+                      <div className="flex items-center gap-2 flex-wrap">
                         <Badge
-                          className={
-                            log.result === 'success'
-                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                              : 'bg-red-500/10 text-red-400 border-red-500/20'
-                          }
+                          className={`${getMethodColor(log.method)} border font-mono text-[10px]`}
                         >
-                          {log.result === 'success' ? (
-                            <CheckCircle2 className="w-3 h-3 mr-1" />
-                          ) : (
-                            <XCircle className="w-3 h-3 mr-1" />
-                          )}
-                          {log.result}
+                          {log.method}
                         </Badge>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+                        <span className="font-mono text-xs text-slate-300 truncate max-w-[14rem]">
+                          {log.path}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground mt-1 font-mono">
+                        {log.request_id}
+                      </p>
+                    </div>
+                    <div className={`${LOG_CELL} hidden sm:block text-xs text-slate-400`}>
+                      {log.duration_ms}ms
+                      {log.api_key_masked ? ` · ${log.api_key_masked}` : ''}
+                    </div>
+                    <div
+                      className={`${LOG_CELL} hidden sm:block font-mono text-xs text-slate-500 whitespace-nowrap`}
+                    >
+                      {log.client_ip ?? '—'}
+                    </div>
+                    <div className={LOG_CELL}>
+                      <Badge className={`${getStatusBadgeClass(log.status)} border font-mono`}>
+                        {log.status}
+                      </Badge>
+                      {log.outcome !== 'success' ? (
+                        <p className="text-[10px] text-red-400/90 mt-0.5 font-mono">{log.outcome}</p>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              }
+
+              const log = entry.row;
+              return (
+                <div
+                  key={`a-${log.id}`}
+                  className={`${LOG_GRID} border-b border-border/50 hover:bg-primary/5`}
+                >
+                  <div className={`${LOG_CELL} text-slate-400 font-mono text-xs whitespace-nowrap`}>
+                    {formatDbTimestamp(log.created_at)}
+                  </div>
+                  <div className={LOG_CELL}>
+                    <Badge className="bg-violet-500/10 text-violet-400 border-violet-500/25 border text-[10px]">
+                      Quản trị
+                    </Badge>
+                  </div>
+                  <div className={LOG_CELL}>
+                    <p className="font-mono text-xs text-primary">{log.action}</p>
+                    <p className="text-xs text-slate-400 truncate max-w-[14rem]">{log.resource}</p>
+                  </div>
+                  <div className={`${LOG_CELL} hidden sm:block text-xs text-slate-400`}>
+                    {log.actor}
+                    <span className="text-muted-foreground"> · {log.role}</span>
+                    {log.details ? (
+                      <p className="text-[10px] text-muted-foreground truncate max-w-[12rem] mt-0.5">
+                        {log.details}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div
+                    className={`${LOG_CELL} hidden sm:block font-mono text-xs text-slate-500 whitespace-nowrap`}
+                  >
+                    {log.source_ip ?? '—'}
+                  </div>
+                  <div className={LOG_CELL}>
+                    <Badge
+                      className={
+                        log.result === 'success'
+                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                          : 'bg-red-500/10 text-red-400 border-red-500/20'
+                      }
+                    >
+                      {log.result === 'success' ? (
+                        <CheckCircle2 className="w-3 h-3 mr-1" />
+                      ) : (
+                        <XCircle className="w-3 h-3 mr-1" />
+                      )}
+                      {log.result}
+                    </Badge>
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
       </Card>
     </>

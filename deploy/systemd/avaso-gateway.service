@@ -13,6 +13,7 @@ User=root
 Group=root
 WorkingDirectory=/root/avaso-gateway
 EnvironmentFile=-/etc/avaso-gateway/env
+EnvironmentFile=-/etc/avaso-gateway/brevo.env
 EnvironmentFile=-/etc/avaso-gateway/smtp.env
 ExecStart=/root/avaso-gateway/target/release/avaso-gateway
 # NFR-20: tự khởi động lại khi crash / thoát bất thường

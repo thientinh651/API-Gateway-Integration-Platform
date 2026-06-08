@@ -1,10 +1,13 @@
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { Play, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { KeyRound, Play, Route, Send, ShieldAlert } from 'lucide-react';
 import { Button } from '../components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
-import { Input } from '../components/ui/input';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Label } from '../components/ui/label';
+import { PathAutocomplete } from '../components/forms/PathAutocomplete';
+import { PasswordManagerTrap } from '../components/forms/PasswordManagerTrap';
+import { ClientApiKeyInput, ClientSecretInput } from '../components/forms/NonLoginCredentialInput';
+import { Badge } from '../components/ui/badge';
 import { FieldError } from '../components/forms/FieldError';
 import {
   clearOneFieldError,
@@ -19,6 +22,7 @@ import {
   SelectValue,
 } from '../components/ui/select';
 import {
+  DATA_PLANE_PREFIX,
   describeProxyExpectation,
   looksLikeSpaShell,
   tryDataPlaneRequest,
@@ -27,6 +31,12 @@ import {
 
 const METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as const;
 
+const PATH_SUGGESTIONS = [
+  { label: 'GET mẫu', path: '/v1/api/get' },
+  { label: 'SF limits', path: '/v1/api/sf/limits' },
+  { label: 'Zoho portals', path: '/v1/api/zoho/api/v3/portals' },
+] as const;
+
 function StatusBadge({ status }: { status: number }) {
   const tone =
     status === 401
@@ -34,10 +44,11 @@ function StatusBadge({ status }: { status: number }) {
       : status >= 200 && status < 300
         ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/40'
         : 'bg-destructive/15 text-destructive border-destructive/40';
+  const label = status === 401 ? 'Từ chối' : status >= 200 && status < 300 ? 'Thành công' : 'Lỗi';
   return (
-    <span className={`inline-flex items-center rounded-md border px-2.5 py-0.5 text-sm font-semibold ${tone}`}>
-      HTTP {status}
-    </span>
+    <Badge className={`${tone} border font-mono text-xs px-2.5 py-1`}>
+      {label} · HTTP {status}
+    </Badge>
   );
 }
 
@@ -49,11 +60,7 @@ function ResultPanel({
   mode: 'no_key' | 'with_key' | null;
 }) {
   if (!result || !mode) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        Chưa có kết quả.
-      </p>
-    );
+    return <div className="min-h-[12rem] rounded-lg border border-border/40 bg-slate-950/20" />;
   }
 
   const hint = describeProxyExpectation(result, mode);
@@ -61,15 +68,17 @@ function ResultPanel({
     result.bodyJson != null ? JSON.stringify(result.bodyJson, null, 2) : result.bodyText || '(body rỗng)';
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-3">
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
         <StatusBadge status={result.status} />
-        <span className="text-xs text-muted-foreground">
-          {result.method} {result.requestUrl} · {result.elapsedMs} ms
-          {result.sentApiKey ? ' · có X-API-Key' : ' · không X-API-Key'}
+        <span className="text-xs text-muted-foreground font-mono">
+          {result.method} {result.requestUrl}
         </span>
+        <span className="text-xs text-muted-foreground">{result.elapsedMs} ms</span>
       </div>
-      <p className="text-sm text-foreground/90">{hint}</p>
+      <p className="text-sm text-foreground/90 rounded-lg bg-slate-900/50 border border-border/60 px-3 py-2">
+        {hint}
+      </p>
       <pre className="max-h-80 overflow-auto rounded-lg border border-border bg-slate-950/80 p-4 text-xs text-slate-200 font-mono">
         {displayBody}
       </pre>
@@ -90,10 +99,10 @@ export function ProxyTry() {
   const run = async (mode: 'no_key' | 'with_key') => {
     const nextErrors: Record<string, string> = {};
     if (mode === 'with_key' && !apiKey.trim()) {
-      nextErrors.api_key = 'Nhập API Key (avaso_pk_...)';
+      nextErrors.api_key = 'Nhập API Key';
     }
     if (mode === 'with_key' && apiKey.startsWith('avaso_pk_') && !secretKey.trim()) {
-      nextErrors.secret_key = 'Key HMAC cần Secret Key (avaso_sk_...)';
+      nextErrors.secret_key = 'Nhập Secret Key';
     }
     if (Object.keys(nextErrors).length > 0) {
       failClientValidation(setFieldErrors, nextErrors);
@@ -111,13 +120,11 @@ export function ProxyTry() {
       setResult(res);
       setLastMode(mode);
       if (looksLikeSpaShell(res)) {
-        toast.warning('Nhận HTML giao diện — path có thể sai (cần /v1/api/...).');
+        toast.warning(`Path sai — cần bắt đầu ${DATA_PLANE_PREFIX}/`);
+      } else if (mode === 'with_key' && res.ok) {
+        toast.success('Gateway chấp nhận key và forward request');
       } else if (mode === 'no_key' && res.status === 401) {
-        toast.success('401 — Từ chối dịch vụ vì thiếu Key API.');
-      } else if (mode === 'with_key' && res.ok && res.bodyJson != null) {
-        toast.success('Request thành công qua gateway.');
-      } else if (mode === 'with_key' && res.status === 404) {
-        toast.message('404 — không có route hoặc path sai định dạng.');
+        toast.message('Đúng: gateway từ chối khi thiếu key');
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
@@ -128,115 +135,126 @@ export function ProxyTry() {
 
   return (
     <>
-      <div className="mb-8">
-        <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Thử gọi Proxy (Data plane)</h1>
-      </div>
+      <h1 className="text-2xl sm:text-3xl font-bold text-white mb-6">Thử gọi Proxy</h1>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card className="border-border bg-card/80">
-          <CardHeader>
-            <CardTitle className="text-white">Cấu hình request</CardTitle>
-            <CardDescription>Path tương đối cùng domain (vd thientinh.io.vn).</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-3 gap-3">
-              <div className="col-span-1">
-                <Label className="text-foreground">Method</Label>
-                <Select value={method} onValueChange={setMethod}>
-                  <SelectTrigger className="bg-input border-border text-foreground mt-1">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-card border-border">
-                    {METHODS.map((m) => (
-                      <SelectItem key={m} value={m}>
-                        {m}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+        <div className="space-y-4">
+          <Card className="border-border bg-card/80">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-white text-base flex items-center gap-2">
+                <Route className="w-4 h-4 text-primary" />
+                Request
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <Label className="text-foreground text-xs">Method</Label>
+                  <Select value={method} onValueChange={setMethod}>
+                    <SelectTrigger className="bg-input border-border text-foreground mt-1 h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-card border-border">
+                      {METHODS.map((m) => (
+                        <SelectItem key={m} value={m}>
+                          {m}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="col-span-2">
+                  <Label className="text-foreground text-xs">Path</Label>
+                  <PathAutocomplete
+                    className="mt-1"
+                    value={path}
+                    presets={PATH_SUGGESTIONS}
+                    placeholder="/v1/api/..."
+                    hasError={Boolean(fieldErrors.path)}
+                    onChange={(next) => {
+                      setPath(next);
+                      clearOneFieldError(setFieldErrors, 'path');
+                    }}
+                  />
+                  <FieldError message={fieldErrors.path} />
+                </div>
               </div>
-              <div className="col-span-2">
-                <Label className="text-foreground">Path</Label>
-                <Input
-                  value={path}
-                  onChange={(e) => {
-                    setPath(e.target.value);
-                    clearOneFieldError(setFieldErrors, 'path');
-                  }}
-                  placeholder="/v1/api/get"
-                  aria-invalid={Boolean(fieldErrors.path)}
-                  className={fieldInputErrorClass(
-                    Boolean(fieldErrors.path),
-                    'mt-1 bg-input border-border text-foreground',
-                  )}
-                />
-                <FieldError message={fieldErrors.path} />
-              </div>
-            </div>
-            <div>
-              <Label className="text-foreground">API Key (avaso_pk_...)</Label>
-              <Input
-                type="password"
-                value={apiKey}
-                onChange={(e) => {
-                  setApiKey(e.target.value);
-                  clearOneFieldError(setFieldErrors, 'api_key');
-                }}
-                placeholder="X-API-Key"
-                aria-invalid={Boolean(fieldErrors.api_key)}
-                className={fieldInputErrorClass(
-                  Boolean(fieldErrors.api_key),
-                  'mt-1 bg-input border-border text-foreground',
-                )}
-                autoComplete="off"
-              />
-              <FieldError message={fieldErrors.api_key} />
-              <Label className="text-foreground mt-3 block">Secret Key (avaso_sk_...)</Label>
-              <Input
-                type="password"
-                value={secretKey}
-                onChange={(e) => {
-                  setSecretKey(e.target.value);
-                  clearOneFieldError(setFieldErrors, 'secret_key');
-                }}
-                placeholder="Ký HMAC — chỉ lưu phía client"
-                aria-invalid={Boolean(fieldErrors.secret_key)}
-                className={fieldInputErrorClass(
-                  Boolean(fieldErrors.secret_key),
-                  'mt-1 bg-input border-border text-foreground',
-                )}
-                autoComplete="off"
-              />
-              <FieldError message={fieldErrors.secret_key} />
-            </div>
-            <div className="flex flex-col sm:flex-row gap-3 pt-2">
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy}
-                className="flex-1 border-amber-500/50 text-amber-400 hover:bg-amber-500/10"
-                onClick={() => void run('no_key')}
-              >
-                <ShieldAlert className="w-4 h-4 mr-2" />
-                Gửi không API Key
-              </Button>
-              <Button
-                type="button"
-                disabled={busy}
-                className="flex-1 bg-primary hover:bg-primary/90"
-                onClick={() => void run('with_key')}
-              >
-                <ShieldCheck className="w-4 h-4 mr-2" />
-                Gửi có API Key
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
 
-        <Card className="border-border bg-card/80">
-          <CardHeader>
-            <CardTitle className="text-white flex items-center gap-2">
-              <Play className="w-5 h-5 text-primary" />
+          <Card className="border-border bg-card/80">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-white text-base flex items-center gap-2">
+                <KeyRound className="w-4 h-4 text-primary" />
+                Credential
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <form autoComplete="off" onSubmit={(e) => e.preventDefault()} data-form-type="other">
+                <PasswordManagerTrap />
+                <div>
+                  <Label className="text-foreground text-xs">API Key</Label>
+                  <ClientApiKeyInput
+                    value={apiKey}
+                    onChange={(e) => {
+                      setApiKey(e.target.value);
+                      clearOneFieldError(setFieldErrors, 'api_key');
+                    }}
+                    placeholder="avaso_pk_..."
+                    className={fieldInputErrorClass(
+                      Boolean(fieldErrors.api_key),
+                      'mt-1 h-9 bg-input border-border font-mono text-xs',
+                    )}
+                  />
+                  <FieldError message={fieldErrors.api_key} />
+                </div>
+                <div className="mt-3">
+                  <Label className="text-foreground text-xs">Secret Key</Label>
+                  <ClientSecretInput
+                    value={secretKey}
+                    onChange={(e) => {
+                      setSecretKey(e.target.value);
+                      clearOneFieldError(setFieldErrors, 'secret_key');
+                    }}
+                    placeholder="avaso_sk_..."
+                    className={fieldInputErrorClass(
+                      Boolean(fieldErrors.secret_key),
+                      'mt-1 h-9 bg-input border-border font-mono text-xs',
+                    )}
+                  />
+                  <FieldError message={fieldErrors.secret_key} />
+                </div>
+
+                <div className="flex flex-col gap-2 pt-4">
+                  <Button
+                    type="button"
+                    disabled={busy}
+                    className="w-full bg-primary hover:bg-primary/90 h-10"
+                    onClick={() => void run('with_key')}
+                  >
+                    <Send className="w-4 h-4 mr-2" />
+                    {busy ? 'Đang gửi…' : 'Gửi request'}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    disabled={busy}
+                    className="w-full text-muted-foreground hover:text-amber-400 h-9 text-xs"
+                    onClick={() => void run('no_key')}
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5 mr-2" />
+                    Không key (401)
+                  </Button>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
+        </div>
+
+        <Card className="border-border bg-card/80 lg:sticky lg:top-24 lg:self-start">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-white text-base flex items-center gap-2">
+              <Play className="w-4 h-4 text-primary" />
               Kết quả
             </CardTitle>
           </CardHeader>

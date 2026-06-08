@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
+import { ConfirmDangerButton } from '../components/forms/ConfirmDangerButton';
 import { Badge } from '../components/ui/badge';
 import { RefreshCw, Trash2, RotateCw } from 'lucide-react';
 import { toast } from 'sonner';
@@ -101,12 +102,15 @@ function ProxyQueueAdmin() {
                           <RotateCw className="w-3 h-3 mr-1" />
                           Retry
                         </Button>
-                        <Button
+                        <ConfirmDangerButton
                           size="sm"
                           variant="outline"
                           className="border-destructive/50 text-destructive"
                           disabled={busyId === item.id}
-                          onClick={async () => {
+                          title="Xóa khỏi queue?"
+                          description={`Xóa bản ghi DLQ ${item.method} ${item.path} — không retry được nữa.`}
+                          confirmLabel="Xóa"
+                          onConfirm={async () => {
                             setBusyId(item.id);
                             try {
                               await deleteProxyQueueItem(item.id);
@@ -120,7 +124,7 @@ function ProxyQueueAdmin() {
                           }}
                         >
                           <Trash2 className="w-3 h-3" />
-                        </Button>
+                        </ConfirmDangerButton>
                       </>
                     ) : (
                       <span className="text-xs text-muted-foreground">Viewer: chỉ xem</span>

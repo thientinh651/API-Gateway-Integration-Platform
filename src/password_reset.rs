@@ -40,7 +40,18 @@ pub fn generate_otp() -> String {
 
 pub fn normalize_email(raw: &str) -> Option<String> {
     let e = raw.trim().to_ascii_lowercase();
-    if e.is_empty() || !e.contains('@') || e.len() > 254 {
+    if e.is_empty() || e.len() > 254 {
+        return None;
+    }
+    let (local, domain) = e.split_once('@')?;
+    if local.is_empty()
+        || domain.is_empty()
+        || local.contains(' ')
+        || domain.contains(' ')
+        || !domain.contains('.')
+        || domain.starts_with('.')
+        || domain.ends_with('.')
+    {
         return None;
     }
     Some(e)
@@ -49,6 +60,12 @@ pub fn normalize_email(raw: &str) -> Option<String> {
 pub fn password_reset_dev_log() -> bool {
     std::env::var("PASSWORD_RESET_DEV_LOG")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+pub fn brevo_configured() -> bool {
+    std::env::var("BREVO_API_KEY")
+        .map(|k| !k.trim().is_empty())
         .unwrap_or(false)
 }
 
@@ -61,7 +78,7 @@ pub fn smtp_configured() -> bool {
 
 /// `email` | `dev_log` | `none`
 pub fn otp_delivery_mode() -> &'static str {
-    if smtp_configured() {
+    if brevo_configured() || smtp_configured() {
         "email"
     } else if password_reset_dev_log() {
         "dev_log"
@@ -238,17 +255,19 @@ pub async fn issue_password_reset_otp(
             warn!(error = %e, "redis store otp failed");
             PasswordResetError::MailUnavailable
         })?;
-    if smtp_configured() {
+    if brevo_configured() {
+        send_otp_via_brevo(email, username, &otp).await?;
+    } else if smtp_configured() {
         send_otp_email(email, username, &otp).await?;
     } else if password_reset_dev_log() {
         info!(
             username = %username,
             email = %email,
             otp = %otp,
-            "PASSWORD_RESET_DEV_LOG: OTP (SMTP chưa cấu hình)"
+            "PASSWORD_RESET_DEV_LOG: OTP (chưa cấu hình Brevo/SMTP)"
         );
     } else {
-        warn!(username = %username, "password reset: SMTP và DEV_LOG đều tắt — OTP không gửi được");
+        warn!(username = %username, "password reset: Brevo/SMTP và DEV_LOG đều tắt — OTP không gửi được");
         return Err(PasswordResetError::MailUnavailable);
     }
     Ok(())
@@ -271,6 +290,65 @@ impl std::fmt::Display for PasswordResetError {
     }
 }
 
+fn otp_email_body(username: &str, otp: &str) -> String {
+    format!(
+        "Xin chào {username},\n\nMã OTP đặt lại mật khẩu AVASO Gateway: {otp}\n\nMã có hiệu lực 10 phút. Nếu bạn không yêu cầu, bỏ qua email này.\n"
+    )
+}
+
+pub async fn send_otp_via_brevo(to: &str, username: &str, otp: &str) -> Result<(), PasswordResetError> {
+    let api_key = std::env::var("BREVO_API_KEY").unwrap_or_default();
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| PasswordResetError::MailSend(e.to_string()))?;
+
+    let body = if let Some(template_id) = std::env::var("BREVO_TEMPLATE_ID")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+    {
+        serde_json::json!({
+            "to": [{ "email": to }],
+            "templateId": template_id,
+            "params": {
+                "OTP": otp,
+                "USERNAME": username,
+            },
+        })
+    } else {
+        let from_email = std::env::var("BREVO_FROM_EMAIL").unwrap_or_default();
+        let from_name = std::env::var("BREVO_FROM_NAME").unwrap_or_else(|_| "AVASO Gateway".into());
+        if from_email.trim().is_empty() {
+            return Err(PasswordResetError::MailSend(
+                "BREVO_FROM_EMAIL hoặc BREVO_TEMPLATE_ID cần được cấu hình".into(),
+            ));
+        }
+        serde_json::json!({
+            "sender": { "name": from_name, "email": from_email },
+            "to": [{ "email": to }],
+            "subject": "AVASO Gateway — mã OTP đặt lại mật khẩu",
+            "textContent": otp_email_body(username, otp),
+        })
+    };
+
+    let resp = client
+        .post("https://api.brevo.com/v3/smtp/email")
+        .header("api-key", api_key)
+        .header("accept", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| PasswordResetError::MailSend(e.to_string()))?;
+
+    if resp.status().is_success() {
+        return Ok(());
+    }
+    let status = resp.status();
+    let detail = resp.text().await.unwrap_or_default();
+    Err(PasswordResetError::MailSend(format!("Brevo {status}: {detail}")))
+}
+
 pub async fn send_otp_email(to: &str, username: &str, otp: &str) -> Result<(), PasswordResetError> {
     use lettre::message::header::ContentType;
     use lettre::message::Mailbox;
@@ -291,9 +369,7 @@ pub async fn send_otp_email(to: &str, username: &str, otp: &str) -> Result<(), P
     let from: Mailbox = from_addr.parse().map_err(|e| PasswordResetError::MailSend(format!("{e}")))?;
     let to_mb: Mailbox = to.parse().map_err(|e| PasswordResetError::MailSend(format!("{e}")))?;
 
-    let body = format!(
-        "Xin chào {username},\n\nMã OTP đặt lại mật khẩu AVASO Gateway: {otp}\n\nMã có hiệu lực 10 phút. Nếu bạn không yêu cầu, bỏ qua email này.\n"
-    );
+    let body = otp_email_body(username, otp);
 
     let email = Message::builder()
         .from(from)

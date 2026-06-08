@@ -5,6 +5,14 @@ import { isSessionExpiredRedirect } from './sessionExpiry';
 
 export const FORM_CHECK_MESSAGE = 'Vui lòng kiểm tra các ô được đánh dấu.';
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Khớp logic `password_reset::normalize_email` phía server. */
+export function isValidEmail(raw: string): boolean {
+  const e = raw.trim().toLowerCase();
+  return e.length > 0 && e.length <= 254 && EMAIL_RE.test(e);
+}
+
 export function applyApiFieldErrors(fields?: Record<string, string>): Record<string, string> {
   return fields ? { ...fields } : {};
 }

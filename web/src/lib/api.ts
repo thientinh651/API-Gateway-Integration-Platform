@@ -64,7 +64,8 @@ async function publicFetchJson<T>(input: string, init?: RequestInit): Promise<T>
 export type PasswordResetDelivery = 'email' | 'dev_log' | 'none';
 
 export async function requestPasswordReset(body: {
-  identifier: string;
+  username: string;
+  email: string;
 }): Promise<{
   status: string;
   message: string;
@@ -533,6 +534,46 @@ export function updateIntegrationBridge(body: {
   });
 }
 
+export function runIntegrationBridge(): Promise<{
+  status: string;
+  provider: string;
+  entity_type: string;
+  records: number;
+  mappings_enabled: number;
+}> {
+  return fetchJson('/api/integrations/bridge/run', { method: 'POST' });
+}
+
+export type SyncLogRow = {
+  id: number;
+  tenant_id: number;
+  status: string;
+  message: string;
+  error_detail: string | null;
+  created_at: string;
+};
+
+export function fetchSyncLogs(): Promise<SyncLogRow[]> {
+  return fetchJson<SyncLogRow[]>('/api/integrations/sync-logs');
+}
+
+export type SyncNowResult = {
+  status: string;
+  salesforce: { provider: string; opportunity: number; account: number; demo?: boolean };
+  bridge: IntegrationBridgeRunResult;
+  push: {
+    created: number;
+    skipped: number;
+    tasks_created?: number;
+    demo?: boolean;
+    reason?: string;
+  };
+};
+
+export function integrationSyncNow(): Promise<SyncNowResult> {
+  return fetchJson<SyncNowResult>('/api/integrations/sync-now', { method: 'POST' });
+}
+
 export function salesforceConnectUrl(): string {
   return apiUrl('/api/integrations/salesforce/connect');
 }
@@ -541,9 +582,14 @@ export async function salesforceTest(): Promise<{ status: string; limits: unknow
   return fetchJson<{ status: string; limits: unknown }>('/api/integrations/salesforce/test');
 }
 
+export type IntegrationBridgeRunResult =
+  | { status: 'ok'; provider: string; entity_type: string; records: number; mappings_enabled?: number }
+  | { status: 'skipped'; reason: string };
+
 export async function salesforceSync(): Promise<{
   status: string;
   summary: { provider: string; opportunity: number; account: number };
+  bridge?: IntegrationBridgeRunResult;
 }> {
   return fetchJson('/api/integrations/salesforce/sync', { method: 'POST' });
 }
@@ -600,6 +646,7 @@ export async function zohoTest(): Promise<{
 export async function zohoSync(): Promise<{
   status: string;
   summary: { provider: string; portal_id?: string; project: number; task: number };
+  bridge?: IntegrationBridgeRunResult;
 }> {
   return fetchJson('/api/integrations/zoho/sync', { method: 'POST' });
 }

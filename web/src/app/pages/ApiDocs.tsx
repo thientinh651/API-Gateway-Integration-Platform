@@ -146,7 +146,7 @@ export function ApiDocs() {
     { method: 'POST', path: '/api/logout', description: 'Đăng xuất', auth: 'Session cookie', body: null },
     { method: 'GET', path: '/api/me', description: 'Thông tin user hiện tại', auth: 'Session', body: null },
     { method: 'PUT', path: '/api/me', description: 'Cập nhật hồ sơ (username/email/mật khẩu)', auth: 'Mọi role (session)', body: '{"username":"?","email":"?","password":"?","current_password":"*"}' },
-    { method: 'POST', path: '/api/forgot-password', description: 'Gửi OTP quên mật khẩu', auth: 'Không', body: '{"identifier":"username hoặc email"}' },
+    { method: 'POST', path: '/api/forgot-password', description: 'Xác minh username+email, gửi OTP', auth: 'Không', body: '{"username":"...","email":"..."}' },
     { method: 'POST', path: '/api/verify-reset-otp', description: 'Xác minh OTP (bước 2)', auth: 'Không', body: '{"username":"...","otp":"123456"}' },
     { method: 'POST', path: '/api/reset-password', description: 'Đặt mật khẩu mới (bước 3)', auth: 'Không', body: '{"reset_token":"...","password":"***"}' },
     { method: 'GET', path: '/api/routes', description: 'Danh sách routes', auth: 'Viewer+', body: null },

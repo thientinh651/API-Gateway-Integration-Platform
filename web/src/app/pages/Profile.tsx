@@ -17,6 +17,7 @@ import {
   failClientValidation,
   fieldInputErrorClass,
   handleFormApiError,
+  isValidEmail,
 } from '../../lib/formValidation';
 
 export function Profile() {
@@ -58,8 +59,12 @@ export function Profile() {
     e.preventDefault();
     const errors: Record<string, string> = {};
     if (!username.trim()) errors.username = 'Nhập tên đăng nhập';
+    const emailTrimmed = email.trim();
+    if (emailTrimmed && !isValidEmail(emailTrimmed)) {
+      errors.email = 'Email không hợp lệ';
+    }
     const usernameChanged = username.trim() !== user.username;
-    const emailNorm = email.trim().toLowerCase();
+    const emailNorm = emailTrimmed.toLowerCase();
     const emailChanged = emailNorm !== savedEmail.trim().toLowerCase();
     if (!usernameChanged && !emailChanged) {
       errors.username = 'Không có thay đổi';

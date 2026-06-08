@@ -26,12 +26,15 @@ import {
   zohoProjects,
   zohoTasks,
   fetchIntegrationSnapshots,
+  fetchSyncLogs,
+  integrationSyncNow,
   fetchZohoConfig,
   updateZohoConfig,
   fetchSfConfig,
   updateSfConfig,
   type IntegrationRow,
   type IntegrationSnapshotSummary,
+  type SyncLogRow,
 } from '../../lib/api';
 import { ApiClientError } from '../../lib/apiClientError';
 import { canManageIntegrations } from '../../lib/rbac';
@@ -39,6 +42,7 @@ import { formatApiErrorToast, toastApiError } from '../../lib/apiClientError';
 import { failClientValidation } from '../../lib/formValidation';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
+import { ConfirmDangerButton } from '../components/forms/ConfirmDangerButton';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -156,7 +160,9 @@ function IntegrationsAdmin() {
   const [workspace, setWorkspace] = useState<ProviderKind | null>(null);
   const [testingProvider, setTestingProvider] = useState<string | null>(null);
   const [syncingProvider, setSyncingProvider] = useState<string | null>(null);
+  const [syncingNow, setSyncingNow] = useState(false);
   const [snapshots, setSnapshots] = useState<IntegrationSnapshotSummary[]>([]);
+  const [syncLogs, setSyncLogs] = useState<SyncLogRow[]>([]);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [cfgLoading, setCfgLoading] = useState<Partial<Record<ProviderKind, boolean>>>({});
   const [cfgSaving, setCfgSaving] = useState<Partial<Record<ProviderKind, boolean>>>({});
@@ -173,7 +179,8 @@ function IntegrationsAdmin() {
     client_secret: '',
     redirect_uri: integrationCallbackUri('/api/integrations/zoho/callback'),
     accounts_url: 'https://accounts.zoho.com',
-    scopes: 'ZohoProjects.portals.READ,ZohoProjects.projects.ALL,ZohoProjects.tasks.READ',
+    scopes:
+      'ZohoProjects.portals.READ,ZohoProjects.projects.ALL,ZohoProjects.tasks.READ,ZohoProjects.tasks.CREATE',
     secret_masked: '',
     has_secret: false,
   });
@@ -186,7 +193,12 @@ function IntegrationsAdmin() {
       const list = await fetchIntegrations();
       setRows(list);
       if (isAdmin) {
-        setSnapshots(await fetchIntegrationSnapshots());
+        const [snaps, logs] = await Promise.all([
+          fetchIntegrationSnapshots(),
+          fetchSyncLogs().catch(() => [] as SyncLogRow[]),
+        ]);
+        setSnapshots(snaps);
+        setSyncLogs(logs);
       }
     } catch (e) {
       toastApiError(e);
@@ -361,6 +373,13 @@ function IntegrationsAdmin() {
     }
   };
 
+  const toastBridgeAfterSync = (bridge?: { status: string; records?: number; reason?: string }) => {
+    if (!bridge) return;
+    if (bridge.status === 'ok' && bridge.records != null) {
+      toast.message(`Bridge tự chạy: ${bridge.records} mapped_deals`);
+    }
+  };
+
   const handleSfSync = async () => {
     setSyncingProvider('salesforce');
     try {
@@ -368,6 +387,7 @@ function IntegrationsAdmin() {
       toast.success(
         `Sync SF: ${res.summary.opportunity} opportunities, ${res.summary.account} accounts`
       );
+      toastBridgeAfterSync(res.bridge);
       await load();
     } catch (e) {
       toastApiError(e);
@@ -381,11 +401,29 @@ function IntegrationsAdmin() {
     try {
       const res = await zohoSync();
       toast.success(`Sync Zoho: ${res.summary.project} projects, ${res.summary.task} tasks`);
+      toastBridgeAfterSync(res.bridge);
       await load();
     } catch (e) {
       toastApiError(e);
     } finally {
       setSyncingProvider(null);
+    }
+  };
+
+  const handleSyncNow = async () => {
+    setSyncingNow(true);
+    try {
+      const res = await integrationSyncNow();
+      const push = res.push;
+      toast.success(
+        `Đồng bộ xong: SF ${res.salesforce.account} accounts → Zoho tạo ${push.created} dự án (${push.skipped} bỏ qua)`
+      );
+      toastBridgeAfterSync(res.bridge);
+      await load();
+    } catch (e) {
+      toastApiError(e);
+    } finally {
+      setSyncingNow(false);
     }
   };
 
@@ -671,14 +709,19 @@ function IntegrationsAdmin() {
             <Database className="w-4 h-4 mr-2" />
             {syncingProvider === kind ? 'Đang sync…' : 'Đồng bộ snapshot'}
           </Button>
-          <Button
+          <ConfirmDangerButton
             variant="outline"
+            size="default"
             className="border-border text-red-400"
-            onClick={() => void handleDisconnect(kind)}
+            title={`Ngắt kết nối ${PROVIDER_META[kind].label}?`}
+            description="OAuth token sẽ bị xóa — cần kết nối lại để sync/test."
+            confirmLabel="Ngắt kết nối"
+            pendingLabel="Đang ngắt…"
+            onConfirm={() => handleDisconnect(kind)}
           >
             <Unplug className="w-4 h-4 mr-2" />
             Ngắt kết nối
-          </Button>
+          </ConfirmDangerButton>
         </>
       ) : null}
     </div>
@@ -766,10 +809,22 @@ function IntegrationsAdmin() {
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Tích hợp</h1>
         </div>
-        <Button variant="outline" className="border-border" onClick={() => void load()}>
-          <RefreshCw className="w-4 h-4 mr-2" />
-          Làm mới
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          {isAdmin && showBridge ? (
+            <Button
+              className="bg-primary hover:bg-primary/90"
+              disabled={syncingNow}
+              onClick={() => void handleSyncNow()}
+            >
+              <RefreshCw className={`w-4 h-4 mr-2 ${syncingNow ? 'animate-spin' : ''}`} />
+              {syncingNow ? 'Đang đồng bộ…' : 'Sync Now'}
+            </Button>
+          ) : null}
+          <Button variant="outline" className="border-border" onClick={() => void load()}>
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Làm mới
+          </Button>
+        </div>
       </div>
 
       {loading ? (
@@ -799,6 +854,7 @@ function IntegrationsAdmin() {
                 isAdmin={isAdmin}
                 sfConnected={sf?.status === 'connected'}
                 zohoConnected={zoho?.status === 'connected'}
+                onApplied={() => void load()}
               />
             </Card>
           ) : null}
@@ -809,6 +865,39 @@ function IntegrationsAdmin() {
         <Card className="mt-6 p-4 bg-slate-950 border-border">
           <h3 className="text-sm font-bold text-white mb-2">Kết quả test</h3>
           <pre className="text-xs text-slate-300 overflow-auto max-h-64">{testResult}</pre>
+        </Card>
+      ) : null}
+
+      {!loading && syncLogs.length > 0 ? (
+        <Card className="mt-6 p-4 bg-slate-950 border-border">
+          <h3 className="text-sm font-bold text-white mb-3">Nhật ký đồng bộ</h3>
+          <div className="space-y-2 max-h-64 overflow-auto">
+            {syncLogs.map((log) => (
+              <div
+                key={log.id}
+                className="text-xs border border-border rounded p-2 text-slate-300 flex flex-col gap-1"
+              >
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Badge
+                    className={
+                      log.status === 'SUCCESS'
+                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                        : log.status === 'FAILED'
+                          ? 'bg-red-500/10 text-red-400 border-red-500/20'
+                          : 'bg-slate-500/10 text-slate-400 border-slate-500/20'
+                    }
+                  >
+                    {log.status}
+                  </Badge>
+                  <span className="text-muted-foreground">{log.created_at}</span>
+                </div>
+                <p className="text-slate-200">{log.message}</p>
+                {log.error_detail ? (
+                  <p className="text-red-400/90 font-mono break-all">{log.error_detail}</p>
+                ) : null}
+              </div>
+            ))}
+          </div>
         </Card>
       ) : null}
 

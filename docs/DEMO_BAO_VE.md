@@ -1,53 +1,63 @@
-# Demo bảo vệ (~5 phút)
+# Kịch bản demo bảo vệ (~15 phút)
 
-Production: https://thientinh.io.vn — local: http://127.0.0.1:3000
+Production: https://thientinh.io.vn
 
-## 0. Chuẩn bị (trước khi vào phòng)
+## 0. Mở đầu (1 phút)
+
+- Đề tài: Middleware platform rút gọn (WSO2-inspired), Rust
+- **15 chức năng lớn** — slide [`KIEN_TRUC_THUC_TE.md`](KIEN_TRUC_THUC_TE.md)
+
+## 1. Health & kiến trúc (2 phút)
 
 ```bash
-systemctl is-active avaso-gateway
 curl -sS https://thientinh.io.vn/health
-./scripts/smoke-test.sh
 ```
 
-## 1. Đăng nhập + RBAC (1 phút)
+Giải thích: Nginx TLS → Gateway → PostgreSQL + Redis.
 
-- Mở dashboard → **Đăng nhập** admin
-- (Tuỳ chọn) User operator: **Routes** — sửa route OK, không thấy nút **Thêm Route**
-- **Settings** — operator chỉ xem, admin mới lưu được
+## 2. Data plane — HMAC + route (4 phút)
 
-## 2. Route + HMAC client (2 phút)
+1. Mở **Proxy Try** — ký HMAC, gọi route
+2. Hoặc terminal: `python3 scripts/test_hmac_replay.py`
+3. Sửa signature → 401 (TC_02)
 
-- **Quản lý Route** — show route `/v1/api/...` → upstream
-- **Bảo mật & Auth** → tạo API key → copy pk/sk
-- **Thử gọi Proxy** hoặc `scripts/test_hmac_replay.py` — 200 rồi replay → 401
+Nhấn: **HMAC không JWT**, longest prefix match.
 
-## 3. Audit + Logs (1 phút)
+## 3. Rate limit (1 phút)
 
-- **Audit Logs** — login vừa rồi, filter success/failure
-- **Transaction Logs** — request data-plane (timestamp giờ VN)
+Spam request → 429. Xem Logs transaction.
 
-## 4. Tích hợp (1 phút, nếu đã OAuth)
+## 4. Admin — RBAC (3 phút)
 
-- **Tích hợp** — SF/Zoho connected → Test / Sync
-- **Tổng quan** — chart snapshot
+1. Login **Admin** → CRUD route (không restart)
+2. Login **Viewer** → không sửa route; Postman POST → 403
 
-## 5. Câu hỏi hay gặp
+## 5. Quên mật khẩu (2 phút)
 
-| Câu hỏi | Trả lời ngắn |
-|---------|----------------|
-| Replay attack? | Cache in-memory 5 phút + demo script |
-| Restart mất gì? | Session, replay cache, DLQ — Settings ghi rõ |
-| Multi-tenant? | Schema `tenant_id`, demo tenant 1 |
-| F-15 Reports? | Dashboard Overview + `/api/dashboard/stats` |
-| Test tự động? | `cargo test` + `cd web && npm test` + CI |
-| NFR / benchmark? | `GET /metrics`; `./scripts/collect-thesis-evidence.sh` |
-| Trace FR đồ án? | `docs/MA_TRAN_DONG_AN.md` |
+`/forgot-password`: username + email → OTP email (Brevo) → pass mới → login prefill username.
 
-## Docker (local demo)
+## 6. Tích hợp (2 phút)
+
+**Integrations** → Salesforce / Zoho trạng thái + sync snapshot.
+
+## 7. HA (tuỳ chọn, 2 phút)
 
 ```bash
-cp .env.example .env
-docker compose up --build
-# → http://127.0.0.1:3000
+docker compose -f docker-compose.ha.yml up -d
+docker stop <gateway-1>
+# F5 dashboard — vẫn chạy
 ```
+
+Shared Redis session.
+
+## 8. Kết — hạn chế thật
+
+- DLQ in-memory
+- Metrics JSON chưa Prometheus
+- Transaction log async Postgres (chưa Redis buffer)
+
+## Backup nếu mạng lỗi
+
+- Screenshot UI trong slide
+- `data/thesis-evidence/` log
+- Video quay sẵn

@@ -32,17 +32,14 @@ html[dir='ltr'] {
   transform: translate(35%, -35%) !important;
 }
 
-/* Sonner stack — mở/gom mượt (Apple-like) */
+/* Sonner stack — mở/gom mượt; class JS (không :hover) tránh giật viền */
 .avaso-toaster[data-sonner-toaster] {
   --toast-expand-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --toast-collapse-ease: cubic-bezier(0.45, 0.05, 0.2, 1);
   --toast-expand-ms: 580ms;
   --toast-collapse-ms: 700ms;
-  transition: transform var(--toast-expand-ms) var(--toast-expand-ease) !important;
-}
-
-.avaso-toaster[data-sonner-toaster]:is(:hover, .avaso-toast-collapsing) {
-  transform: translateY(-8px);
+  padding: 10px;
+  margin: -10px;
 }
 
 .avaso-toaster[data-sonner-toaster] [data-sonner-toast][data-mounted='true']:not([data-removed='true']) {
@@ -57,7 +54,7 @@ html[dir='ltr'] {
 }
 
 /* Mở: toast sau trước, toast trước sau */
-.avaso-toaster[data-sonner-toaster]:is(:hover, .avaso-toast-collapsing)
+.avaso-toaster[data-sonner-toaster]:is(.avaso-toast-expanded, .avaso-toast-collapsing)
   [data-sonner-toast][data-mounted='true']:not([data-removed='true']) {
   transition-duration: var(--toast-expand-ms), var(--toast-expand-ms), 420ms, 360ms !important;
   transition-timing-function: var(--toast-expand-ease), var(--toast-expand-ease), ease, ease !important;
@@ -65,14 +62,14 @@ html[dir='ltr'] {
 }
 
 /* Gom stack: bỏ scale âm Sonner (gây giật), dùng peek nhẹ */
-.avaso-toaster[data-sonner-toaster]:not(:hover):not(.avaso-toast-collapsing)
+.avaso-toaster[data-sonner-toaster]:not(.avaso-toast-expanded):not(.avaso-toast-collapsing)
   [data-sonner-toast][data-expanded='false'][data-front='false'][data-mounted='true'] {
   --peek-scale: calc(1 - min(var(--toasts-before, 0), 4) * 0.028);
   --y: translateY(calc(var(--lift-amount) * var(--toasts-before) * 0.9)) scale(var(--peek-scale)) !important;
 }
 
 /* Mở stack */
-.avaso-toaster[data-sonner-toaster]:is(:hover, .avaso-toast-collapsing)
+.avaso-toaster[data-sonner-toaster]:is(.avaso-toast-expanded, .avaso-toast-collapsing)
   [data-sonner-toast][data-mounted='true'] {
   --y: translateY(calc(var(--lift) * var(--offset))) !important;
   height: var(--initial-height) !important;
@@ -83,13 +80,13 @@ html[dir='ltr'] {
   transition: opacity 460ms var(--toast-expand-ease) !important;
 }
 
-.avaso-toaster[data-sonner-toaster]:is(:hover, .avaso-toast-collapsing)
+.avaso-toaster[data-sonner-toaster]:is(.avaso-toast-expanded, .avaso-toast-collapsing)
   [data-sonner-toast][data-styled='true'] > * {
   opacity: 1 !important;
   transition-delay: calc(min(var(--index, 0), 4) * 28ms) !important;
 }
 
-.avaso-toaster[data-sonner-toaster]:not(:hover):not(.avaso-toast-collapsing)
+.avaso-toaster[data-sonner-toaster]:not(.avaso-toast-expanded):not(.avaso-toast-collapsing)
   [data-sonner-toast][data-front='false'][data-styled='true'] > * {
   transition-delay: calc((4 - min(var(--index, 0), 4)) * 38ms) !important;
 }
@@ -101,4 +98,9 @@ html[dir='ltr'] {
     transition-duration: 0.01ms !important;
     transition-delay: 0ms !important;
   }
+}
+
+/* Proxy Try: mask Secret nhưng giữ type=text — không kích password manager */
+.gw-secret-mask {
+  -webkit-text-security: disc;
 }

@@ -11,7 +11,7 @@ use sqlx::PgPool;
 use crate::{crypto, RouteRow, YamlBootstrap};
 
 pub const ROUTE_SELECT: &str =
-    "id, path, target, timeout_secs, rate_limit_per_min, tenant_id, transform_add_headers, transform_remove_headers, retry_max, retry_on_status, retry_on_timeout, queue_on_failure";
+    "id, path, target, timeout_secs, rate_limit_per_min, tenant_id, transform_add_headers, transform_remove_headers, retry_max, retry_on_status, retry_on_timeout, queue_on_failure, allowed_methods";
 
 /// Runtime credentials for data-plane auth.
 #[derive(Debug, Clone, Default)]
@@ -669,7 +669,7 @@ pub struct TransactionLogRow {
     pub request_id: String,
     pub method: String,
     pub path: String,
-    pub status: i64,
+    pub status: i32,
     pub duration_ms: i64,
     pub client_ip: Option<String>,
     pub api_key_masked: Option<String>,
@@ -685,7 +685,7 @@ pub async fn insert_transaction_log(
     request_id: &str,
     method: &str,
     path: &str,
-    status: i64,
+    status: i32,
     duration_ms: i64,
     client_ip: Option<&str>,
     api_key_masked: &str,
@@ -973,11 +973,12 @@ pub async fn insert_route(
     retry_on_status: &str,
     retry_on_timeout: i32,
     queue_on_failure: i32,
+    allowed_methods: &str,
 ) -> Result<RouteRow, sqlx::Error> {
     sqlx::query_as::<_, RouteRow>(
         &format!(
-            "INSERT INTO gateway_routes (path, target, timeout_secs, rate_limit_per_min, tenant_id, transform_add_headers, transform_remove_headers, retry_max, retry_on_status, retry_on_timeout, queue_on_failure)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            "INSERT INTO gateway_routes (path, target, timeout_secs, rate_limit_per_min, tenant_id, transform_add_headers, transform_remove_headers, retry_max, retry_on_status, retry_on_timeout, queue_on_failure, allowed_methods)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          RETURNING {ROUTE_SELECT}"
         ),
     )
@@ -992,6 +993,7 @@ pub async fn insert_route(
     .bind(retry_on_status)
     .bind(retry_on_timeout)
     .bind(queue_on_failure)
+    .bind(allowed_methods)
     .fetch_one(pool)
     .await
 }
@@ -1019,12 +1021,13 @@ pub async fn update_route(
     retry_on_status: &str,
     retry_on_timeout: i32,
     queue_on_failure: i32,
+    allowed_methods: &str,
 ) -> Result<u64, sqlx::Error> {
     let r = sqlx::query(
         "UPDATE gateway_routes SET path = $1, target = $2, timeout_secs = $3, rate_limit_per_min = $4,
          transform_add_headers = $5, transform_remove_headers = $6, retry_max = $7, retry_on_status = $8,
-         retry_on_timeout = $9, queue_on_failure = $10
-         WHERE id = $11 AND tenant_id = $12",
+         retry_on_timeout = $9, queue_on_failure = $10, allowed_methods = $11
+         WHERE id = $12 AND tenant_id = $13",
     )
     .bind(path)
     .bind(target)
@@ -1036,6 +1039,7 @@ pub async fn update_route(
     .bind(retry_on_status)
     .bind(retry_on_timeout)
     .bind(queue_on_failure)
+    .bind(allowed_methods)
     .bind(id)
     .bind(tenant_id)
     .execute(pool)
@@ -1278,7 +1282,7 @@ pub async fn fetch_integration_provider_config(
     provider: &str,
 ) -> Result<Option<IntegrationProviderConfigRow>, sqlx::Error> {
     sqlx::query_as::<_, IntegrationProviderConfigRow>(
-        "SELECT id, tenant_id, provider, config_encrypted, updated_by, updated_at
+        "SELECT id, tenant_id, provider, config_encrypted, updated_by, updated_at::text AS updated_at
          FROM integration_provider_configs
          WHERE tenant_id = $1 AND provider = $2 LIMIT 1",
     )
@@ -1778,6 +1782,132 @@ pub async fn upsert_integration_bridge(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct SyncLogRow {
+    pub id: i64,
+    pub tenant_id: i64,
+    pub status: String,
+    pub message: String,
+    pub error_detail: Option<String>,
+    pub created_at: String,
+}
+
+pub async fn insert_sync_log(
+    pool: &PgPool,
+    tenant_id: i64,
+    status: &str,
+    message: &str,
+    error_detail: Option<&str>,
+) -> Result<i64, sqlx::Error> {
+    let row: (i64,) = sqlx::query_as(
+        "INSERT INTO sync_logs (tenant_id, status, message, error_detail)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id",
+    )
+    .bind(tenant_id)
+    .bind(status)
+    .bind(message)
+    .bind(error_detail)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.0)
+}
+
+pub async fn list_sync_logs(
+    pool: &PgPool,
+    tenant_id: i64,
+    limit: i64,
+) -> Result<Vec<SyncLogRow>, sqlx::Error> {
+    sqlx::query_as::<_, SyncLogRow>(
+        "SELECT id, tenant_id, status, message, error_detail, created_at::text AS created_at
+         FROM sync_logs
+         WHERE tenant_id = $1
+         ORDER BY id DESC
+         LIMIT $2",
+    )
+    .bind(tenant_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn prune_sync_logs(pool: &PgPool, tenant_id: i64, retain: i64) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "DELETE FROM sync_logs
+         WHERE tenant_id = $1
+           AND id NOT IN (
+             SELECT id FROM sync_logs
+             WHERE tenant_id = $1
+             ORDER BY id DESC
+             LIMIT $2
+           )",
+    )
+    .bind(tenant_id)
+    .bind(retain)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct EntityLinkRow {
+    pub sf_entity_type: String,
+    pub sf_id: String,
+    pub zoho_id: String,
+    pub zoho_name: Option<String>,
+}
+
+pub async fn fetch_entity_link(
+    pool: &PgPool,
+    tenant_id: i64,
+    sf_entity_type: &str,
+    sf_id: &str,
+) -> Result<Option<EntityLinkRow>, sqlx::Error> {
+    sqlx::query_as::<_, EntityLinkRow>(
+        "SELECT sf_entity_type, sf_id, zoho_id, zoho_name
+         FROM integration_entity_links
+         WHERE tenant_id = $1 AND sf_entity_type = $2 AND sf_id = $3",
+    )
+    .bind(tenant_id)
+    .bind(sf_entity_type)
+    .bind(sf_id)
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn upsert_entity_link(
+    pool: &PgPool,
+    tenant_id: i64,
+    sf_entity_type: &str,
+    sf_id: &str,
+    zoho_id: &str,
+    zoho_name: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO integration_entity_links
+           (tenant_id, sf_entity_type, sf_id, zoho_entity_type, zoho_id, zoho_name, last_synced_at)
+         VALUES ($1, $2, $3, 'project', $4, $5, NOW())
+         ON CONFLICT (tenant_id, sf_entity_type, sf_id) DO UPDATE SET
+           zoho_id = excluded.zoho_id,
+           zoho_name = excluded.zoho_name,
+           last_synced_at = NOW()",
+    )
+    .bind(tenant_id)
+    .bind(sf_entity_type)
+    .bind(sf_id)
+    .bind(zoho_id)
+    .bind(zoho_name)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn list_tenant_ids(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
+    sqlx::query_scalar("SELECT id FROM tenants ORDER BY id")
+        .fetch_all(pool)
+        .await
 }
 
 #[cfg(test)]

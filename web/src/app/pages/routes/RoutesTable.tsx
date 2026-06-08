@@ -1,5 +1,6 @@
 import { Button } from '../../components/ui/button';
 import { Card } from '../../components/ui/card';
+import { ConfirmDangerButton } from '../../components/forms/ConfirmDangerButton';
 import { Edit, RefreshCw, Trash2 } from 'lucide-react';
 import type { UiRoute } from './routeTypes';
 
@@ -72,14 +73,15 @@ export function RoutesTable({ routes, loading, error, onReload, onEdit, onDelete
                           </Button>
                         ) : null}
                         {onDelete ? (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => onDelete(route.id)}
+                          <ConfirmDangerButton
+                            title="Xóa route?"
+                            description={`Xóa route ${route.path} → ${route.upstream}. Request tới path này sẽ 404.`}
+                            confirmLabel="Xóa route"
+                            onConfirm={() => onDelete(route.id)}
                             className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
                           >
                             <Trash2 className="w-4 h-4" />
-                          </Button>
+                          </ConfirmDangerButton>
                         ) : null}
                       </div>
                     ) : (

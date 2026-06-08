@@ -9,6 +9,7 @@ import {
   fetchClientKeys,
   type ClientKeyMeta,
 } from '../../lib/api';
+import { ClientKeyFlowSteps } from '../components/auth/ClientKeyFlowSteps';
 import { ApiKeySummaryCards } from './auth/ApiKeySummaryCards';
 import { ApiKeysDataTable } from './auth/ApiKeysDataTable';
 import { CreateApiKeyDialog } from './auth/CreateApiKeyDialog';
@@ -67,9 +68,9 @@ function AuthAdmin() {
 
   return (
     <>
-      <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Bảo mật & Authentication</h1>
+      <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4">
+        <div className="min-w-0">
+          <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Bảo mật & API Key</h1>
         </div>
         <div className="flex flex-wrap gap-2">
           {allowCreateKeys ? (
@@ -85,6 +86,10 @@ function AuthAdmin() {
           {loadError}
         </div>
       ) : null}
+
+      <div className="mb-6">
+        <ClientKeyFlowSteps activeStep={apiKeys.length > 0 ? 'copy' : 'create'} />
+      </div>
 
       <ApiKeySummaryCards apiKeys={apiKeys} />
       <ApiKeysDataTable

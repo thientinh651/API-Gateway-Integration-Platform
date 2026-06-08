@@ -1,0 +1,5 @@
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+For more information about this error, try `rustc --explain E0133`.
+error: could not compile `avaso-gateway` (bin "avaso-gateway" test) due to 3 previous errors

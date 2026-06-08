@@ -375,11 +375,13 @@ mod tests {
 
     #[test]
     fn viewer_registration_default_off() {
-        std::env::remove_var("ALLOW_VIEWER_REGISTRATION");
-        assert!(!super::viewer_registration_enabled());
-        std::env::set_var("ALLOW_VIEWER_REGISTRATION", "1");
-        assert!(super::viewer_registration_enabled());
-        std::env::remove_var("ALLOW_VIEWER_REGISTRATION");
+        unsafe {
+            std::env::remove_var("ALLOW_VIEWER_REGISTRATION");
+            assert!(!super::viewer_registration_enabled());
+            std::env::set_var("ALLOW_VIEWER_REGISTRATION", "1");
+            assert!(super::viewer_registration_enabled());
+            std::env::remove_var("ALLOW_VIEWER_REGISTRATION");
+        }
     }
 
     #[test]

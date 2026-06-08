@@ -84,12 +84,23 @@ export function looksLikeSpaShell(result: ProxyTryResult): boolean {
   return t.startsWith('<!doctype') || t.startsWith('<html');
 }
 
+function integrationFailureHint(bodyJson: unknown): string | null {
+  if (!bodyJson || typeof bodyJson !== 'object') return null;
+  const row = bodyJson as Record<string, unknown>;
+  if (row.error !== 'integration_proxy_failed') return null;
+  const msg = String(row.message ?? '').toLowerCase();
+  if (msg.includes('missing access_token') || msg.includes('invalid_code') || msg.includes('invalid_grant')) {
+    return 'API Key/HMAC đã qua gateway — lỗi OAuth Zoho/Salesforce (token hết hạn hoặc chưa kết nối). Vào Tích hợp → kết nối lại rồi thử path /sf/... hoặc /zoho/...';
+  }
+  return 'Gateway chấp nhận key nhưng proxy tích hợp upstream thất bại — kiểm tra Tích hợp và route.';
+}
+
 export function describeProxyExpectation(result: ProxyTryResult, mode: 'no_key' | 'with_key'): string {
   if (looksLikeSpaShell(result)) {
     return `HTTP ${result.status} nhưng body là HTML giao diện — không phải API. Dùng path dạng ${DATA_PLANE_PREFIX}/... (có dấu / sau api).`;
   }
   if (mode === 'no_key') {
-    if (result.status === 401) return 'Đúng kỳ vọng SRS: 401 khi thiếu X-API-Key (FR-F1 / FR-F3).';
+    if (result.status === 401) return '401 thiếu X-API-Key.';
     if (result.status === 404) {
       if (isDataPlaneTypoPath(result.requestUrl)) {
         return `404 — path sai định dạng; cần ${DATA_PLANE_PREFIX} hoặc ${DATA_PLANE_PREFIX}/<segment>.`;
@@ -99,7 +110,7 @@ export function describeProxyExpectation(result: ProxyTryResult, mode: 'no_key' 
     return `Nhận HTTP ${result.status}; kỳ vọng thường là 401.`;
   }
   if (result.ok && result.bodyJson != null) {
-    return 'Đúng kỳ vọng: key hợp lệ, gateway forward upstream (FR-F2).';
+    return 'Key hợp lệ, gateway forward upstream (FR-F2).';
   }
   if (result.ok) {
     return `HTTP ${result.status} — body không phải JSON; kiểm tra route/upstream trên Quản lý Route.`;
@@ -110,6 +121,11 @@ export function describeProxyExpectation(result: ProxyTryResult, mode: 'no_key' 
       return `404 — path sai định dạng; cần ${DATA_PLANE_PREFIX} hoặc ${DATA_PLANE_PREFIX}/<segment>.`;
     }
     return '404 — không có route khớp path.';
+  }
+  const integrationHint = integrationFailureHint(result.bodyJson);
+  if (integrationHint) return integrationHint;
+  if (result.status === 502) {
+    return 'HTTP 502 — gateway không nhận phản hồi hợp lệ từ upstream (tích hợp/route). Xem body JSON bên dưới.';
   }
   return `HTTP ${result.status} — xem body bên dưới.`;
 }

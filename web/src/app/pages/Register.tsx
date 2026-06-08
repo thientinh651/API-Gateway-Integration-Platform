@@ -9,6 +9,7 @@ import { Label } from '../components/ui/label';
 import { registerViewer } from '../../lib/api';
 import { ApiClientError } from '../../lib/apiClientError';
 import { FieldError } from '../components/forms/FieldError';
+import { isValidEmail } from '../../lib/formValidation';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import { roleDescription, roleLabel } from '../../lib/rbac';
 
@@ -27,6 +28,7 @@ export function Register() {
     const errors: Record<string, string> = {};
     if (!username.trim()) errors.username = 'Nhập tên đăng nhập';
     if (!email.trim()) errors.email = 'Nhập email';
+    else if (!isValidEmail(email.trim())) errors.email = 'Email không hợp lệ';
     if (password.length < 6) errors.password = 'Mật khẩu tối thiểu 6 ký tự';
     if (password !== confirm) errors.confirm_password = 'Mật khẩu xác nhận không khớp';
     if (Object.keys(errors).length > 0) {
@@ -74,14 +76,6 @@ export function Register() {
 
       <TechPanel className="relative z-[1] w-full max-w-md p-6 sm:p-8">
         <h1 className="text-2xl font-bold text-white mb-1">Đăng ký</h1>
-        <p className="text-sm text-muted-foreground mb-4">
-          Tự tạo tài khoản <span className="text-emerald-400">{roleLabel('viewer')}</span> —{' '}
-          {roleDescription('viewer')}
-        </p>
-        <p className="text-xs text-muted-foreground mb-6 font-mono-tech">
-          Admin / Operator do Quản trị viên tạo trong Quản lý Users. Admin bootstrap có sẵn lúc cài đặt.
-        </p>
-
         <form onSubmit={onSubmit} className="space-y-4" noValidate>
           <div className="space-y-2">
             <Label htmlFor="reg-user" className="text-foreground">
@@ -125,7 +119,6 @@ export function Register() {
               className={`bg-input border-border text-foreground ${fieldErrors.email ? 'border-destructive' : ''}`}
             />
             <FieldError message={fieldErrors.email} />
-            <p className="text-[11px] text-muted-foreground">Dùng cho quên mật khẩu (OTP).</p>
           </div>
           <div className="space-y-2">
             <Label htmlFor="reg-pass" className="text-foreground">

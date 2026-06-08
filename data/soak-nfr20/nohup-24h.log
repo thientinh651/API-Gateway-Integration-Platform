@@ -1,0 +1,5 @@
+NFR-20 soak: 24h, mỗi 5s một request (auth=none).
+Request log: ./data/soak-nfr20/requests-20260606-091347.log
+Memory CSV:  ./data/soak-nfr20/memory-20260606-091347.csv
+Dừng: Ctrl+C
+Hoàn tất. Xem ./data/soak-nfr20/memory-20260606-091347.csv — RSS ổn định (dao động nhẹ) = không leak rõ; tăng liên tục = cần điều tra.

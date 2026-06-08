@@ -1,0 +1,13 @@
+benchmark_at=2026-06-06T08:34:10+00:00
+url=http://127.0.0.1:3000/health
+requests=50
+concurrency=5
+rss_kb_before=29812
+---
+Tool: curl loop (cài 'hey' để có histogram chuẩn hơn)
+requests_ok=50
+requests_fail=0
+avg_latency_ms=1
+---
+rss_kb_after=29812
+rss_delta_kb=0

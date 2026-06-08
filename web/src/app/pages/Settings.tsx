@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
+import { ConfirmDangerButton } from '../components/forms/ConfirmDangerButton';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { toast } from 'sonner';
@@ -387,6 +388,12 @@ export function Settings() {
               <div>
                 <Label className="text-foreground text-xs uppercase tracking-wider">x-api-key</Label>
                 <Input
+                  type="text"
+                  name="gw-admin-script-key"
+                  autoComplete="one-time-code"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  data-form-type="other"
                   value={adminApiKey}
                   onChange={(e) => {
                     setAdminApiKey(e.target.value);
@@ -405,9 +412,17 @@ export function Settings() {
                 <Button onClick={handleSaveApiKey} className="flex-1 bg-primary hover:bg-primary/90">
                   Save
                 </Button>
-                <Button onClick={handleClearApiKey} variant="outline" className="flex-1 border-border">
+                <ConfirmDangerButton
+                  variant="outline"
+                  size="default"
+                  className="flex-1 border-border"
+                  title="Xóa Admin API Key local?"
+                  description="Xóa key lưu trên trình duyệt (localStorage) — không ảnh hưởng key trên server."
+                  confirmLabel="Xóa"
+                  onConfirm={handleClearApiKey}
+                >
                   Clear
-                </Button>
+                </ConfirmDangerButton>
               </div>
               {adminApiKey && <div className="mt-4 text-xs text-emerald-400">Key đã lưu trong localStorage</div>}
             </div>

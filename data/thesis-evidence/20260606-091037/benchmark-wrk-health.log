@@ -1,0 +1,14 @@
+==> wrk health (30s)
+Running 30s test @ http://127.0.0.1:3000/health
+  4 threads and 50 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency    23.01ms    9.82ms  89.51ms   87.93%
+    Req/Sec   535.98    158.91   790.00     72.83%
+  Latency Distribution
+     50%   19.76ms
+     75%   22.95ms
+     90%   35.80ms
+     99%   60.22ms
+  64143 requests in 30.09s, 15.90MB read
+Requests/sec:   2131.77
+Transfer/sec:    541.27KB

@@ -1,62 +1,53 @@
-# Benchmark & chứng cứ NFR (đồ án)
+# Benchmark & NFR — cách đo và chứng minh
 
-**Mục đích:** Số liệu latency + RSS — **không** so sánh thay WSO2.
+## NFR trong luận văn (mục tiêu)
 
-## Chạy nhanh
+| NFR | Mục tiêu đề ra | Cách đo | Ghi chú thực tế |
+|-----|----------------|---------|-----------------|
+| Throughput | ~5000 req/s | `wrk` / `oha` 30–60s | Cần chạy trên VPS; evidence mẫu 50 req curl loop |
+| Latency overhead | ≤10 ms vs upstream | So sánh direct vs qua gateway | Đo trên route proxy thật |
+| Concurrent | 1000 keep-alive | `wrk -c 1000` | Droplet 2GB — điều chỉnh kỳ vọng |
+| Soak 24h | Lỗi nội bộ <1% | `scripts/nfr20-soak-test.sh` | Xem `deploy/systemd/NFR20_STABILITY.md` |
+| Hot reload | <1s | Sửa route UI → gọi API ngay | `reload_runtime_config`, không SIGHUP |
 
-```bash
-# Health (không cần API key)
-./scripts/benchmark-gateway.sh
-
-# Data-plane (HMAC)
-export BENCH_URL="http://127.0.0.1:3000/v1/api/get"
-export BENCH_API_KEY="avaso_pk_..."
-export BENCH_SECRET_KEY="avaso_sk_..."
-./scripts/benchmark-gateway.sh
-```
-
-Kết quả: `data/benchmark/result-<timestamp>.txt`
-
-## Soak RAM 24h (NFR-20)
+## Script có sẵn
 
 ```bash
-export SOAK_API_KEY="avaso_..."
-SOAK_HOURS=1 ./scripts/nfr20-soak-test.sh
-# → data/soak-nfr20/memory-*.csv
-```
-
-RSS không tăng tuyến tính → pass ổn định bộ nhớ (Rust).
-
-## Gom tất cả cho báo cáo
-
-```bash
+# Gom chứng cứ (smoke + health + metrics + bench nhỏ)
 ./scripts/collect-thesis-evidence.sh
+
+# Benchmark health (mặc định 50 req, concurrency 5)
+./scripts/benchmark-gateway.sh
+
+# Tuỳ chỉnh
+BENCH_REQUESTS=1000 BENCH_CONCURRENCY=50 ./scripts/benchmark-gateway.sh
 ```
 
-## Metrics runtime
+Output: `data/thesis-evidence/YYYYMMDD-HHMMSS/`
+
+## wrk (khuyến nghị slide)
 
 ```bash
-curl -sS http://127.0.0.1:3000/metrics | python3 -m json.tool
+# Cài wrk trên VPS
+sudo apt install -y wrk
+
+# Health (không HMAC)
+wrk -t4 -c100 -d30s http://127.0.0.1:3000/health
+
+# Data plane cần script ký HMAC — dùng route test + key trong DB
 ```
 
-| Field | Ý nghĩa |
-|-------|---------|
-| `uptime_secs` | Thời gian process chạy |
-| `data_plane.requests_total` | Số request data-plane đã log |
-| `data_plane.denied_total` | 401/403… |
-| `data_plane.success_total` | Forward thành công |
+## Metrics hiện tại
 
-## Ghi vào slide (mẫu)
+`GET /metrics` — JSON counters (request count, rate limit hits). **Chưa** Prometheus text format.
 
-| Metric | Giá trị (điền sau khi chạy) |
-|--------|-----------------------------|
-| RSS gateway (KB) | từ `benchmark` hoặc `ps` |
-| Avg latency `/health` (ms) | từ `benchmark` |
-| Soak 1h RSS max−min | từ CSV |
+## Điền vào bảng TC luận văn
 
-## Công cụ tuỳ chọn
+| TC | NFR | Lệnh | Kết quả mong đợi |
+|----|-----|------|------------------|
+| TC-NFR-01 | Health | `curl /health` | 200, JSON ok |
+| TC-NFR-02 | Smoke | `./scripts/smoke-test.sh` | login OK |
+| TC-NFR-03 | Bench | `collect-thesis-evidence.sh` | 0 fail, RSS ổn |
+| TC-NFR-04 | Unit | `cargo test` | pass |
 
-```bash
-sudo apt install hey   # histogram RPS
-hey -n 500 -c 20 http://127.0.0.1:3000/health
-```
+Chèn screenshot + file log từ `data/thesis-evidence/` vào Chương 4.

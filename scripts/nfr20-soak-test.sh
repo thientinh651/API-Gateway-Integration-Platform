@@ -12,16 +12,26 @@
 
 set -euo pipefail
 
-SOAK_URL="${SOAK_URL:-https://thientinh.io.vn/v1/api/get}"
+SOAK_URL="${SOAK_URL:-http://127.0.0.1:3000/health}"
 SOAK_API_KEY="${SOAK_API_KEY:-}"
+SOAK_SECRET_KEY="${SOAK_SECRET_KEY:-}"
+SOAK_AUTH="${SOAK_AUTH:-auto}"
 SOAK_HOURS="${SOAK_HOURS:-24}"
 INTERVAL_SEC="${INTERVAL_SEC:-5}"
 MEM_LOG_EVERY_SEC="${MEM_LOG_EVERY_SEC:-300}"
 LOG_DIR="${LOG_DIR:-./data/soak-nfr20}"
 SERVICE_NAME="${SERVICE_NAME:-avaso-gateway}"
 
-if [[ -z "$SOAK_API_KEY" ]]; then
-  echo "Thiếu SOAK_API_KEY (client key avaso_...)." >&2
+if [[ "$SOAK_AUTH" == "auto" ]]; then
+  if [[ "$SOAK_URL" == *"/v1/api"* ]]; then
+    SOAK_AUTH="hmac"
+  else
+    SOAK_AUTH="none"
+  fi
+fi
+
+if [[ "$SOAK_AUTH" == "hmac" && ( -z "$SOAK_API_KEY" || -z "$SOAK_SECRET_KEY" ) ]]; then
+  echo "Thiếu SOAK_API_KEY + SOAK_SECRET_KEY cho data-plane HMAC." >&2
   exit 1
 fi
 
@@ -36,6 +46,7 @@ END_EPOCH=$(( $(date +%s) + SOAK_HOURS * 3600 ))
 {
   echo "started_at=$(date -Is)"
   echo "soak_url=$SOAK_URL"
+  echo "soak_auth=$SOAK_AUTH"
   echo "soak_hours=$SOAK_HOURS"
   echo "interval_sec=$INTERVAL_SEC"
   echo "mem_log_every_sec=$MEM_LOG_EVERY_SEC"
@@ -59,7 +70,28 @@ log_memory() {
   echo "$(date -Is),${rss},${vsz},${pid}" >>"$MEM_LOG"
 }
 
-echo "NFR-20 soak: ${SOAK_HOURS}h, mỗi ${INTERVAL_SEC}s một request."
+sign_hmac() {
+  local method="${1:-GET}"
+  local url="$2"
+  local path="${url#*://}"
+  path="/${path#*/}"
+  path="${path%%\?*}"
+  local ts payload sig
+  ts="$(date +%s)"
+  payload="${SOAK_API_KEY}
+${ts}
+${method}
+${path}
+"
+  sig="$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$SOAK_SECRET_KEY" | awk '{print $2}')"
+  HMAC_HEADERS=(
+    -H "X-API-Key: $SOAK_API_KEY"
+    -H "X-Timestamp: $ts"
+    -H "X-Signature: $sig"
+  )
+}
+
+echo "NFR-20 soak: ${SOAK_HOURS}h, mỗi ${INTERVAL_SEC}s một request (auth=$SOAK_AUTH)."
 echo "Request log: $REQ_LOG"
 echo "Memory CSV:  $MEM_LOG"
 echo "Dừng: Ctrl+C"
@@ -75,9 +107,14 @@ while [[ $(date +%s) -lt $END_EPOCH ]]; do
     LAST_MEM=$NOW
   fi
 
+  CURL_ARGS=(--max-time 30)
+  if [[ "$SOAK_AUTH" == "hmac" ]]; then
+    sign_hmac GET "$SOAK_URL"
+    CURL_ARGS+=("${HMAC_HEADERS[@]}")
+  fi
+
   CODE=$(curl -sS -o /dev/null -w "%{http_code}" \
-    -H "X-API-Key: $SOAK_API_KEY" \
-    --max-time 30 \
+    "${CURL_ARGS[@]}" \
     "$SOAK_URL" 2>>"$REQ_LOG" || echo "000")
 
   REQ_COUNT=$((REQ_COUNT + 1))

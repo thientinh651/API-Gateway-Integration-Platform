@@ -7,6 +7,7 @@ mod integrations;
 mod metrics;
 mod password_reset;
 mod proxy_ext;
+mod route_match;
 mod session;
 
 use admin_auth::{session_unavailable_response, write_audit, write_audit_event, write_audit_failure, AdminCtx};
@@ -14,9 +15,9 @@ use integrations::OAuthPending;
 use session::{SessionRecord, SessionStore, SessionStoreStatus};
 use axum::{
     body::Body,
-    extract::{Extension, Json, Path},
+    extract::{Extension, Json, Path, Query},
     http::{
-        header::{COOKIE, CONTENT_TYPE, SET_COOKIE},
+        header::{COOKIE, CONTENT_TYPE, RETRY_AFTER, SET_COOKIE},
         HeaderMap, HeaderValue, Method, Request, StatusCode, Uri,
     },
     middleware::{self, Next},
@@ -79,6 +80,12 @@ pub struct RouteRow {
     pub retry_on_timeout: i32,
     #[serde(default)]
     pub queue_on_failure: i32,
+    #[serde(default = "default_allowed_methods")]
+    pub allowed_methods: String,
+}
+
+fn default_allowed_methods() -> String {
+    "*".into()
 }
 
 fn default_json_obj() -> String {
@@ -423,6 +430,18 @@ fn status_to_json_error(status: StatusCode) -> Response {
     json_error(status, error, message)
 }
 
+fn rate_limit_response(retry_after_secs: u64) -> Response {
+    let mut res = json_error(
+        StatusCode::TOO_MANY_REQUESTS,
+        "too_many_requests",
+        "Rate limit exceeded",
+    );
+    if let Ok(hv) = HeaderValue::from_str(&retry_after_secs.max(1).to_string()) {
+        res.headers_mut().insert(RETRY_AFTER, hv);
+    }
+    res
+}
+
 const HMAC_TIMESTAMP_MAX_SKEW_SECS: u64 = 300;
 const MAX_DATA_PLANE_BODY: usize = 1024 * 1024;
 
@@ -628,6 +647,7 @@ fn log_gateway_transaction(
     if path_is_under_data_plane(path) {
         if let Some(st) = STATE.get() {
             st.gateway_metrics.record_data_plane(outcome);
+            st.gateway_metrics.record_latency(elapsed_ms);
         }
     }
 
@@ -648,7 +668,7 @@ fn log_gateway_transaction(
                 &req_id,
                 &method,
                 &path,
-                status as i64,
+                status as i32,
                 elapsed_ms as i64,
                 client_ip.as_deref(),
                 &api_key_masked,
@@ -686,6 +706,19 @@ impl TokenBucket {
         } else {
             false
         }
+    }
+
+    fn retry_after_secs(&self, rps: f64) -> u64 {
+        if self.tokens >= 1.0 {
+            return 1;
+        }
+        let needed = 1.0 - self.tokens;
+        let secs = if rps > 0.0 {
+            needed / rps
+        } else {
+            60.0
+        };
+        secs.ceil().max(1.0) as u64
     }
 }
 
@@ -908,6 +941,15 @@ async fn reload_runtime_config() -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+/// Trả response API trước — tránh nginx 502 khi reload config chậm.
+fn spawn_reload_runtime_config() {
+    tokio::spawn(async {
+        if let Err(e) = reload_runtime_config().await {
+            tracing::warn!(error = %e, "background config reload failed");
+        }
+    });
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -960,6 +1002,9 @@ async fn main() {
         .expect("load config from database");
 
     let session_store = session::init_session_store().await;
+    let proxy_queue = proxy_ext::ProxyQueue::new(pool.clone());
+
+    integrations::spawn_integration_sync_worker(pool.clone());
 
     let state = AppState {
         pool,
@@ -969,7 +1014,7 @@ async fn main() {
         session_store,
         hmac_replay: Arc::new(DashMap::new()),
         oauth_pending: Arc::new(DashMap::new()),
-        proxy_queue: proxy_ext::ProxyQueue::new(),
+        proxy_queue,
         gateway_metrics: Arc::new(metrics::GatewayMetrics::new()),
     };
     let _ = STATE.set(state);
@@ -1036,6 +1081,12 @@ async fn main() {
             "/integrations/bridge",
             get(api_get_integration_bridge).put(api_put_integration_bridge),
         )
+        .route(
+            "/integrations/bridge/run",
+            post(api_run_integration_bridge),
+        )
+        .route("/integrations/sync-now", post(api_sync_now))
+        .route("/integrations/sync-logs", get(api_list_sync_logs))
         .route("/settings", get(api_get_settings).put(api_update_settings))
         .route("/dashboard/stats", get(api_dashboard_stats))
         .route("/reload-config", post(api_reload_config))
@@ -1118,7 +1169,30 @@ async fn main() {
     println!("   GET /api/integrations | SF OAuth connect/callback/test");
     println!("   GET /api/crypto/public-key | POST /api/client-keys/encrypted (RSA envelope)");
     println!("   Data plane prefix (bắt buộc X-API-Key client): {}", data_plane_prefix());
+    let shutdown = async {
+        let ctrl_c = async {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to install Ctrl+C handler");
+        };
+        #[cfg(unix)]
+        let terminate = async {
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to install SIGTERM handler")
+                .recv()
+                .await;
+        };
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<()>();
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = terminate => {},
+        }
+        info!("Shutting down gracefully…");
+    };
+
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .with_graceful_shutdown(shutdown)
         .await
         .unwrap();
 }
@@ -1708,7 +1782,8 @@ struct UpdateMeBody {
 
 #[derive(Debug, Deserialize)]
 struct ForgotPasswordBody {
-    identifier: String,
+    username: String,
+    email: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2021,16 +2096,32 @@ async fn api_forgot_password(
     headers: HeaderMap,
     Json(body): Json<ForgotPasswordBody>,
 ) -> impl IntoResponse {
-    let id = body.identifier.trim();
-    if id.is_empty() {
+    let username = body.username.trim();
+    let email_input = body.email.trim();
+    let mut fields = serde_json::Map::new();
+    if username.is_empty() {
+        fields.insert(
+            "username".into(),
+            serde_json::Value::String("Nhập tên đăng nhập".into()),
+        );
+    }
+    if email_input.is_empty() {
+        fields.insert(
+            "email".into(),
+            serde_json::Value::String("Nhập email".into()),
+        );
+    } else if password_reset::normalize_email(email_input).is_none() {
+        fields.insert(
+            "email".into(),
+            serde_json::Value::String("Email không hợp lệ".into()),
+        );
+    }
+    if !fields.is_empty() {
         return json_error_fields(
             StatusCode::BAD_REQUEST,
             "validation_failed",
             "Thiếu thông tin",
-            serde_json::Map::from_iter([(
-                "identifier".into(),
-                serde_json::Value::String("Nhập username hoặc email".into()),
-            )]),
+            fields,
         );
     }
 
@@ -2043,50 +2134,73 @@ async fn api_forgot_password(
     };
 
     let delivery = password_reset::otp_delivery_mode();
-    let row = if id.contains('@') {
-        match db::fetch_admin_user_by_email(&st.pool, id).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!(error = %e, "forgot-password lookup failed");
-                return forgot_password_generic_ok(delivery);
-            }
-        }
-    } else {
-        match db::fetch_admin_user_by_username(&st.pool, id).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!(error = %e, "forgot-password lookup failed");
-                return forgot_password_generic_ok(delivery);
-            }
+    let row = match db::fetch_admin_user_by_username(&st.pool, username).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "forgot-password lookup failed");
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "Không tra cứu được tài khoản — thử lại sau",
+            );
         }
     };
 
     let Some(user) = row else {
-        return forgot_password_generic_ok(delivery);
+        return json_error_fields(
+            StatusCode::NOT_FOUND,
+            "account_not_found",
+            "Tên đăng nhập không tồn tại",
+            serde_json::Map::from_iter([(
+                "username".into(),
+                serde_json::Value::String("Không tìm thấy tài khoản với tên đăng nhập này".into()),
+            )]),
+        );
     };
 
     if user.is_active == 0 {
-        return forgot_password_generic_ok(delivery);
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "account_inactive",
+            "Tài khoản đã bị khóa — liên hệ Admin.",
+        );
     }
 
-    let Some(ref email) = user.email else {
+    let Some(ref stored_email) = user.email else {
         return json_error(
             StatusCode::BAD_REQUEST,
             "no_email",
-            "Tài khoản chưa có email — đăng nhập (nếu còn nhớ pass) hoặc nhờ Admin cấp email trong Quản lý Users.",
+            "Tài khoản chưa có email — nhờ Admin cấp email trong Quản lý Users.",
         );
     };
+
+    let email_norm = password_reset::normalize_email(email_input).unwrap_or_default();
+    let stored_norm = password_reset::normalize_email(stored_email).unwrap_or_default();
+    if email_norm != stored_norm {
+        return json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "email_mismatch",
+            "Email không khớp với tài khoản",
+            serde_json::Map::from_iter([(
+                "email".into(),
+                serde_json::Value::String(
+                    "Email không trùng với email đã đăng ký của tài khoản này".into(),
+                ),
+            )]),
+        );
+    }
 
     if delivery == "none" {
         return json_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "mail_unavailable",
-            "Hệ thống chưa cấu hình SMTP. Bật PASSWORD_RESET_DEV_LOG=1 (dev) hoặc SMTP_* (production).",
+            "Hệ thống chưa cấu hình gửi mail. Bật BREVO_API_KEY hoặc PASSWORD_RESET_DEV_LOG=1 (dev).",
         );
     }
 
     let mut conn = st.session_store.redis();
-    match password_reset::issue_password_reset_otp(&mut conn, &user.username, user.id, email).await
+    match password_reset::issue_password_reset_otp(&mut conn, &user.username, user.id, stored_email)
+        .await
     {
         Ok(()) => {
             write_audit_event(
@@ -2104,16 +2218,16 @@ async fn api_forgot_password(
             let message = if delivery == "email" {
                 format!(
                     "Mã OTP đã gửi tới {} — kiểm tra hộp thư (có thể trong Spam).",
-                    password_reset::mask_email(email)
+                    password_reset::mask_email(stored_email)
                 )
             } else {
-                "Mã OTP đã tạo. Server chưa cấu hình SMTP — Admin xem: journalctl -u avaso-gateway -f".into()
+                "Mã OTP đã tạo. Server chưa cấu hình Brevo/SMTP — Admin xem: journalctl -u avaso-gateway -f".into()
             };
             Json(serde_json::json!({
                 "status": "ok",
                 "message": message,
                 "username": user.username,
-                "email_masked": password_reset::mask_email(email),
+                "email_masked": password_reset::mask_email(stored_email),
                 "delivery": delivery
             }))
             .into_response()
@@ -2126,7 +2240,7 @@ async fn api_forgot_password(
         Err(password_reset::PasswordResetError::MailUnavailable) => json_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "mail_unavailable",
-            "Không gửi được OTP — kiểm tra cấu hình SMTP",
+            "Không gửi được OTP — kiểm tra cấu hình Brevo/SMTP",
         ),
         Err(password_reset::PasswordResetError::MailSend(e)) => {
             tracing::warn!(error = %e, "forgot-password mail failed");
@@ -2137,20 +2251,6 @@ async fn api_forgot_password(
             )
         }
     }
-}
-
-fn forgot_password_generic_ok(delivery: &str) -> Response {
-    let message = if delivery == "dev_log" {
-        "Nếu tài khoản tồn tại, mã OTP đã tạo — server dev: journalctl -u avaso-gateway."
-    } else {
-        "Nếu tài khoản tồn tại và có email, mã OTP đã được gửi — kiểm tra hộp thư."
-    };
-    Json(serde_json::json!({
-        "status": "ok",
-        "message": message,
-        "delivery": delivery
-    }))
-    .into_response()
 }
 
 async fn api_verify_reset_otp(Json(body): Json<VerifyResetOtpBody>) -> impl IntoResponse {
@@ -2465,7 +2565,15 @@ async fn admin_api_ping() -> Json<serde_json::Value> {
     }))
 }
 
-async fn metrics_handler() -> Response {
+#[derive(Debug, Deserialize)]
+struct MetricsQuery {
+    format: Option<String>,
+}
+
+async fn metrics_handler(
+    headers: HeaderMap,
+    Query(q): Query<MetricsQuery>,
+) -> Response {
     let enabled = if let Some(st) = STATE.get() {
         st.config.read().await.settings.enable_metrics
     } else {
@@ -2474,16 +2582,48 @@ async fn metrics_handler() -> Response {
     if !enabled {
         return json_error(StatusCode::NOT_FOUND, "disabled", "metrics endpoint disabled");
     }
-    let body = if let Some(st) = STATE.get() {
-        st.gateway_metrics.snapshot()
-    } else {
-        serde_json::json!({
-            "status": "ok",
-            "service": "avaso-gateway",
-            "data_plane": { "requests_total": 0 }
-        })
-    };
-    Json(body).into_response()
+    let wants_prometheus = q.format.as_deref() == Some("prometheus")
+        || headers
+            .get("accept")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| {
+                s.contains("text/plain")
+                    || s.contains("application/openmetrics-text")
+                    || s.contains("openmetrics")
+            })
+            .unwrap_or(false);
+    if let Some(st) = STATE.get() {
+        if wants_prometheus {
+            let text = st.gateway_metrics.prometheus_text();
+            return (
+                StatusCode::OK,
+                [(
+                    CONTENT_TYPE,
+                    HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+                )],
+                text,
+            )
+                .into_response();
+        }
+        return Json(st.gateway_metrics.snapshot()).into_response();
+    }
+    if wants_prometheus {
+        return (
+            StatusCode::OK,
+            [(
+                CONTENT_TYPE,
+                HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+            )],
+            "# gateway not initialized\n".to_string(),
+        )
+            .into_response();
+    }
+    Json(serde_json::json!({
+        "status": "ok",
+        "service": "avaso-gateway",
+        "data_plane": { "requests_total": 0 }
+    }))
+    .into_response()
 }
 
 async fn api_get_settings() -> impl IntoResponse {
@@ -2658,6 +2798,8 @@ struct RouteWriteBody {
     retry_on_timeout: i32,
     #[serde(default)]
     queue_on_failure: bool,
+    #[serde(default = "default_allowed_methods")]
+    allowed_methods: String,
 }
 
 /// FE có thể gửi `true`/`false` hoặc `0`/`1`.
@@ -2775,6 +2917,20 @@ async fn api_create_route(
     if let Some(resp) = validate_route_proxy_policy(&body) {
         return resp;
     }
+    let allowed_methods = body.allowed_methods.trim().to_ascii_uppercase();
+    if !route_match::validate_allowed_methods(&allowed_methods) {
+        return json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "allowed_methods không hợp lệ",
+            serde_json::Map::from_iter([(
+                "allowed_methods".into(),
+                serde_json::Value::String(
+                    "Dùng * hoặc danh sách GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS".into(),
+                ),
+            )]),
+        );
+    }
     let (t_add, t_rm, retry_max, retry_status, retry_timeout, queue_fail) =
         route_policy_from_body(&body);
     match db::insert_route(
@@ -2790,6 +2946,7 @@ async fn api_create_route(
         &retry_status,
         retry_timeout,
         queue_fail,
+        &allowed_methods,
     )
     .await
     {
@@ -2839,6 +2996,20 @@ async fn api_update_route(
     if let Some(resp) = validate_route_proxy_policy(&body) {
         return resp;
     }
+    let allowed_methods = body.allowed_methods.trim().to_ascii_uppercase();
+    if !route_match::validate_allowed_methods(&allowed_methods) {
+        return json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "allowed_methods không hợp lệ",
+            serde_json::Map::from_iter([(
+                "allowed_methods".into(),
+                serde_json::Value::String(
+                    "Dùng * hoặc danh sách GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS".into(),
+                ),
+            )]),
+        );
+    }
     let (t_add, t_rm, retry_max, retry_status, retry_timeout, queue_fail) =
         route_policy_from_body(&body);
     match db::update_route(
@@ -2855,6 +3026,7 @@ async fn api_update_route(
         &retry_status,
         retry_timeout,
         queue_fail,
+        &allowed_methods,
     )
     .await
     {
@@ -3068,7 +3240,7 @@ async fn api_create_client_key(
     .await
     {
         Ok(id) => {
-            let _ = reload_runtime_config().await;
+            spawn_reload_runtime_config();
             write_audit(
                 &st.pool,
                 &ctx,
@@ -3228,7 +3400,7 @@ async fn api_create_client_key_encrypted(
     .await
     {
         Ok(id) => {
-            let _ = reload_runtime_config().await;
+            spawn_reload_runtime_config();
             write_audit(
                 &st.pool,
                 &ctx,
@@ -4182,6 +4354,27 @@ async fn api_put_integration_bridge(
     integrations::api_put_integration_bridge(&ctx, body).await
 }
 
+async fn api_run_integration_bridge(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/bridge/run").await;
+    }
+    integrations::api_run_integration_bridge(&ctx).await
+}
+
+async fn api_sync_now(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/sync-now").await;
+    }
+    integrations::api_sync_now(&ctx).await
+}
+
+async fn api_list_sync_logs(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/sync-logs").await;
+    }
+    integrations::api_list_sync_logs(&ctx).await
+}
+
 async fn api_dashboard_stats(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
     dashboard::api_dashboard_stats(&ctx).await
 }
@@ -4300,13 +4493,9 @@ async fn handle_data_plane_request(
         );
         return resp;
     }
-    let matched = cfg
-        .routes
-        .iter()
-        .filter(|r| path == r.path || path.starts_with(&(r.path.clone() + "/")))
-        .max_by_key(|r| r.path.len())
-        .cloned();
-    if let Some(route) = matched {
+    let matched = route_match::find_route(&cfg.routes, &method, &path);
+    if let Some(matched) = matched {
+        let route = matched.route;
         if !tenant_allows_route(verified, &route) {
             log_gateway_transaction(
                 Some(verified.tenant_id),
@@ -4327,7 +4516,9 @@ async fn handle_data_plane_request(
             );
         }
         let req = Request::from_parts(parts, Body::from(body_bytes));
-        return match do_proxy(state, req, uri, path, route, verified).await {
+        return match do_proxy(state, req, uri, path, route, matched.params, matched.suffix, verified)
+            .await
+        {
             Ok(resp) => resp,
             Err(e) => e,
         };
@@ -4368,7 +4559,21 @@ async fn handle_proxied_route(
         return Err(status_to_json_error(StatusCode::FORBIDDEN));
     }
     let req = Request::from_parts(parts, Body::from(body_bytes));
-    do_proxy(state, req, uri, path, route, verified).await
+    let suffix = path
+        .strip_prefix(route.path.trim_end_matches('/'))
+        .unwrap_or("")
+        .to_string();
+    do_proxy(
+        state,
+        req,
+        uri,
+        path,
+        route,
+        std::collections::HashMap::new(),
+        suffix,
+        verified,
+    )
+    .await
 }
 
 async fn serve_frontend(req: Request<Body>) -> Response {
@@ -4412,6 +4617,8 @@ async fn do_proxy(
     uri: Uri,
     path: String,
     route: RouteRow,
+    route_params: std::collections::HashMap<String, String>,
+    route_suffix: String,
     _verified: VerifiedClient,
 ) -> Result<Response, Response> {
     let started = Instant::now();
@@ -4450,7 +4657,9 @@ async fn do_proxy(
             .rl
             .entry(rl_key)
             .or_insert_with(|| TokenBucket::new(now, rl_burst));
-        if !entry.value_mut().take(now, rl_rps, rl_burst) {
+        let bucket = entry.value_mut();
+        if !bucket.take(now, rl_rps, rl_burst) {
+            let retry_after = bucket.retry_after_secs(rl_rps);
             let elapsed_ms = started.elapsed().as_millis();
             log_gateway_transaction(
                 Some(route.tenant_id),
@@ -4464,14 +4673,11 @@ async fn do_proxy(
                 Some(&route.target),
                 elapsed_ms,
             );
-            return Err(status_to_json_error(StatusCode::TOO_MANY_REQUESTS));
+            return Err(rate_limit_response(retry_after));
         }
     }
 
-    let suffix = path.strip_prefix(&route.path).unwrap_or("");
-    let suffix = if suffix.is_empty() { "/" } else { suffix };
-
-    let mut url = format!("{}{}", route.target.trim_end_matches('/'), suffix);
+    let mut url = route_match::build_upstream_url(&route.target, &route_params, &route_suffix);
     if let Some(q) = uri.query() {
         url.push('?');
         url.push_str(q);

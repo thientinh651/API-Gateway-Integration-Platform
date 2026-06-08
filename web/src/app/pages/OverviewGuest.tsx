@@ -50,24 +50,28 @@ const CAPABILITIES = [
     title: 'Zero-trust data plane',
     text: 'HMAC + timestamp + chống replay.',
     tag: 'Security',
+    to: '/api-docs',
   },
   {
     icon: Zap,
     title: 'Async proxy engine',
     text: 'Rust/Tokio — không GC pause. Rate limit, retry, DLQ, transform header theo route.',
     tag: 'Performance',
+    to: '/login',
   },
   {
     icon: Box,
     title: 'Đa tích hợp CRM',
     text: 'OAuth Salesforce & Zoho, snapshot KPI trên dashboard — một cổng cho nhiều nguồn dữ liệu.',
     tag: 'Integration',
+    to: '/login',
   },
   {
     icon: Lock,
     title: 'Admin plane tách biệt',
     text: 'Session + RBAC (Admin / Operator / Viewer). Audit log mọi thao tác nhạy cảm.',
     tag: 'Governance',
+    to: '/login',
   },
 ];
 
@@ -328,22 +332,22 @@ export function OverviewGuest() {
             Xây dựng cho vận hành thật
           </p>
           <div className="grid md:grid-cols-2 gap-5">
-            {CAPABILITIES.map(({ icon: Icon, title, text, tag }) => (
-              <Card
-                key={title}
-                className="rounded-2xl p-6 bg-card/40 border-border/80 backdrop-blur-sm hover:bg-card/70 hover:border-primary/25 hover:shadow-lg hover:shadow-primary/5 transition-all duration-300"
-              >
-                <div className="flex justify-between items-start mb-4">
-                  <div className="p-2.5 rounded-xl bg-primary/15 ring-1 ring-primary/25">
-                    <Icon className="w-5 h-5 text-primary" />
+            {CAPABILITIES.map(({ icon: Icon, title, text, tag, to }) => (
+              <Link key={title} to={to} className="block rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <Card className="rounded-2xl p-6 bg-card/40 border-border/80 backdrop-blur-sm cursor-pointer hover:bg-card/70 hover:border-primary/25 hover:shadow-lg hover:shadow-primary/5 transition-all duration-300 h-full">
+                  <div className="flex justify-between items-start mb-4">
+                    <div className="p-2.5 rounded-xl bg-primary/15 ring-1 ring-primary/25">
+                      <Icon className="w-5 h-5 text-primary" />
+                    </div>
+                    <Badge variant="secondary" className="text-[10px] font-mono uppercase">
+                      {tag}
+                    </Badge>
                   </div>
-                  <Badge variant="secondary" className="text-[10px] font-mono uppercase">
-                    {tag}
-                  </Badge>
-                </div>
-                <h3 className="font-bold text-white mb-2">{title}</h3>
-                <p className="text-sm text-muted-foreground leading-relaxed">{text}</p>
-              </Card>
+                  <h3 className="font-bold text-white mb-2">{title}</h3>
+                  <p className="text-sm text-muted-foreground leading-relaxed">{text}</p>
+                  <p className="text-[10px] text-primary/80 mt-3 font-mono-tech uppercase tracking-wider">Tìm hiểu →</p>
+                </Card>
+              </Link>
             ))}
           </div>
         </div>

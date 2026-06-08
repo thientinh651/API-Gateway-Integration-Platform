@@ -14,14 +14,15 @@ import {
 } from '../../lib/api';
 import { ApiClientError } from '../../lib/apiClientError';
 import { FieldError } from '../components/forms/FieldError';
+import { setSavedUsername } from '../../lib/demoAuthStorage';
 
-type Step = 'request' | 'otp' | 'password';
+type Step = 'verify' | 'otp' | 'password';
 
 export function ForgotPassword() {
   const navigate = useNavigate();
-  const [step, setStep] = useState<Step>('request');
-  const [identifier, setIdentifier] = useState('');
+  const [step, setStep] = useState<Step>('verify');
   const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [emailMasked, setEmailMasked] = useState('');
   const [delivery, setDelivery] = useState<PasswordResetDelivery | null>(null);
   const [resetToken, setResetToken] = useState('');
@@ -31,8 +32,8 @@ export function ForgotPassword() {
   const [busy, setBusy] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  const resetOtpStep = () => {
-    setStep('request');
+  const backToVerify = () => {
+    setStep('verify');
     setOtp('');
     setResetToken('');
     setPassword('');
@@ -40,23 +41,29 @@ export function ForgotPassword() {
     setFieldErrors({});
   };
 
-  const onRequest = async (e: FormEvent) => {
+  const onVerifyAccount = async (e: FormEvent) => {
     e.preventDefault();
-    if (!identifier.trim()) {
-      setFieldErrors({ identifier: 'Nhập username hoặc email' });
+    const errors: Record<string, string> = {};
+    if (!username.trim()) errors.username = 'Nhập tên đăng nhập';
+    if (!email.trim()) errors.email = 'Nhập email';
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
       return;
     }
     setBusy(true);
     setFieldErrors({});
     try {
-      const res = await requestPasswordReset({ identifier: identifier.trim() });
-      setUsername(res.username ?? identifier.trim());
+      const res = await requestPasswordReset({
+        username: username.trim(),
+        email: email.trim(),
+      });
+      setUsername(res.username ?? username.trim());
       setEmailMasked(res.email_masked ?? '');
       setDelivery(res.delivery ?? null);
       setStep('otp');
       toast.success(res.message, { duration: 12000 });
       if (res.delivery === 'dev_log') {
-        toast.info('Chưa có SMTP — OTP nằm log server: journalctl -u avaso-gateway -f', {
+        toast.info('Chưa có mail — OTP nằm log server: journalctl -u avaso-gateway -f', {
           duration: 15000,
         });
       }
@@ -64,15 +71,7 @@ export function ForgotPassword() {
       if (err instanceof ApiClientError && err.fields) {
         setFieldErrors(err.fields);
       }
-      let msg = 'Gửi OTP thất bại';
-      if (err instanceof ApiClientError) {
-        if (err.code === 'not_found') {
-          msg = 'Gateway chưa cập nhật — build lại binary và restart avaso-gateway.';
-        } else {
-          msg = err.message;
-        }
-      }
-      toast.error(msg);
+      toast.error(err instanceof ApiClientError ? err.message : 'Xác minh tài khoản thất bại');
     } finally {
       setBusy(false);
     }
@@ -114,8 +113,10 @@ export function ForgotPassword() {
     setFieldErrors({});
     try {
       await resetPasswordWithToken({ reset_token: resetToken, password });
+      const recovered = username.trim();
+      setSavedUsername(recovered);
       toast.success('Đã đặt lại mật khẩu.');
-      navigate('/login');
+      navigate('/login', { state: { username: recovered } });
     } catch (err) {
       if (err instanceof ApiClientError && err.fields) {
         setFieldErrors(err.fields);
@@ -127,18 +128,22 @@ export function ForgotPassword() {
   };
 
   const stepTitle =
-    step === 'request' ? 'Quên mật khẩu' : step === 'otp' ? 'Nhập mã OTP' : 'Mật khẩu mới';
+    step === 'verify'
+      ? 'Quên mật khẩu'
+      : step === 'otp'
+        ? 'Nhập mã OTP'
+        : 'Mật khẩu mới';
 
   const stepHint =
-    step === 'request'
-      ? 'Tài khoản phải có email (Admin gán ở Quản lý Users). Production cần SMTP_* trên server.'
+    step === 'verify'
+      ? 'Nhập tên đăng nhập và email đã đăng ký. Hệ thống chỉ gửi OTP khi hai thông tin khớp.'
       : step === 'otp'
         ? delivery === 'dev_log'
           ? 'Server chưa gửi email thật — xem OTP trong journalctl gateway.'
           : emailMasked
             ? `Mã 6 số đã gửi tới ${emailMasked} (hiệu lực 10 phút).`
             : 'Mã 6 số gửi qua email (hiệu lực 10 phút).'
-        : 'OTP đã xác minh — đặt mật khẩu mới cho tài khoản.';
+        : 'OTP đã xác minh — đặt mật khẩu mới.';
 
   return (
     <div className="min-h-[100dvh] bg-background flex flex-col items-center justify-center p-4 sm:p-6 relative overflow-hidden">
@@ -158,9 +163,9 @@ export function ForgotPassword() {
 
       <TechPanel className="relative z-[1] w-full max-w-md p-6 sm:p-8">
         <div className="flex gap-2 mb-4 text-[10px] uppercase tracking-wider text-muted-foreground">
-          <span className={step === 'request' ? 'text-primary font-bold' : ''}>1. Gửi OTP</span>
+          <span className={step === 'verify' ? 'text-primary font-bold' : ''}>1. Tài khoản</span>
           <span>→</span>
-          <span className={step === 'otp' ? 'text-primary font-bold' : ''}>2. Xác minh</span>
+          <span className={step === 'otp' ? 'text-primary font-bold' : ''}>2. OTP</span>
           <span>→</span>
           <span className={step === 'password' ? 'text-primary font-bold' : ''}>3. Mật khẩu</span>
         </div>
@@ -168,29 +173,51 @@ export function ForgotPassword() {
         <h1 className="text-2xl font-bold text-white mb-1">{stepTitle}</h1>
         <p className="text-xs text-muted-foreground mb-6">{stepHint}</p>
 
-        {step === 'request' && (
-          <form onSubmit={(ev) => void onRequest(ev)} className="space-y-4" noValidate>
+        {step === 'verify' && (
+          <form onSubmit={(ev) => void onVerifyAccount(ev)} className="space-y-4" noValidate>
             <div>
-              <Label htmlFor="fp-id">Username hoặc email</Label>
+              <Label htmlFor="fp-username">Tên đăng nhập</Label>
               <Input
-                id="fp-id"
-                value={identifier}
+                id="fp-username"
+                value={username}
                 onChange={(e) => {
-                  setIdentifier(e.target.value);
+                  setUsername(e.target.value);
                   setFieldErrors((p) => {
                     const n = { ...p };
-                    delete n.identifier;
+                    delete n.username;
                     return n;
                   });
                 }}
-                placeholder="admin hoặc you@company.com"
+                placeholder="admin"
+                autoComplete="username"
                 className="bg-input border-border"
-                aria-invalid={Boolean(fieldErrors.identifier)}
+                aria-invalid={Boolean(fieldErrors.username)}
               />
-              <FieldError message={fieldErrors.identifier} />
+              <FieldError message={fieldErrors.username} />
+            </div>
+            <div>
+              <Label htmlFor="fp-email">Email</Label>
+              <Input
+                id="fp-email"
+                type="email"
+                value={email}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  setFieldErrors((p) => {
+                    const n = { ...p };
+                    delete n.email;
+                    return n;
+                  });
+                }}
+                placeholder="you@example.com"
+                autoComplete="email"
+                className="bg-input border-border"
+                aria-invalid={Boolean(fieldErrors.email)}
+              />
+              <FieldError message={fieldErrors.email} />
             </div>
             <Button type="submit" disabled={busy} className="w-full">
-              {busy ? 'Đang gửi…' : 'Gửi mã OTP'}
+              {busy ? 'Đang kiểm tra…' : 'Xác minh và gửi OTP'}
             </Button>
           </form>
         )}
@@ -198,9 +225,15 @@ export function ForgotPassword() {
         {step === 'otp' && (
           <form onSubmit={(ev) => void onVerifyOtp(ev)} className="space-y-4" noValidate>
             <div>
-              <Label>Tài khoản</Label>
+              <Label>Tên đăng nhập</Label>
               <p className="text-sm text-slate-300 font-mono py-2 px-3 rounded-md bg-slate-900/60 border border-border">
                 {username}
+              </p>
+            </div>
+            <div>
+              <Label>Email</Label>
+              <p className="text-sm text-slate-300 py-2 px-3 rounded-md bg-slate-900/60 border border-border">
+                {emailMasked || email}
               </p>
             </div>
             <div>
@@ -225,10 +258,10 @@ export function ForgotPassword() {
               <FieldError message={fieldErrors.otp} />
             </div>
             <Button type="submit" disabled={busy} className="w-full">
-              {busy ? 'Đang kiểm tra…' : 'Xác minh OTP'}
+              {busy ? 'Đang kiểm tra…' : 'Xác nhận OTP'}
             </Button>
-            <Button type="button" variant="ghost" className="w-full text-muted-foreground" onClick={resetOtpStep}>
-              Gửi lại OTP
+            <Button type="button" variant="ghost" className="w-full text-muted-foreground" onClick={backToVerify}>
+              Quay lại / gửi lại OTP
             </Button>
           </form>
         )}
@@ -236,7 +269,7 @@ export function ForgotPassword() {
         {step === 'password' && (
           <form onSubmit={(ev) => void onSetPassword(ev)} className="space-y-4" noValidate>
             <div>
-              <Label>Tài khoản</Label>
+              <Label>Tên đăng nhập</Label>
               <p className="text-sm text-slate-300 font-mono py-2 px-3 rounded-md bg-slate-900/60 border border-border">
                 {username}
               </p>
@@ -288,7 +321,11 @@ export function ForgotPassword() {
         )}
 
         <p className="mt-6 text-center text-xs text-muted-foreground">
-          <Link to="/login" className="text-primary hover:underline">
+          <Link
+            to="/login"
+            state={username.trim() ? { username: username.trim() } : undefined}
+            className="text-primary hover:underline"
+          >
             ← Đăng nhập
           </Link>
         </p>

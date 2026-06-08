@@ -1,0 +1,55 @@
+==> wrk data-plane HMAC (30s)
+benchmark_at=2026-06-06T09:11:08+00:00
+url=http://127.0.0.1:3000/v1/api/get
+requests=100
+concurrency=10
+duration=15s
+rss_kb_before=216436
+---
+Tool: wrk
+Running 15s test @ http://127.0.0.1:3000/v1/api/get
+  10 threads and 10 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency    66.07ms  151.78ms   1.02s    81.27%
+    Req/Sec     6.44      3.44    30.00     80.44%
+  Latency Distribution
+     50%    3.07ms
+     75%    8.41ms
+     90%  255.96ms
+     99%  786.19ms
+  778 requests in 15.17s, 169.27KB read
+  Socket errors: connect 1, read 0, write 0, timeout 0
+  Non-2xx or 3xx responses: 778
+Requests/sec:     51.29
+Transfer/sec:     11.16KB
+Tool: signed curl (HMAC e2e, unique query/replay-safe)
+signed_requests_ok=0
+signed_requests_fail=100
+signed_avg_latency_ms=8
+---
+rss_kb_after=216440
+rss_delta_kb=4
+--- metrics json ---
+{"data_plane":{"denied_total":64792,"errors_total":124,"requests_total":64931,"success_total":15},"format":"json","latency_ms":{"count":64931,"histogram":{"le_10":64792,"le_100":64792,"le_1000":64918,"le_25":64792,"le_250":64847,"le_2500":64928,"le_5":64792,"le_50":64792,"le_500":64908,"le_5000":64930,"le_inf":64931},"sum":71747},"prometheus":"/metrics?format=prometheus","service":"avaso-gateway","uptime_secs":1125}--- metrics prometheus ---
+# HELP gateway_uptime_seconds Process uptime.
+# TYPE gateway_uptime_seconds gauge
+gateway_uptime_seconds 1125
+# HELP gateway_data_plane_requests_total Data-plane requests.
+# TYPE gateway_data_plane_requests_total counter
+gateway_data_plane_requests_total 64931
+# HELP gateway_data_plane_success_total Successful data-plane requests.
+# TYPE gateway_data_plane_success_total counter
+gateway_data_plane_success_total 15
+# HELP gateway_data_plane_denied_total Denied data-plane requests.
+# TYPE gateway_data_plane_denied_total counter
+gateway_data_plane_denied_total 64792
+# HELP gateway_data_plane_errors_total Data-plane upstream/other errors.
+# TYPE gateway_data_plane_errors_total counter
+gateway_data_plane_errors_total 124
+# HELP gateway_request_duration_ms Request latency histogram (ms).
+# TYPE gateway_request_duration_ms histogram
+gateway_request_duration_ms_bucket{le="5"} 64792
+gateway_request_duration_ms_bucket{le="10"} 64792
+gateway_request_duration_ms_bucket{le="25"} 64792
+
+Saved: ./data/benchmark/result-20260606-091108.txt

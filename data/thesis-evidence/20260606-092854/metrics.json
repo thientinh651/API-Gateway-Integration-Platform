@@ -1,0 +1,1 @@
+{"data_plane":{"denied_total":0,"errors_total":0,"requests_total":0,"success_total":0},"format":"json","latency_ms":{"count":0,"histogram":{"le_10":0,"le_100":0,"le_1000":0,"le_25":0,"le_250":0,"le_2500":0,"le_5":0,"le_50":0,"le_500":0,"le_5000":0,"le_inf":0},"sum":0},"prometheus":"/metrics?format=prometheus","service":"avaso-gateway","uptime_secs":19}

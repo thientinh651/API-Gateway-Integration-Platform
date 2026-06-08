@@ -1,35 +1,63 @@
-# Luồng HMAC tại Gateway (giải trình hội đồng)
+# Luồng HMAC — Data plane
+
+**Không dùng JWT.** Client phải ký mỗi request.
+
+## Header bắt buộc
+
+| Header | Ý nghĩa |
+|--------|---------|
+| `X-API-Key` | Public key (`avaso_...`) |
+| `X-Timestamp` | Unix giây (UTC) |
+| `X-Signature` | HMAC-SHA256 hex |
+
+## Payload ký
+
+```text
+{api_key}\n{timestamp}\n{METHOD}\n{path_with_query}\n{body}
+```
+
+`path_with_query` = path + `?query` nếu có.
+
+## Luồng Gateway
 
 ```mermaid
 sequenceDiagram
-    participant C as Client
-    participant G as Gateway Axum
-    participant DB as SQLite
-    participant U as Upstream
+  participant C as Client
+  participant G as Gateway
+  participant DB as PostgreSQL
+  participant U as Upstream
 
-    C->>G: HTTPS + X-API-Key + X-Timestamp + X-Signature + body
-    G->>G: B1 Thiếu header? → 401
-    G->>G: B2 |now - ts| > 300s? → 401
-    G->>G: B3 Signature đã có trong replay cache? → 401 replay
-    G->>DB: B4 Lookup api_key
-    alt Legacy key
-        G->>G: SHA-256(X-API-Key) vs DB
-    else HMAC key
-        G->>G: AES-GCM decrypt secret (CLIENT_KEY_MASTER_KEY)
-        G->>G: B5 HMAC-SHA256(secret, canonical payload)
-        G->>G: B6 constant-time compare vs X-Signature
-        G->>G: Ghi signature vào replay cache (TTL 300s)
+  C->>G: Request + Key + Timestamp + Signature
+  G->>DB: Lookup key, decrypt secret
+  G->>G: Verify HMAC + replay window
+  alt Invalid
+    G-->>C: 401 + transaction log
+  else OK
+    G->>G: Rate limit
+    alt 429
+      G-->>C: 429
+    else OK
+      G->>U: Proxy (transform/retry)
+      U-->>G: Response
+      G-->>C: Response + async transaction log
     end
-    G->>G: B7 route.tenant_id == key.tenant_id? → else 403
-    G->>U: Forward request
-    U-->>G: Response
-    G-->>C: Response
+  end
 ```
 
-**Canonical payload:**
+## Replay
 
-```
-{api_key}\n{timestamp}\n{METHOD}\n{path?query}\n{body}
-```
+Cùng `(key, timestamp, signature)` lặp lại trong cửa sổ → từ chối.
 
-`METHOD` = GET, POST, … (uppercase). `path?query` = raw URI path + query. Body empty → dòng cuối rỗng.
+Test: `python3 scripts/test_hmac_replay.py`
+
+## Demo UI
+
+Trang **Proxy Try** (`/proxy-try`) — admin tự sinh chữ ký, gọi thử gateway.
+
+## So sánh JWT (HĐ hay hỏi)
+
+| | JWT | HMAC (đồ án) |
+|---|-----|----------------|
+| Secret trên wire | Bearer token | Không gửi secret |
+| Đổi nội dung request | Token vẫn “hợp lệ” nếu không bind body | Chữ ký bind method/path/body |
+| Phù hợp | User session API | Machine-to-machine, API key |

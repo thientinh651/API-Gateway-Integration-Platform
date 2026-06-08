@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 
 const SF_PROVIDER: &str = "salesforce";
 const ZOHO_PROVIDER: &str = "zoho_projects";
+const BRIDGE_PROVIDER: &str = "bridge";
 const OAUTH_STATE_TTL: Duration = Duration::from_secs(600);
 
 #[derive(Clone)]
@@ -37,13 +38,8 @@ pub struct SalesforceTokenConfig {
     pub instance_url: String,
     pub token_type: Option<String>,
     pub issued_at: Option<String>,
-}
-
-pub struct SfEnv {
-    pub client_id: String,
-    pub client_secret: String,
-    pub redirect_uri: String,
-    pub login_url: String,
+    #[serde(default)]
+    pub demo: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,21 +60,7 @@ async fn salesforce_provider_config(pool: &PgPool, tenant_id: i64) -> Option<Sal
             }
         }
     }
-    let env = sf_env()?;
-    Some(SalesforceProviderConfig {
-        client_id: env.client_id,
-        client_secret: env.client_secret,
-        redirect_uri: env.redirect_uri,
-        login_url: env.login_url,
-    })
-}
-
-pub struct ZohoEnv {
-    pub client_id: String,
-    pub client_secret: String,
-    pub redirect_uri: String,
-    pub accounts_url: String,
-    pub scopes: String,
+    None
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,14 +91,7 @@ async fn zoho_provider_config(pool: &PgPool, tenant_id: i64) -> Option<ZohoProvi
             }
         }
     }
-    let env = zoho_env()?;
-    Some(ZohoProviderConfig {
-        client_id: env.client_id,
-        client_secret: env.client_secret,
-        redirect_uri: env.redirect_uri,
-        accounts_url: env.accounts_url,
-        scopes: env.scopes,
-    })
+    None
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +102,8 @@ pub struct ZohoTokenConfig {
     pub token_type: Option<String>,
     pub expires_in_sec: Option<i64>,
     pub portal_id: Option<String>,
+    #[serde(default)]
+    pub demo: bool,
 }
 
 /// Zoho Projects REST host (not OAuth `api_domain`, which points at CRM).
@@ -172,58 +149,8 @@ fn compact_zoho_api_error(status: reqwest::StatusCode, body: &str) -> String {
     format!("Zoho Projects API {status}: {trimmed}")
 }
 
-pub fn zoho_env() -> Option<ZohoEnv> {
-    let client_id = std::env::var("ZOHO_CLIENT_ID").ok()?.trim().to_string();
-    let client_secret = std::env::var("ZOHO_CLIENT_SECRET").ok()?.trim().to_string();
-    let redirect_uri = std::env::var("ZOHO_REDIRECT_URI")
-        .unwrap_or_else(|_| "http://127.0.0.1:3000/api/integrations/zoho/callback".into())
-        .trim()
-        .to_string();
-    let accounts_url = std::env::var("ZOHO_ACCOUNTS_URL")
-        .unwrap_or_else(|_| "https://accounts.zoho.com".into())
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
-    let scopes = std::env::var("ZOHO_SCOPES")
-        .unwrap_or_else(|_| {
-            "ZohoProjects.portals.READ,ZohoProjects.projects.ALL,ZohoProjects.tasks.READ".into()
-        })
-        .trim()
-        .to_string();
-    if client_id.is_empty() || client_secret.is_empty() {
-        return None;
-    }
-    Some(ZohoEnv {
-        client_id,
-        client_secret,
-        redirect_uri,
-        accounts_url,
-        scopes,
-    })
-}
-
-pub fn sf_env() -> Option<SfEnv> {
-    let client_id = std::env::var("SF_CLIENT_ID").ok()?.trim().to_string();
-    let client_secret = std::env::var("SF_CLIENT_SECRET").ok()?.trim().to_string();
-    let redirect_uri = std::env::var("SF_REDIRECT_URI")
-        .unwrap_or_else(|_| "http://127.0.0.1:3000/api/integrations/salesforce/callback".into())
-        .trim()
-        .to_string();
-    let login_url = std::env::var("SF_LOGIN_URL")
-        .unwrap_or_else(|_| "https://login.salesforce.com".into())
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
-    if client_id.is_empty() || client_secret.is_empty() {
-        return None;
-    }
-    Some(SfEnv {
-        client_id,
-        client_secret,
-        redirect_uri,
-        login_url,
-    })
-}
+const INTEGRATION_CONFIG_HINT: &str =
+    "Chưa cấu hình — admin nhập Client ID/Secret trên Dashboard → Integrations";
 
 pub fn ui_redirect_base() -> String {
     std::env::var("INTEGRATIONS_UI_URL")
@@ -260,10 +187,10 @@ pub fn list_with_stubs(rows: Vec<IntegrationPublic>) -> Vec<IntegrationPublic> {
             provider: SF_PROVIDER.into(),
             status: "disconnected".into(),
             last_sync_at: None,
-            last_error: Some("Chưa cấu hình — cần SF_CLIENT_ID/SECRET".into()),
+            last_error: Some(INTEGRATION_CONFIG_HINT.into()),
             updated_at: String::new(),
             label: "Salesforce".into(),
-            available: sf_env().is_some(),
+            available: false,
         });
     }
     if !has_zoho {
@@ -272,19 +199,17 @@ pub fn list_with_stubs(rows: Vec<IntegrationPublic>) -> Vec<IntegrationPublic> {
             provider: ZOHO_PROVIDER.into(),
             status: "disconnected".into(),
             last_sync_at: None,
-            last_error: Some("Chưa cấu hình — cần ZOHO_CLIENT_ID/SECRET".into()),
+            last_error: Some(INTEGRATION_CONFIG_HINT.into()),
             updated_at: String::new(),
             label: "Zoho Projects".into(),
-            available: zoho_env().is_some(),
+            available: false,
         });
     }
     for r in &mut out {
         if r.provider == SF_PROVIDER {
             r.label = "Salesforce".into();
-            r.available = sf_env().is_some();
         } else if r.provider == ZOHO_PROVIDER {
             r.label = "Zoho Projects".into();
-            r.available = zoho_env().is_some();
         }
     }
     out.sort_by(|a, b| a.provider.cmp(&b.provider));
@@ -303,26 +228,22 @@ pub async fn api_list_integrations(ctx: &AdminCtx) -> Response {
         Ok(rows) => {
             let public: Vec<IntegrationPublic> = rows.into_iter().map(Into::into).collect();
             let mut out = list_with_stubs(public);
-            let zoho_cfg = db::fetch_integration_provider_config(&st.pool, ctx.tenant_id, ZOHO_PROVIDER)
-                .await
-                .ok()
-                .flatten()
-                .is_some();
-            let sf_cfg = db::fetch_integration_provider_config(&st.pool, ctx.tenant_id, SF_PROVIDER)
-                .await
-                .ok()
-                .flatten()
-                .is_some();
+            let zoho_cfg = zoho_provider_config(&st.pool, ctx.tenant_id).await.is_some();
+            let sf_cfg = salesforce_provider_config(&st.pool, ctx.tenant_id).await.is_some();
             for r in &mut out {
                 if r.provider == ZOHO_PROVIDER {
-                    r.available = r.available || zoho_cfg;
-                    if !r.available && r.last_error.is_none() {
-                        r.last_error = Some("Chưa cấu hình — cần client_id/secret".into());
+                    r.available = zoho_cfg;
+                    if !r.available {
+                        r.last_error = Some(INTEGRATION_CONFIG_HINT.into());
+                    } else if r.status == "connected" {
+                        r.last_error = None;
                     }
                 } else if r.provider == SF_PROVIDER {
-                    r.available = r.available || sf_cfg;
-                    if !r.available && r.last_error.is_none() {
-                        r.last_error = Some("Chưa cấu hình — cần client_id/secret".into());
+                    r.available = sf_cfg;
+                    if !r.available {
+                        r.last_error = Some(INTEGRATION_CONFIG_HINT.into());
+                    } else if r.status == "connected" {
+                        r.last_error = None;
                     }
                 }
             }
@@ -1066,7 +987,42 @@ async fn save_snapshot(
     Ok(count)
 }
 
+async fn sync_salesforce_snapshots_demo(
+    pool: &PgPool,
+    tenant_id: i64,
+) -> Result<serde_json::Value, String> {
+    let opp = vec![serde_json::json!({
+        "id": "006THESIS01",
+        "name": "AVASO Gateway Rollout",
+        "stage": "Proposal/Price Quote",
+        "amount": 25000,
+        "close_date": "2026-08-15"
+    })];
+    let acc = vec![serde_json::json!({
+        "id": "001THESIS01",
+        "name": "Demo Customer Co.",
+        "industry": "Technology"
+    })];
+    let opp_count = save_snapshot(pool, tenant_id, SF_PROVIDER, "opportunity", &opp).await?;
+    let acc_count = save_snapshot(pool, tenant_id, SF_PROVIDER, "account", &acc).await?;
+    db::touch_integration_last_sync(pool, tenant_id, SF_PROVIDER)
+        .await
+        .map_err(|e| format!("db touch sync: {e}"))?;
+    let _ = db::set_integration_status(pool, tenant_id, SF_PROVIDER, "connected", None).await;
+    Ok(serde_json::json!({
+        "provider": SF_PROVIDER,
+        "opportunity": opp_count,
+        "account": acc_count,
+        "demo": true,
+    }))
+}
+
 pub async fn sync_salesforce_snapshots(pool: &PgPool, tenant_id: i64) -> Result<serde_json::Value, String> {
+    if let Ok(token) = load_sf_token(pool, tenant_id).await {
+        if token.demo {
+            return sync_salesforce_snapshots_demo(pool, tenant_id).await;
+        }
+    }
     ensure_integration_connected(pool, tenant_id, SF_PROVIDER).await?;
     let opp_q = urlencoding::encode(
         "SELECT Id,Name,StageName,Amount,CloseDate FROM Opportunity LIMIT 200",
@@ -1102,7 +1058,42 @@ pub async fn sync_salesforce_snapshots(pool: &PgPool, tenant_id: i64) -> Result<
     }))
 }
 
+async fn sync_zoho_snapshots_demo(pool: &PgPool, tenant_id: i64) -> Result<serde_json::Value, String> {
+    let portal_id = "thesis-demo-portal";
+    let projects = vec![serde_json::json!({
+        "id": "ZOHO-PRJ-01",
+        "name": "Gateway Integration Sprint",
+        "status": "active",
+        "portal_id": portal_id,
+    })];
+    let tasks = vec![serde_json::json!({
+        "id": "ZOHO-TSK-01",
+        "name": "OAuth + Snapshot sync",
+        "project_id": "ZOHO-PRJ-01",
+        "status": "completed",
+    })];
+    let project_count =
+        save_snapshot(pool, tenant_id, ZOHO_PROVIDER, "project", &projects).await?;
+    let task_count = save_snapshot(pool, tenant_id, ZOHO_PROVIDER, "task", &tasks).await?;
+    db::touch_integration_last_sync(pool, tenant_id, ZOHO_PROVIDER)
+        .await
+        .map_err(|e| format!("db touch sync: {e}"))?;
+    let _ = db::set_integration_status(pool, tenant_id, ZOHO_PROVIDER, "connected", None).await;
+    Ok(serde_json::json!({
+        "provider": ZOHO_PROVIDER,
+        "portal_id": portal_id,
+        "project": project_count,
+        "task": task_count,
+        "demo": true,
+    }))
+}
+
 pub async fn sync_zoho_snapshots(pool: &PgPool, tenant_id: i64) -> Result<serde_json::Value, String> {
+    if let Ok(token) = load_zoho_token(pool, tenant_id).await {
+        if token.demo {
+            return sync_zoho_snapshots_demo(pool, tenant_id).await;
+        }
+    }
     ensure_integration_connected(pool, tenant_id, ZOHO_PROVIDER).await?;
     let token = load_zoho_token(pool, tenant_id).await?;
     let portal_id = token
@@ -1166,9 +1157,10 @@ pub async fn api_salesforce_sync(ctx: &AdminCtx) -> Response {
                 Some("snapshot"),
             )
             .await;
+            let bridge = try_run_integration_bridge(&st.pool, ctx.tenant_id).await;
             (
                 StatusCode::OK,
-                axum::Json(serde_json::json!({ "status": "ok", "summary": summary })),
+                axum::Json(serde_json::json!({ "status": "ok", "summary": summary, "bridge": bridge })),
             )
                 .into_response()
         }
@@ -1211,9 +1203,10 @@ pub async fn api_zoho_sync(ctx: &AdminCtx) -> Response {
                 Some("snapshot"),
             )
             .await;
+            let bridge = try_run_integration_bridge(&st.pool, ctx.tenant_id).await;
             (
                 StatusCode::OK,
-                axum::Json(serde_json::json!({ "status": "ok", "summary": summary })),
+                axum::Json(serde_json::json!({ "status": "ok", "summary": summary, "bridge": bridge })),
             )
                 .into_response()
         }
@@ -1268,6 +1261,30 @@ pub async fn api_salesforce_test(ctx: &AdminCtx) -> Response {
             "state not initialized",
         );
     };
+    if let Ok(token) = load_sf_token(&st.pool, ctx.tenant_id).await {
+        if token.demo {
+            write_audit(
+                &st.pool,
+                ctx,
+                "integration.test",
+                SF_PROVIDER,
+                "success",
+                None,
+                Some("demo"),
+            )
+            .await;
+            return (
+                StatusCode::OK,
+                axum::Json(serde_json::json!({
+                    "status": "ok",
+                    "provider": SF_PROVIDER,
+                    "demo": true,
+                    "limits": { "DailyApiRequests": { "Max": 15000, "Remaining": 14900 } }
+                })),
+            )
+                .into_response();
+        }
+    }
     match sf_get_with_refresh(&st.pool, ctx.tenant_id, "/limits").await {
         Ok((limits, _)) => {
             write_audit(
@@ -1497,6 +1514,7 @@ async fn exchange_zoho_code(
             .map(|s| s.to_string()),
         expires_in_sec: raw.get("expires_in").and_then(|v| v.as_i64()),
         portal_id: None,
+        demo: false,
     })
 }
 
@@ -1560,6 +1578,7 @@ async fn refresh_zoho_access_token(
             .map(|s| s.to_string()),
         expires_in_sec: raw.get("expires_in").and_then(|v| v.as_i64()),
         portal_id: None,
+        demo: false,
     })
 }
 
@@ -1622,6 +1641,30 @@ pub async fn api_zoho_test(ctx: &AdminCtx) -> Response {
             "state not initialized",
         );
     };
+    if let Ok(token) = load_zoho_token(&st.pool, ctx.tenant_id).await {
+        if token.demo {
+            write_audit(
+                &st.pool,
+                ctx,
+                "integration.test",
+                ZOHO_PROVIDER,
+                "success",
+                None,
+                Some("demo"),
+            )
+            .await;
+            return (
+                StatusCode::OK,
+                axum::Json(serde_json::json!({
+                    "status": "ok",
+                    "provider": ZOHO_PROVIDER,
+                    "demo": true,
+                    "portals": [{ "id": "thesis-demo-portal", "name": "AVASO Demo Portal" }]
+                })),
+            )
+                .into_response();
+        }
+    }
     match zoho_get_with_refresh(&st.pool, ctx.tenant_id, "/api/v3/portals").await {
         Ok((portals, mut token)) => {
             if token.portal_id.is_none() {
@@ -1825,23 +1868,6 @@ pub async fn api_zoho_config_get(ctx: &AdminCtx) -> Response {
             }
         }
     }
-    // fallback env (masked)
-    if let Some(env) = zoho_env() {
-        return (
-            StatusCode::OK,
-            axum::Json(ZohoProviderConfigPublic {
-                client_id: env.client_id,
-                redirect_uri: env.redirect_uri,
-                accounts_url: env.accounts_url,
-                scopes: env.scopes,
-                has_secret: !env.client_secret.trim().is_empty(),
-                secret_masked: Some(mask_secret_for_ui(&env.client_secret)),
-                updated_by: None,
-                updated_at: None,
-            }),
-        )
-            .into_response();
-    }
     (
         StatusCode::OK,
         axum::Json(ZohoProviderConfigPublic {
@@ -1878,7 +1904,7 @@ async fn existing_sf_provider_secret(pool: &PgPool, tenant_id: i64) -> Option<St
             }
         }
     }
-    sf_env().map(|e| e.client_secret).filter(|s| !s.trim().is_empty())
+    None
 }
 
 async fn existing_zoho_provider_secret(pool: &PgPool, tenant_id: i64) -> Option<String> {
@@ -1892,7 +1918,7 @@ async fn existing_zoho_provider_secret(pool: &PgPool, tenant_id: i64) -> Option<
             }
         }
     }
-    zoho_env().map(|e| e.client_secret).filter(|s| !s.trim().is_empty())
+    None
 }
 
 fn sf_config_validation_fields(
@@ -2102,21 +2128,6 @@ pub async fn api_salesforce_config_get(ctx: &AdminCtx) -> Response {
                     .into_response();
             }
         }
-    }
-    if let Some(env) = sf_env() {
-        return (
-            StatusCode::OK,
-            axum::Json(SalesforceProviderConfigPublic {
-                client_id: env.client_id,
-                redirect_uri: env.redirect_uri,
-                login_url: env.login_url,
-                has_secret: !env.client_secret.trim().is_empty(),
-                secret_masked: Some(mask_secret_for_ui(&env.client_secret)),
-                updated_by: None,
-                updated_at: None,
-            }),
-        )
-            .into_response();
     }
     (
         StatusCode::OK,
@@ -2492,4 +2503,716 @@ pub async fn api_put_integration_bridge(ctx: &AdminCtx, body: IntegrationBridgeW
         )
             .into_response(),
     }
+}
+
+fn bridge_field_str(v: &serde_json::Value, field: &str) -> Option<String> {
+    v.get(field).and_then(|x| {
+        x.as_str()
+            .map(|s| s.to_string())
+            .or_else(|| x.as_i64().map(|n| n.to_string()))
+            .or_else(|| x.as_f64().map(|n| n.to_string()))
+    })
+}
+
+fn apply_bridge_mappings_for_opp(
+    opp: &serde_json::Value,
+    account: Option<&serde_json::Value>,
+    mappings: &[BridgeFieldMapping],
+) -> serde_json::Value {
+    let mut project = serde_json::Map::new();
+    let mut task = serde_json::Map::new();
+    let mut mapping_ids = Vec::new();
+    for m in mappings.iter().filter(|m| m.enabled) {
+        let source = match m.source_entity.as_str() {
+            "account" => account,
+            "opportunity" => Some(opp),
+            _ => None,
+        };
+        let Some(src) = source else { continue };
+        let Some(val) = bridge_field_str(src, &m.source_field) else {
+            continue;
+        };
+        mapping_ids.push(m.id.clone());
+        match m.target_entity.as_str() {
+            "project" => {
+                project.insert(m.target_field.clone(), serde_json::Value::String(val));
+            }
+            "task" => {
+                task.insert(m.target_field.clone(), serde_json::Value::String(val));
+            }
+            _ => {}
+        }
+    }
+    serde_json::json!({
+        "sf_opportunity_id": opp.get("id").cloned().unwrap_or(serde_json::Value::Null),
+        "sf_opportunity_name": opp.get("name").cloned().unwrap_or(serde_json::Value::Null),
+        "mapped_project": serde_json::Value::Object(project),
+        "mapped_task": serde_json::Value::Object(task),
+        "mapping_ids": mapping_ids,
+    })
+}
+
+pub async fn run_integration_bridge(pool: &PgPool, tenant_id: i64) -> Result<serde_json::Value, String> {
+    if !integration_both_connected(pool, tenant_id).await {
+        return Err("Cần connected cả Salesforce và Zoho".into());
+    }
+    let row = db::fetch_integration_bridge(pool, tenant_id)
+        .await
+        .map_err(|e| format!("db: {e}"))?
+        .ok_or_else(|| "Chưa lưu cấu hình bridge".to_string())?;
+    if row.enabled == 0 {
+        return Err("Bridge chưa bật — tick \"Bật bridge\" rồi Lưu".into());
+    }
+    let mappings: Vec<BridgeFieldMapping> =
+        serde_json::from_str(&row.mappings_json).unwrap_or_else(|_| default_bridge_mappings());
+    let enabled_count = mappings.iter().filter(|m| m.enabled).count();
+    if enabled_count == 0 {
+        return Err("Chưa chọn field map nào".into());
+    }
+
+    let opp_snap = db::fetch_latest_integration_snapshot(pool, tenant_id, SF_PROVIDER, "opportunity")
+        .await
+        .map_err(|e| format!("db: {e}"))?
+        .ok_or_else(|| "Chưa có snapshot Opportunity — Đồng bộ snapshot Salesforce trước".to_string())?;
+    let opps: Vec<serde_json::Value> = serde_json::from_str(&opp_snap.payload_json)
+        .map_err(|e| format!("parse opportunity snapshot: {e}"))?;
+    if opps.is_empty() {
+        return Err("Snapshot Opportunity rỗng".into());
+    }
+
+    let acc_snap = db::fetch_latest_integration_snapshot(pool, tenant_id, SF_PROVIDER, "account")
+        .await
+        .ok()
+        .flatten();
+    let accounts: Vec<serde_json::Value> = acc_snap
+        .as_ref()
+        .and_then(|s| serde_json::from_str(&s.payload_json).ok())
+        .unwrap_or_default();
+    let default_acc = accounts.first();
+
+    let mapped: Vec<serde_json::Value> = opps
+        .iter()
+        .map(|opp| apply_bridge_mappings_for_opp(opp, default_acc, &mappings))
+        .collect();
+    let count = save_snapshot(pool, tenant_id, BRIDGE_PROVIDER, "mapped_deals", &mapped).await?;
+
+    Ok(serde_json::json!({
+        "status": "ok",
+        "provider": BRIDGE_PROVIDER,
+        "entity_type": "mapped_deals",
+        "records": count,
+        "direction": row.direction,
+        "mappings_enabled": enabled_count,
+    }))
+}
+
+async fn try_run_integration_bridge(pool: &PgPool, tenant_id: i64) -> serde_json::Value {
+    match run_integration_bridge(pool, tenant_id).await {
+        Ok(v) => v,
+        Err(e) => serde_json::json!({ "status": "skipped", "reason": e }),
+    }
+}
+
+pub async fn api_run_integration_bridge(ctx: &AdminCtx) -> Response {
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "state not initialized",
+        );
+    };
+    match run_integration_bridge(&st.pool, ctx.tenant_id).await {
+        Ok(summary) => {
+            write_audit(
+                &st.pool,
+                ctx,
+                "integration.bridge.run",
+                "salesforce↔zoho",
+                "success",
+                None,
+                Some(&format!(
+                    "records={}",
+                    summary.get("records").and_then(|v| v.as_i64()).unwrap_or(0)
+                )),
+            )
+            .await;
+            (StatusCode::OK, axum::Json(summary)).into_response()
+        }
+        Err(e) => {
+            write_audit_failure(
+                &st.pool,
+                ctx,
+                "integration.bridge.run",
+                "salesforce↔zoho",
+                None,
+                Some(&e),
+            )
+            .await;
+            (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({ "error": "bridge_failed", "message": e })),
+            )
+                .into_response()
+        }
+    }
+}
+
+const DEFAULT_ZOHO_ONBOARDING_TASKS: &[&str] = &["Họp triển khai", "Khai báo hạ tầng"];
+const SYNC_LOG_RETAIN: i64 = 200;
+
+async fn zoho_post_json(
+    pool: &PgPool,
+    tenant_id: i64,
+    path: &str,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let payload = serde_json::to_vec(body).map_err(|e| format!("serialize: {e}"))?;
+    let (status, bytes, _) = zoho_request_raw_with_refresh(
+        pool,
+        tenant_id,
+        "POST",
+        path,
+        None,
+        Some(&payload),
+        Some("application/json"),
+    )
+    .await?;
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    if !status.is_success() {
+        return Err(compact_zoho_api_error(status, &text));
+    }
+    serde_json::from_str(&text).map_err(|e| format!("json: {e} — body: {text}"))
+}
+
+fn zoho_project_name_for_account(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return "Dự án mới".into();
+    }
+    trimmed.to_string()
+}
+
+fn is_closed_won_stage(stage: &str) -> bool {
+    let s = stage.to_ascii_lowercase();
+    s.contains("closed won") || s == "closedwon" || s.contains("đã ký") || s.contains("chốt")
+}
+
+async fn list_zoho_project_names(
+    pool: &PgPool,
+    tenant_id: i64,
+    portal_id: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let (raw, _) =
+        zoho_get_with_refresh(pool, tenant_id, &format!("/api/v3/portal/{portal_id}/projects")).await?;
+    let items = extract_zoho_array(&raw, &["projects"]);
+    Ok(items
+        .iter()
+        .map(|p| (zoho_id_str(p), p.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string()))
+        .filter(|(_, name)| !name.is_empty())
+        .collect())
+}
+
+async fn create_zoho_project(
+    pool: &PgPool,
+    tenant_id: i64,
+    portal_id: &str,
+    name: &str,
+) -> Result<String, String> {
+    let body = serde_json::json!({ "name": name });
+    let raw = zoho_post_json(
+        pool,
+        tenant_id,
+        &format!("/api/v3/portal/{portal_id}/projects"),
+        &body,
+    )
+    .await?;
+    let items = extract_zoho_array(&raw, &["projects", "project"]);
+    if let Some(first) = items.first() {
+        let id = zoho_id_str(first);
+        if !id.is_empty() {
+            return Ok(id);
+        }
+    }
+    if let Some(id) = raw.get("id").or_else(|| raw.get("project_id")) {
+        let s = id
+            .as_str()
+            .map(|x| x.to_string())
+            .unwrap_or_else(|| id.as_i64().unwrap_or(0).to_string());
+        if !s.is_empty() && s != "0" {
+            return Ok(s);
+        }
+    }
+    Err(format!("Zoho create project: missing id in response: {raw}"))
+}
+
+async fn create_zoho_tasks_for_project(
+    pool: &PgPool,
+    tenant_id: i64,
+    portal_id: &str,
+    project_id: &str,
+    task_names: &[&str],
+) -> Result<i64, String> {
+    let mut created = 0_i64;
+    for name in task_names {
+        let body = serde_json::json!({ "name": name });
+        zoho_post_json(
+            pool,
+            tenant_id,
+            &format!("/api/v3/portal/{portal_id}/projects/{project_id}/tasks"),
+            &body,
+        )
+        .await?;
+        created += 1;
+    }
+    Ok(created)
+}
+
+async fn log_sync(
+    pool: &PgPool,
+    tenant_id: i64,
+    status: &str,
+    message: &str,
+    error_detail: Option<&str>,
+) {
+    if let Err(e) = db::insert_sync_log(pool, tenant_id, status, message, error_detail).await {
+        tracing::warn!(error = %e, "insert sync_log failed");
+    }
+    let _ = db::prune_sync_logs(pool, tenant_id, SYNC_LOG_RETAIN).await;
+}
+
+struct PushItem {
+    sf_entity_type: &'static str,
+    sf_id: String,
+    project_name: String,
+}
+
+async fn collect_push_items(pool: &PgPool, tenant_id: i64) -> Result<Vec<PushItem>, String> {
+    let mut items = Vec::new();
+
+    let acc_snap = db::fetch_latest_integration_snapshot(pool, tenant_id, SF_PROVIDER, "account")
+        .await
+        .map_err(|e| format!("db: {e}"))?;
+    if let Some(snap) = acc_snap {
+        let accounts: Vec<serde_json::Value> =
+            serde_json::from_str(&snap.payload_json).unwrap_or_default();
+        for acc in accounts {
+            let sf_id = bridge_field_str(&acc, "id").unwrap_or_default();
+            let name = bridge_field_str(&acc, "name").unwrap_or_default();
+            if sf_id.is_empty() || name.is_empty() {
+                continue;
+            }
+            items.push(PushItem {
+                sf_entity_type: "account",
+                sf_id,
+                project_name: zoho_project_name_for_account(&name),
+            });
+        }
+    }
+
+    let opp_snap = db::fetch_latest_integration_snapshot(pool, tenant_id, SF_PROVIDER, "opportunity")
+        .await
+        .map_err(|e| format!("db: {e}"))?;
+    if let Some(snap) = opp_snap {
+        let opps: Vec<serde_json::Value> =
+            serde_json::from_str(&snap.payload_json).unwrap_or_default();
+        for opp in opps {
+            let stage = bridge_field_str(&opp, "stage").unwrap_or_default();
+            if !is_closed_won_stage(&stage) {
+                continue;
+            }
+            let sf_id = bridge_field_str(&opp, "id").unwrap_or_default();
+            let name = bridge_field_str(&opp, "name").unwrap_or_default();
+            if sf_id.is_empty() || name.is_empty() {
+                continue;
+            }
+            items.push(PushItem {
+                sf_entity_type: "opportunity",
+                sf_id,
+                project_name: name,
+            });
+        }
+    }
+
+    Ok(items)
+}
+
+async fn push_salesforce_to_zoho_demo(
+    pool: &PgPool,
+    tenant_id: i64,
+    items: &[PushItem],
+) -> Result<serde_json::Value, String> {
+    let mut created = 0_i64;
+    let mut skipped = 0_i64;
+    for item in items {
+        if db::fetch_entity_link(pool, tenant_id, item.sf_entity_type, &item.sf_id)
+            .await
+            .map_err(|e| format!("db: {e}"))?
+            .is_some()
+        {
+            skipped += 1;
+            log_sync(
+                pool,
+                tenant_id,
+                "SKIPPED",
+                &format!(
+                    "Đã đồng bộ trước đó: {} → dự án Zoho \"{}\"",
+                    item.sf_id, item.project_name
+                ),
+                None,
+            )
+            .await;
+            continue;
+        }
+        let zoho_id = format!("DEMO-PRJ-{}", item.sf_id);
+        db::upsert_entity_link(
+            pool,
+            tenant_id,
+            item.sf_entity_type,
+            &item.sf_id,
+            &zoho_id,
+            Some(&item.project_name),
+        )
+        .await
+        .map_err(|e| format!("db link: {e}"))?;
+        created += 1;
+        log_sync(
+            pool,
+            tenant_id,
+            "SUCCESS",
+            &format!(
+                "[demo] Đã tạo dự án \"{}\" + {} task trên Zoho",
+                item.project_name,
+                DEFAULT_ZOHO_ONBOARDING_TASKS.len()
+            ),
+            None,
+        )
+        .await;
+    }
+    Ok(serde_json::json!({
+        "created": created,
+        "skipped": skipped,
+        "tasks_per_project": DEFAULT_ZOHO_ONBOARDING_TASKS.len(),
+        "demo": true,
+    }))
+}
+
+pub async fn push_salesforce_to_zoho(
+    pool: &PgPool,
+    tenant_id: i64,
+) -> Result<serde_json::Value, String> {
+    if !integration_both_connected(pool, tenant_id).await {
+        return Err("Cần connected cả Salesforce và Zoho".into());
+    }
+    let items = collect_push_items(pool, tenant_id).await?;
+    if items.is_empty() {
+        log_sync(
+            pool,
+            tenant_id,
+            "SKIPPED",
+            "Không có Account/Opportunity Closed Won để đẩy sang Zoho",
+            None,
+        )
+        .await;
+        return Ok(serde_json::json!({ "created": 0, "skipped": 0, "reason": "no_items" }));
+    }
+
+    if let Ok(token) = load_zoho_token(pool, tenant_id).await {
+        if token.demo {
+            return push_salesforce_to_zoho_demo(pool, tenant_id, &items).await;
+        }
+    }
+
+    let token = load_zoho_token(pool, tenant_id).await?;
+    let portal_id = token
+        .portal_id
+        .clone()
+        .ok_or_else(|| "missing portal_id — chạy Test portals trước".to_string())?;
+
+    let existing = list_zoho_project_names(pool, tenant_id, &portal_id).await?;
+    let mut created = 0_i64;
+    let mut skipped = 0_i64;
+    let mut tasks_created = 0_i64;
+
+    for item in items {
+        if db::fetch_entity_link(pool, tenant_id, item.sf_entity_type, &item.sf_id)
+            .await
+            .map_err(|e| format!("db: {e}"))?
+            .is_some()
+        {
+            skipped += 1;
+            log_sync(
+                pool,
+                tenant_id,
+                "SKIPPED",
+                &format!(
+                    "Đã đồng bộ: {} → dự án \"{}\"",
+                    item.sf_id, item.project_name
+                ),
+                None,
+            )
+            .await;
+            continue;
+        }
+
+        let project_id = if let Some((id, _)) = existing
+            .iter()
+            .find(|(_, n)| n.eq_ignore_ascii_case(&item.project_name))
+        {
+            id.clone()
+        } else {
+            match create_zoho_project(pool, tenant_id, &portal_id, &item.project_name).await {
+                Ok(id) => id,
+                Err(e) => {
+                    log_sync(
+                        pool,
+                        tenant_id,
+                        "FAILED",
+                        &format!("Tạo dự án \"{}\" thất bại", item.project_name),
+                        Some(&e),
+                    )
+                    .await;
+                    return Err(e);
+                }
+            }
+        };
+
+        match create_zoho_tasks_for_project(
+            pool,
+            tenant_id,
+            &portal_id,
+            &project_id,
+            DEFAULT_ZOHO_ONBOARDING_TASKS,
+        )
+        .await
+        {
+            Ok(n) => tasks_created += n,
+            Err(e) => {
+                log_sync(
+                    pool,
+                    tenant_id,
+                    "FAILED",
+                    &format!(
+                        "Tạo task cho dự án \"{}\" thất bại",
+                        item.project_name
+                    ),
+                    Some(&e),
+                )
+                .await;
+                return Err(e);
+            }
+        }
+
+        db::upsert_entity_link(
+            pool,
+            tenant_id,
+            item.sf_entity_type,
+            &item.sf_id,
+            &project_id,
+            Some(&item.project_name),
+        )
+        .await
+        .map_err(|e| format!("db link: {e}"))?;
+        created += 1;
+        log_sync(
+            pool,
+            tenant_id,
+            "SUCCESS",
+            &format!(
+                "Đã đồng bộ khách hàng \"{}\" thành dự án \"{}\" trên Zoho (+{} task)",
+                item.sf_id, item.project_name, DEFAULT_ZOHO_ONBOARDING_TASKS.len()
+            ),
+            None,
+        )
+        .await;
+    }
+
+    db::touch_integration_last_sync(pool, tenant_id, ZOHO_PROVIDER)
+        .await
+        .map_err(|e| format!("db touch: {e}"))?;
+
+    Ok(serde_json::json!({
+        "created": created,
+        "skipped": skipped,
+        "tasks_created": tasks_created,
+        "portal_id": portal_id,
+    }))
+}
+
+/// Full pipeline: pull SF → bridge map → push Zoho Projects + tasks.
+pub async fn run_full_sync_pipeline(pool: &PgPool, tenant_id: i64) -> Result<serde_json::Value, String> {
+    let sf = sync_salesforce_snapshots(pool, tenant_id).await?;
+    let bridge = try_run_integration_bridge(pool, tenant_id).await;
+    let push = match push_salesforce_to_zoho(pool, tenant_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            log_sync(pool, tenant_id, "FAILED", "Pipeline push Zoho thất bại", Some(&e)).await;
+            return Err(e);
+        }
+    };
+    Ok(serde_json::json!({
+        "status": "ok",
+        "salesforce": sf,
+        "bridge": bridge,
+        "push": push,
+    }))
+}
+
+pub async fn api_sync_now(ctx: &AdminCtx) -> Response {
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "state not initialized",
+        );
+    };
+    match run_full_sync_pipeline(&st.pool, ctx.tenant_id).await {
+        Ok(summary) => {
+            write_audit(
+                &st.pool,
+                ctx,
+                "integration.sync_now",
+                "salesforce→zoho",
+                "success",
+                None,
+                Some("full pipeline"),
+            )
+            .await;
+            (StatusCode::OK, axum::Json(summary)).into_response()
+        }
+        Err(e) => {
+            write_audit_failure(
+                &st.pool,
+                ctx,
+                "integration.sync_now",
+                "salesforce→zoho",
+                None,
+                Some(&e),
+            )
+            .await;
+            (
+                StatusCode::BAD_GATEWAY,
+                axum::Json(serde_json::json!({ "error": "sync_now_failed", "message": e })),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn api_list_sync_logs(ctx: &AdminCtx) -> Response {
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "state not initialized",
+        );
+    };
+    match db::list_sync_logs(&st.pool, ctx.tenant_id, 50).await {
+        Ok(rows) => (StatusCode::OK, axum::Json(rows)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn maybe_refresh_integration_tokens(pool: &PgPool, tenant_id: i64) {
+    let Some(st) = STATE.get() else { return };
+    if let Ok(token) = load_zoho_token(pool, tenant_id).await {
+        if !token.demo {
+            if let Some(rt) = token.refresh_token.as_deref() {
+                if let Some(zoho) = zoho_provider_config(pool, tenant_id).await {
+                    if let Ok(mut fresh) = refresh_zoho_access_token(&st.http, &zoho, rt).await {
+                        fresh.portal_id = token.portal_id;
+                        if let Ok(json) = serde_json::to_string(&fresh) {
+                            if let Ok(enc) = encrypt_integration_config(&json) {
+                                let _ = db::upsert_integration_config(
+                                    pool,
+                                    tenant_id,
+                                    ZOHO_PROVIDER,
+                                    "connected",
+                                    &enc,
+                                    None,
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(token) = load_sf_token(pool, tenant_id).await {
+        if !token.demo {
+            if let Some(rt) = token.refresh_token.as_deref() {
+                if let Some(sf) = salesforce_provider_config(pool, tenant_id).await {
+                    if let Ok(mut fresh) = refresh_access_token(&st.http, &sf, rt).await {
+                        if fresh.instance_url.is_empty() {
+                            fresh.instance_url = token.instance_url.clone();
+                        }
+                        if let Ok(json) = serde_json::to_string(&fresh) {
+                            if let Ok(enc) = encrypt_integration_config(&json) {
+                                let _ = db::upsert_integration_config(
+                                    pool,
+                                    tenant_id,
+                                    SF_PROVIDER,
+                                    "connected",
+                                    &enc,
+                                    None,
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Background worker: refresh tokens + full sync every N minutes (default 15).
+pub fn spawn_integration_sync_worker(pool: PgPool) {
+    let interval_mins: u64 = std::env::var("INTEGRATION_SYNC_INTERVAL_MINS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(15);
+    if interval_mins == 0 {
+        tracing::info!("integration background sync disabled (INTEGRATION_SYNC_INTERVAL_MINS=0)");
+        return;
+    }
+    tokio::spawn(async move {
+        let period = Duration::from_secs(interval_mins * 60);
+        let mut ticker = tokio::time::interval(period);
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let tenants = db::list_tenant_ids(&pool).await.unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "list tenants for sync worker failed");
+                vec![1]
+            });
+            for tenant_id in tenants {
+                maybe_refresh_integration_tokens(&pool, tenant_id).await;
+                match run_full_sync_pipeline(&pool, tenant_id).await {
+                    Ok(summary) => {
+                        tracing::info!(
+                            tenant_id,
+                            push_created = summary
+                                .get("push")
+                                .and_then(|p| p.get("created"))
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0),
+                            "background integration sync ok"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(tenant_id, error = %e, "background integration sync failed");
+                    }
+                }
+            }
+        }
+    });
+    tracing::info!(
+        interval_mins,
+        "integration background sync worker started"
+    );
 }

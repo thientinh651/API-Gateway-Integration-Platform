@@ -1,0 +1,31 @@
+# HELP gateway_uptime_seconds Process uptime.
+# TYPE gateway_uptime_seconds gauge
+gateway_uptime_seconds 895
+# HELP gateway_data_plane_requests_total Data-plane requests.
+# TYPE gateway_data_plane_requests_total counter
+gateway_data_plane_requests_total 1
+# HELP gateway_data_plane_success_total Successful data-plane requests.
+# TYPE gateway_data_plane_success_total counter
+gateway_data_plane_success_total 0
+# HELP gateway_data_plane_denied_total Denied data-plane requests.
+# TYPE gateway_data_plane_denied_total counter
+gateway_data_plane_denied_total 1
+# HELP gateway_data_plane_errors_total Data-plane upstream/other errors.
+# TYPE gateway_data_plane_errors_total counter
+gateway_data_plane_errors_total 0
+# HELP gateway_request_duration_ms Request latency histogram (ms).
+# TYPE gateway_request_duration_ms histogram
+gateway_request_duration_ms_bucket{le="5"} 1
+gateway_request_duration_ms_bucket{le="10"} 1
+gateway_request_duration_ms_bucket{le="25"} 1
+gateway_request_duration_ms_bucket{le="50"} 1
+gateway_request_duration_ms_bucket{le="100"} 1
+gateway_request_duration_ms_bucket{le="250"} 1
+gateway_request_duration_ms_bucket{le="500"} 1
+gateway_request_duration_ms_bucket{le="1000"} 1
+gateway_request_duration_ms_bucket{le="2500"} 1
+gateway_request_duration_ms_bucket{le="5000"} 1
+gateway_request_duration_ms_bucket{le="+Inf"} 1
+gateway_request_duration_ms_sum 0
+gateway_request_duration_ms_count 1
+

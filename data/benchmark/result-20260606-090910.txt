@@ -1,0 +1,27 @@
+benchmark_at=2026-06-06T09:09:10+00:00
+url=http://127.0.0.1:3000/v1/api/get
+requests=100
+concurrency=4
+duration=5s
+rss_kb_before=215732
+---
+Tool: wrk
+Running 5s test @ http://127.0.0.1:3000/v1/api/get
+  4 threads and 4 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency    22.36ms   19.65ms 101.07ms   75.68%
+    Req/Sec    11.17      7.10    30.00     71.15%
+  Latency Distribution
+     50%   19.13ms
+     75%   31.30ms
+     90%   53.10ms
+     99%  101.07ms
+  77 requests in 5.08s, 16.73KB read
+  Socket errors: connect 0, read 0, write 0, timeout 3
+  Non-2xx or 3xx responses: 74
+Requests/sec:     15.16
+Transfer/sec:      3.29KB
+---
+rss_kb_after=216364
+rss_delta_kb=632
+--- metrics json ---

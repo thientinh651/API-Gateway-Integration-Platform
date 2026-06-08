@@ -1,34 +1,57 @@
 import { useEffect } from 'react';
 import { Toaster, type ToasterProps } from 'sonner';
 
-/** Sonner stack: double rAF khi rời chuột — browser transition từ mở → gom mượt. */
+const EXPANDED = 'avaso-toast-expanded';
+const COLLAPSING = 'avaso-toast-collapsing';
+const LEAVE_MS = 120;
+
+/** Sonner stack: class JS thay :hover — tránh nhảy khi chuột ở viền toast. */
 export function AppToaster(props: ToasterProps) {
   useEffect(() => {
     let collapseRaf = 0;
+    let leaveTimer = 0;
     let toaster: Element | null = null;
 
-    const onEnter = () => {
-      if (collapseRaf) cancelAnimationFrame(collapseRaf);
-      toaster?.classList.remove('avaso-toast-collapsing');
-    };
-
-    const onLeave = () => {
+    const setExpanded = (on: boolean) => {
       if (!toaster) return;
-      toaster.classList.add('avaso-toast-collapsing');
+      if (on) {
+        if (leaveTimer) {
+          window.clearTimeout(leaveTimer);
+          leaveTimer = 0;
+        }
+        if (collapseRaf) cancelAnimationFrame(collapseRaf);
+        toaster.classList.remove(COLLAPSING);
+        toaster.classList.add(EXPANDED);
+        return;
+      }
+      toaster.classList.remove(EXPANDED);
+      toaster.classList.add(COLLAPSING);
       requestAnimationFrame(() => {
         collapseRaf = requestAnimationFrame(() => {
-          toaster?.classList.remove('avaso-toast-collapsing');
+          toaster?.classList.remove(COLLAPSING);
         });
       });
     };
 
+    const onOver = (e: Event) => {
+      const target = e.target as Element | null;
+      if (target?.closest('[data-sonner-toast]')) setExpanded(true);
+    };
+
+    const onOut = (e: Event) => {
+      const related = (e as MouseEvent).relatedTarget as Node | null;
+      if (related && toaster?.contains(related)) return;
+      if (leaveTimer) window.clearTimeout(leaveTimer);
+      leaveTimer = window.setTimeout(() => setExpanded(false), LEAVE_MS);
+    };
+
     const bind = (el: Element) => {
       if (toaster === el) return;
-      toaster?.removeEventListener('mouseenter', onEnter);
-      toaster?.removeEventListener('mouseleave', onLeave);
+      toaster?.removeEventListener('mouseover', onOver);
+      toaster?.removeEventListener('mouseout', onOut);
       toaster = el;
-      toaster.addEventListener('mouseenter', onEnter);
-      toaster.addEventListener('mouseleave', onLeave);
+      toaster.addEventListener('mouseover', onOver);
+      toaster.addEventListener('mouseout', onOut);
     };
 
     const existing = document.querySelector('[data-sonner-toaster]');
@@ -41,9 +64,10 @@ export function AppToaster(props: ToasterProps) {
     observer.observe(document.body, { childList: true, subtree: true });
 
     return () => {
+      if (leaveTimer) window.clearTimeout(leaveTimer);
       if (collapseRaf) cancelAnimationFrame(collapseRaf);
-      toaster?.removeEventListener('mouseenter', onEnter);
-      toaster?.removeEventListener('mouseleave', onLeave);
+      toaster?.removeEventListener('mouseover', onOver);
+      toaster?.removeEventListener('mouseout', onOut);
       observer.disconnect();
     };
   }, []);

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router';
 import { toast } from 'sonner';
 import {
   Bar,
@@ -13,6 +12,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import { NavCard } from '../components/dashboard/NavCard';
 import { StatsCard } from '../components/dashboard/StatsCard';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -226,6 +226,7 @@ function OverviewAdmin() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         <StatsCard
+          to="/logs?kind=traffic"
           icon={<Activity className="text-blue-500" />}
           iconBg="bg-blue-500/10"
           title="Kết nối API 24h"
@@ -236,6 +237,7 @@ function OverviewAdmin() {
           }}
         />
         <StatsCard
+          to="/logs?kind=traffic&result=success"
           icon={<Route className="text-emerald-500" />}
           iconBg="bg-emerald-500/10"
           title="Thành công"
@@ -243,6 +245,7 @@ function OverviewAdmin() {
           badge={{ text: 'outcome: success', variant: 'success' }}
         />
         <StatsCard
+          to="/logs?kind=traffic&result=failure"
           icon={<ShieldX className="text-amber-500" />}
           iconBg="bg-amber-500/10"
           title="Từ chối / lỗi"
@@ -255,6 +258,7 @@ function OverviewAdmin() {
           }}
         />
         <StatsCard
+          to="/proxy-queue"
           icon={<ListOrdered className="text-red-500" />}
           iconBg="bg-red-500/10"
           title="DLQ / Queue"
@@ -272,7 +276,7 @@ function OverviewAdmin() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <Card className="p-4 bg-card/80 border-border">
+        <NavCard to="/logs?kind=traffic" className="p-4 bg-card/80 border-border" ariaLabel="Latency — xem log traffic">
           <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
             <Timer className="w-3.5 h-3.5" />
             Latency TB
@@ -280,35 +284,33 @@ function OverviewAdmin() {
           <p className="text-2xl font-bold text-white">
             {loading ? '…' : `${traffic?.avg_duration_ms ?? 0} ms`}
           </p>
-        </Card>
-        <Card className="p-4 bg-card/80 border-border">
+        </NavCard>
+        <NavCard to="/routes" className="p-4 bg-card/80 border-border" ariaLabel="Routes — quản lý route">
           <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
             <Route className="w-3.5 h-3.5" />
             Routes
           </div>
           <p className="text-2xl font-bold text-white">{loading ? '…' : String(stats?.routes_count ?? routes.length)}</p>
-        </Card>
-        <Card className="p-4 bg-card/80 border-border">
+        </NavCard>
+        <NavCard to="/auth" className="p-4 bg-card/80 border-border" ariaLabel="API keys — bảo mật">
           <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
             <Key className="w-3.5 h-3.5" />
             API keys
           </div>
           <p className="text-2xl font-bold text-white">{loading ? '…' : String(stats?.client_keys_count ?? 0)}</p>
-        </Card>
-        <Card className="p-4 bg-card/80 border-border">
+        </NavCard>
+        <NavCard to="/logs?kind=admin" className="p-4 bg-card/80 border-border" ariaLabel="Audit admin 24h">
           <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
             <AlertTriangle className="w-3.5 h-3.5" />
             Audit admin 24h
           </div>
           <p className="text-2xl font-bold text-white">{loading ? '…' : String(stats?.audit_24h.total ?? 0)}</p>
-          <Link to="/logs?kind=admin" className="text-xs text-primary underline mt-1 inline-block">
-            Xem audit
-          </Link>
-        </Card>
+          <p className="text-xs text-primary mt-1">Xem audit →</p>
+        </NavCard>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 lg:gap-8 mb-8">
-        <Card className="p-4 sm:p-6 bg-card/80 border-border">
+        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="HTTP status 24h">
           <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
             HTTP status (24h)
           </h3>
@@ -317,11 +319,7 @@ function OverviewAdmin() {
           </p>
           {httpStatusPieData.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              Chưa có kết nối. Thử{' '}
-              <Link to="/proxy-try" className="text-primary underline">
-                gọi proxy
-              </Link>{' '}
-              hoặc client thật qua gateway.
+              Chưa có kết nối — dùng menu Thử gọi Proxy hoặc client thật qua gateway.
             </p>
           ) : (
             <ChartContainer config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
@@ -346,9 +344,9 @@ function OverviewAdmin() {
               </PieChart>
             </ChartContainer>
           )}
-        </Card>
+        </NavCard>
 
-        <Card className="p-4 sm:p-6 bg-card/80 border-border">
+        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Kết quả kết nối 24h">
           <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
             Kết quả kết nối (24h)
           </h3>
@@ -380,9 +378,9 @@ function OverviewAdmin() {
               </PieChart>
             </ChartContainer>
           )}
-        </Card>
+        </NavCard>
 
-        <Card className="p-4 sm:p-6 bg-card/80 border-border">
+        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Kết nối theo giờ">
           <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
             Kết nối theo giờ (24h)
           </h3>
@@ -418,9 +416,9 @@ function OverviewAdmin() {
               </LineChart>
             </ChartContainer>
           )}
-        </Card>
+        </NavCard>
 
-        <Card className="p-4 sm:p-6 bg-card/80 border-border">
+        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Top path 24h">
           <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
             Top path (24h)
           </h3>
@@ -462,9 +460,9 @@ function OverviewAdmin() {
               </BarChart>
             </ChartContainer>
           )}
-        </Card>
+        </NavCard>
 
-        <Card className="p-4 sm:p-6 bg-card/80 border-border">
+        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Method HTTP 24h">
           <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
             Method HTTP (24h)
           </h3>
@@ -498,22 +496,16 @@ function OverviewAdmin() {
               </BarChart>
             </ChartContainer>
           )}
-        </Card>
+        </NavCard>
 
         {showIntegrations ? (
-          <Card className="p-4 sm:p-6 bg-card/80 border-border">
+          <NavCard to="/integrations" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Tích hợp CRM">
             <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
               Tích hợp CRM — trạng thái
             </h3>
             <p className="text-xs text-muted-foreground mb-4">Salesforce / Zoho OAuth connection.</p>
             {integrationPieData.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                Chưa cấu hình.{' '}
-                <Link to="/integrations" className="text-primary underline">
-                  Tích hợp
-                </Link>
-                .
-              </p>
+              <p className="text-sm text-muted-foreground">Chưa cấu hình — bấm card để mở Tích hợp.</p>
             ) : (
               <ChartContainer config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
                 <PieChart>
@@ -537,20 +529,16 @@ function OverviewAdmin() {
                 </PieChart>
               </ChartContainer>
             )}
-          </Card>
+          </NavCard>
         ) : null}
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
         <div className="xl:col-span-2">
-          <Card className="rounded-2xl overflow-hidden bg-card/80 border-border">
+          <NavCard to="/routes" className="rounded-2xl overflow-hidden bg-card/80 border-border" ariaLabel="Danh sách routes">
             <div className="p-6 border-b border-border flex justify-between items-center">
               <h3 className="font-bold text-white text-sm uppercase tracking-wider">Routes</h3>
-              <Link to="/logs">
-                <Button size="sm" variant="outline" className="border-border">
-                  Log traffic
-                </Button>
-              </Link>
+              <span className="text-xs text-primary font-mono-tech">Quản lý →</span>
             </div>
             <div className="overflow-x-auto max-h-64">
               <table className="w-full text-left text-sm">
@@ -570,11 +558,11 @@ function OverviewAdmin() {
                 </tbody>
               </table>
             </div>
-          </Card>
+          </NavCard>
         </div>
 
         {showIntegrations ? (
-          <Card className="rounded-2xl p-6 bg-card/80 border-border">
+          <NavCard to="/integrations" className="rounded-2xl p-6 bg-card/80 border-border" ariaLabel="Chi tiết tích hợp">
             <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">Tích hợp</h3>
             <p className="text-xs text-muted-foreground mb-4">Chi tiết kết nối OAuth.</p>
             <div className="space-y-4">
@@ -591,29 +579,17 @@ function OverviewAdmin() {
                   )}
                 </div>
               ))}
-              <Link to="/integrations">
-                <Button variant="outline" className="w-full border-border" size="sm">
-                  Quản lý tích hợp
-                </Button>
-              </Link>
+              <p className="text-xs text-primary font-mono-tech">Quản lý tích hợp →</p>
               {proxyQueueLen > 0 ? (
-                <Link to="/proxy-queue">
-                  <Button variant="outline" className="w-full border-amber-500/40 text-amber-300" size="sm">
-                    DLQ ({proxyQueueLen})
-                  </Button>
-                </Link>
+                <p className="text-xs text-amber-300">DLQ: {proxyQueueLen} mục (xem Proxy Queue)</p>
               ) : null}
             </div>
-          </Card>
+          </NavCard>
         ) : proxyQueueLen > 0 ? (
-          <Card className="rounded-2xl p-6 bg-card/80 border-border">
+          <NavCard to="/proxy-queue" className="rounded-2xl p-6 bg-card/80 border-border" ariaLabel="DLQ hàng đợi">
             <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">DLQ</h3>
-            <Link to="/proxy-queue">
-              <Button variant="outline" className="w-full border-amber-500/40 text-amber-300" size="sm">
-                Hàng đợi ({proxyQueueLen})
-              </Button>
-            </Link>
-          </Card>
+            <p className="text-sm text-amber-300">Hàng đợi ({proxyQueueLen}) →</p>
+          </NavCard>
         ) : null}
       </div>
     </>

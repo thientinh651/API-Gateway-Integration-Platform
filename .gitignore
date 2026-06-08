@@ -3,4 +3,6 @@
 /web/dist
 /web/data
 /data/*.db
+/data/.bench-credentials
+/data/integration-oauth-urls*.txt
 .env

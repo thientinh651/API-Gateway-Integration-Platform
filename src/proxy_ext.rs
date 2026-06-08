@@ -1,14 +1,14 @@
 //! Request transform, upstream retry, in-memory DLQ (Document.docx optional extensions).
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::RouteRow;
@@ -174,48 +174,124 @@ mod base64_bytes {
     }
 }
 
-#[derive(Clone, Default)]
+type QueueRow = (
+    String,
+    i64,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i32,
+    i64,
+);
+
+fn row_to_item(r: QueueRow) -> Option<ProxyQueueItem> {
+    let headers: HashMap<String, String> = serde_json::from_str(&r.6).unwrap_or_default();
+    let body = STANDARD.decode(r.7).ok()?;
+    Some(ProxyQueueItem {
+        id: r.0,
+        tenant_id: r.1,
+        route_id: r.2,
+        method: r.3,
+        path: r.4,
+        upstream_url: r.5,
+        headers,
+        body,
+        failure_reason: r.8,
+        retry_attempts: r.9.max(0) as u32,
+        created_at_unix: r.10.max(0) as u64,
+    })
+}
+
+#[derive(Clone)]
 pub struct ProxyQueue {
-    inner: Arc<RwLock<Vec<ProxyQueueItem>>>,
+    pool: PgPool,
 }
 
 impl ProxyQueue {
-    pub fn new() -> Self {
-        Self {
-            inner: Arc::new(RwLock::new(Vec::new())),
-        }
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
     }
 
     pub async fn push(&self, item: ProxyQueueItem) {
-        let mut g = self.inner.write().await;
-        if g.len() >= MAX_QUEUE_ITEMS {
-            g.remove(0);
+        let headers_json = serde_json::to_string(&item.headers).unwrap_or_else(|_| "{}".into());
+        let body_b64 = STANDARD.encode(&item.body);
+        if let Err(e) = sqlx::query(
+            "INSERT INTO gateway_proxy_queue (id, tenant_id, route_id, method, path, upstream_url, headers_json, body_b64, failure_reason, retry_attempts, created_at_unix)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(&item.id)
+        .bind(item.tenant_id)
+        .bind(item.route_id)
+        .bind(&item.method)
+        .bind(&item.path)
+        .bind(&item.upstream_url)
+        .bind(&headers_json)
+        .bind(&body_b64)
+        .bind(&item.failure_reason)
+        .bind(item.retry_attempts as i32)
+        .bind(item.created_at_unix as i64)
+        .execute(&self.pool)
+        .await
+        {
+            tracing::warn!(error = %e, queue_id = %item.id, "proxy_queue push failed");
+            return;
         }
-        g.push(item);
+        if let Ok(count) = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gateway_proxy_queue")
+            .fetch_one(&self.pool)
+            .await
+        {
+            if count as usize > MAX_QUEUE_ITEMS {
+                let overflow = count as usize - MAX_QUEUE_ITEMS;
+                let _ = sqlx::query(
+                    "DELETE FROM gateway_proxy_queue WHERE id IN (
+                        SELECT id FROM gateway_proxy_queue ORDER BY created_at ASC LIMIT $1
+                    )",
+                )
+                .bind(overflow as i64)
+                .execute(&self.pool)
+                .await;
+            }
+        }
     }
 
     pub async fn list(&self, tenant_id: i64) -> Vec<ProxyQueueItem> {
-        let g = self.inner.read().await;
-        g.iter()
-            .filter(|i| i.tenant_id == tenant_id)
-            .cloned()
-            .collect()
+        let rows = sqlx::query_as::<_, QueueRow>(
+            "SELECT id, tenant_id, route_id, method, path, upstream_url, headers_json, body_b64, failure_reason, retry_attempts, created_at_unix
+             FROM gateway_proxy_queue WHERE tenant_id = $1 ORDER BY created_at ASC",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+        rows.into_iter().filter_map(row_to_item).collect()
     }
 
     pub async fn take(&self, tenant_id: i64, id: &str) -> Option<ProxyQueueItem> {
-        let mut g = self.inner.write().await;
-        if let Some(pos) = g
-            .iter()
-            .position(|i| i.tenant_id == tenant_id && i.id == id)
-        {
-            Some(g.remove(pos))
-        } else {
-            None
-        }
+        let row = sqlx::query_as::<_, QueueRow>(
+            "DELETE FROM gateway_proxy_queue WHERE tenant_id = $1 AND id = $2
+             RETURNING id, tenant_id, route_id, method, path, upstream_url, headers_json, body_b64, failure_reason, retry_attempts, created_at_unix",
+        )
+        .bind(tenant_id)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()?;
+        row_to_item(row)
     }
 
     pub async fn remove(&self, tenant_id: i64, id: &str) -> bool {
-        self.take(tenant_id, id).await.is_some()
+        sqlx::query("DELETE FROM gateway_proxy_queue WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map(|r| r.rows_affected() > 0)
+            .unwrap_or(false)
     }
 }
 
