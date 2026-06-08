@@ -307,7 +307,7 @@ pub async fn backfill_admin_tenants(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE dashboard_users SET tenant_id = 1 WHERE tenant_id IS NULL")
         .execute(pool)
         .await?;
-    migrate_personal_admin_tenants(pool).await
+    Ok(())
 }
 
 pub async fn list_dashboard_users_for_tenant(
@@ -468,6 +468,21 @@ pub async fn update_own_profile(
         }
     };
     Ok(affected)
+}
+
+pub async fn fetch_dashboard_user_public_by_id(
+    pool: &PgPool,
+    id: i64,
+) -> Result<Option<AdminUserPublic>, sqlx::Error> {
+    sqlx::query_as::<_, AdminUserPublic>(
+        "SELECT id, username, role, COALESCE(tenant_id, 1) AS tenant_id,
+                CASE WHEN is_active = 0 THEN 0 ELSE 1 END AS is_active, created_at::text AS created_at,
+                email
+         FROM dashboard_users WHERE id = $1 LIMIT 1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
 }
 
 pub async fn fetch_dashboard_user_public(
@@ -1742,7 +1757,7 @@ pub async fn ping(pool: &PgPool) -> bool {
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct IntegrationBridgeRow {
-    pub enabled: i64,
+    pub enabled: i32,
     pub direction: String,
     pub mappings_json: String,
 }

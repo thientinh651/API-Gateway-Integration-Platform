@@ -38,6 +38,9 @@ pub struct SalesforceTokenConfig {
     pub instance_url: String,
     pub token_type: Option<String>,
     pub issued_at: Option<String>,
+    /// ISO8601 — dùng refresh job trước khi hết hạn.
+    #[serde(default)]
+    pub expires_at: Option<String>,
     #[serde(default)]
     pub demo: bool,
 }
@@ -101,9 +104,31 @@ pub struct ZohoTokenConfig {
     pub api_domain: String,
     pub token_type: Option<String>,
     pub expires_in_sec: Option<i64>,
+    /// ISO8601 — dùng refresh job trước khi hết hạn.
+    #[serde(default)]
+    pub expires_at: Option<String>,
     pub portal_id: Option<String>,
     #[serde(default)]
     pub demo: bool,
+}
+
+fn token_expires_at_from_secs(expires_in_sec: Option<i64>) -> Option<String> {
+    let secs = expires_in_sec.unwrap_or(3600);
+    let skew = 300_i64;
+    let at = std::time::SystemTime::now()
+        .checked_add(Duration::from_secs((secs - skew).max(60) as u64))?;
+    let datetime: chrono::DateTime<chrono::Utc> = at.into();
+    Some(datetime.to_rfc3339())
+}
+
+fn token_expires_soon(expires_at: Option<&str>) -> bool {
+    let Some(raw) = expires_at else {
+        return true;
+    };
+    let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) else {
+        return true;
+    };
+    dt.with_timezone(&chrono::Utc) <= chrono::Utc::now()
 }
 
 /// Zoho Projects REST host (not OAuth `api_domain`, which points at CRM).
@@ -488,7 +513,12 @@ async fn exchange_code(
     if !status.is_success() {
         return Err(format!("token HTTP {status}: {body}"));
     }
-    serde_json::from_str(&body).map_err(|e| format!("json: {e}"))
+    let mut token: SalesforceTokenConfig =
+        serde_json::from_str(&body).map_err(|e| format!("json: {e}"))?;
+    if token.expires_at.is_none() {
+        token.expires_at = token_expires_at_from_secs(Some(7200));
+    }
+    Ok(token)
 }
 
 pub async fn load_sf_token(pool: &PgPool, tenant_id: i64) -> Result<SalesforceTokenConfig, String> {
@@ -528,7 +558,13 @@ async fn refresh_access_token(
     if !status.is_success() {
         return Err(format!("refresh HTTP {status}: {body}"));
     }
-    serde_json::from_str(&body).map_err(|e| format!("json: {e}"))
+    let mut token: SalesforceTokenConfig =
+        serde_json::from_str(&body).map_err(|e| format!("json: {e}"))?;
+    token.refresh_token = Some(refresh_token.to_string());
+    if token.expires_at.is_none() {
+        token.expires_at = token_expires_at_from_secs(Some(7200));
+    }
+    Ok(token)
 }
 
 pub async fn sf_get_with_refresh(
@@ -916,6 +952,20 @@ fn map_sf_accounts(records: &[serde_json::Value]) -> Vec<serde_json::Value> {
         .collect()
 }
 
+fn map_sf_contacts(records: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    records
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": sf_field_str(r, "Id"),
+                "name": sf_field_str(r, "Name"),
+                "email": sf_field_str(r, "Email"),
+                "account_id": sf_field_str(r, "AccountId"),
+            })
+        })
+        .collect()
+}
+
 fn zoho_id_str(v: &serde_json::Value) -> String {
     v.get("id_string")
         .or_else(|| v.get("id"))
@@ -1000,11 +1050,18 @@ async fn sync_salesforce_snapshots_demo(
     })];
     let acc = vec![serde_json::json!({
         "id": "001THESIS01",
-        "name": "Demo Customer Co.",
+        "name": "Hội đồng chấm đồ án 2026",
         "industry": "Technology"
+    })];
+    let contacts = vec![serde_json::json!({
+        "id": "003THESIS01",
+        "name": "Nguyễn Văn A",
+        "email": "demo@example.com",
+        "account_id": "001THESIS01"
     })];
     let opp_count = save_snapshot(pool, tenant_id, SF_PROVIDER, "opportunity", &opp).await?;
     let acc_count = save_snapshot(pool, tenant_id, SF_PROVIDER, "account", &acc).await?;
+    let contact_count = save_snapshot(pool, tenant_id, SF_PROVIDER, "contact", &contacts).await?;
     db::touch_integration_last_sync(pool, tenant_id, SF_PROVIDER)
         .await
         .map_err(|e| format!("db touch sync: {e}"))?;
@@ -1013,6 +1070,7 @@ async fn sync_salesforce_snapshots_demo(
         "provider": SF_PROVIDER,
         "opportunity": opp_count,
         "account": acc_count,
+        "contact": contact_count,
         "demo": true,
     }))
 }
@@ -1046,6 +1104,20 @@ pub async fn sync_salesforce_snapshots(pool: &PgPool, tenant_id: i64) -> Result<
     let acc_mapped = map_sf_accounts(&acc_records);
     let acc_count = save_snapshot(pool, tenant_id, SF_PROVIDER, "account", &acc_mapped).await?;
 
+    let contact_q = urlencoding::encode(
+        "SELECT Id,Name,Email,AccountId FROM Contact LIMIT 200",
+    );
+    let (contact_raw, _) =
+        sf_get_with_refresh(pool, tenant_id, &format!("/query?q={contact_q}")).await?;
+    let contact_records = contact_raw
+        .get("records")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let contact_mapped = map_sf_contacts(&contact_records);
+    let contact_count =
+        save_snapshot(pool, tenant_id, SF_PROVIDER, "contact", &contact_mapped).await?;
+
     db::touch_integration_last_sync(pool, tenant_id, SF_PROVIDER)
         .await
         .map_err(|e| format!("db touch sync: {e}"))?;
@@ -1055,6 +1127,7 @@ pub async fn sync_salesforce_snapshots(pool: &PgPool, tenant_id: i64) -> Result<
         "provider": SF_PROVIDER,
         "opportunity": opp_count,
         "account": acc_count,
+        "contact": contact_count,
     }))
 }
 
@@ -1501,6 +1574,7 @@ async fn exchange_zoho_code(
         .unwrap_or("https://www.zohoapis.com")
         .trim_end_matches('/')
         .to_string();
+    let expires_in_sec = raw.get("expires_in").and_then(|v| v.as_i64());
     Ok(ZohoTokenConfig {
         access_token,
         refresh_token: raw
@@ -1512,7 +1586,8 @@ async fn exchange_zoho_code(
             .get("token_type")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        expires_in_sec: raw.get("expires_in").and_then(|v| v.as_i64()),
+        expires_in_sec,
+        expires_at: token_expires_at_from_secs(expires_in_sec),
         portal_id: None,
         demo: false,
     })
@@ -1568,6 +1643,7 @@ async fn refresh_zoho_access_token(
         .unwrap_or("https://www.zohoapis.com")
         .trim_end_matches('/')
         .to_string();
+    let expires_in_sec = raw.get("expires_in").and_then(|v| v.as_i64());
     Ok(ZohoTokenConfig {
         access_token,
         refresh_token: Some(refresh_token.to_string()),
@@ -1576,7 +1652,8 @@ async fn refresh_zoho_access_token(
             .get("token_type")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        expires_in_sec: raw.get("expires_in").and_then(|v| v.as_i64()),
+        expires_in_sec,
+        expires_at: token_expires_at_from_secs(expires_in_sec),
         portal_id: None,
         demo: false,
     })
@@ -2684,12 +2761,15 @@ async fn zoho_post_json(
     serde_json::from_str(&text).map_err(|e| format!("json: {e} — body: {text}"))
 }
 
-fn zoho_project_name_for_account(name: &str) -> String {
+fn zoho_project_name_for_customer(name: &str) -> String {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return "Dự án mới".into();
     }
-    trimmed.to_string()
+    if trimmed.to_ascii_lowercase().starts_with("dự án") {
+        return trimmed.to_string();
+    }
+    format!("Dự án - {trimmed}")
 }
 
 fn is_closed_won_stage(stage: &str) -> bool {
@@ -2804,7 +2884,27 @@ async fn collect_push_items(pool: &PgPool, tenant_id: i64) -> Result<Vec<PushIte
             items.push(PushItem {
                 sf_entity_type: "account",
                 sf_id,
-                project_name: zoho_project_name_for_account(&name),
+                project_name: zoho_project_name_for_customer(&name),
+            });
+        }
+    }
+
+    let contact_snap = db::fetch_latest_integration_snapshot(pool, tenant_id, SF_PROVIDER, "contact")
+        .await
+        .map_err(|e| format!("db: {e}"))?;
+    if let Some(snap) = contact_snap {
+        let contacts: Vec<serde_json::Value> =
+            serde_json::from_str(&snap.payload_json).unwrap_or_default();
+        for c in contacts {
+            let sf_id = bridge_field_str(&c, "id").unwrap_or_default();
+            let name = bridge_field_str(&c, "name").unwrap_or_default();
+            if sf_id.is_empty() || name.is_empty() {
+                continue;
+            }
+            items.push(PushItem {
+                sf_entity_type: "contact",
+                sf_id,
+                project_name: zoho_project_name_for_customer(&name),
             });
         }
     }
@@ -2828,7 +2928,7 @@ async fn collect_push_items(pool: &PgPool, tenant_id: i64) -> Result<Vec<PushIte
             items.push(PushItem {
                 sf_entity_type: "opportunity",
                 sf_id,
-                project_name: name,
+                project_name: zoho_project_name_for_customer(&name),
             });
         }
     }
@@ -3119,7 +3219,7 @@ pub async fn api_list_sync_logs(ctx: &AdminCtx) -> Response {
 async fn maybe_refresh_integration_tokens(pool: &PgPool, tenant_id: i64) {
     let Some(st) = STATE.get() else { return };
     if let Ok(token) = load_zoho_token(pool, tenant_id).await {
-        if !token.demo {
+        if !token.demo && token_expires_soon(token.expires_at.as_deref()) {
             if let Some(rt) = token.refresh_token.as_deref() {
                 if let Some(zoho) = zoho_provider_config(pool, tenant_id).await {
                     if let Ok(mut fresh) = refresh_zoho_access_token(&st.http, &zoho, rt).await {
@@ -3143,7 +3243,7 @@ async fn maybe_refresh_integration_tokens(pool: &PgPool, tenant_id: i64) {
         }
     }
     if let Ok(token) = load_sf_token(pool, tenant_id).await {
-        if !token.demo {
+        if !token.demo && token_expires_soon(token.expires_at.as_deref()) {
             if let Some(rt) = token.refresh_token.as_deref() {
                 if let Some(sf) = salesforce_provider_config(pool, tenant_id).await {
                     if let Ok(mut fresh) = refresh_access_token(&st.http, &sf, rt).await {

@@ -107,17 +107,21 @@ function UsersAdmin() {
       return;
     }
     try {
-      await createAdminUser({
+      const created = await createAdminUser({
         username: formData.username.trim(),
         password: formData.password,
         role: apiRole(formData.role),
         email: formData.email.trim() || undefined,
       });
+      setUsers((prev) => {
+        if (prev.some((u) => u.id === created.id)) return prev;
+        return [...prev, created].sort((a, b) => a.username.localeCompare(b.username));
+      });
       await load();
       setIsOpen(false);
       resetForm();
       setFieldErrors({});
-      toast.success('User đã được tạo');
+      toast.success(`Đã tạo user "${created.username}" (${roleLabel(created.role)})`);
     } catch (e) {
       handleFormApiError(e, setFieldErrors);
     }
@@ -299,6 +303,13 @@ function UsersAdmin() {
                   autoComplete="new-password"
                 />
                 <FieldError message={fieldErrors.password} />
+                {!editingUser && formData.password.length > 0 && formData.password.length < 6 ? (
+                  <p className="text-[11px] text-amber-400 mt-1">
+                    Mật khẩu cần ít nhất 6 ký tự — nút Tạo sẽ bật khi đủ.
+                  </p>
+                ) : !editingUser ? (
+                  <p className="text-[11px] text-muted-foreground mt-1">Tối thiểu 6 ký tự.</p>
+                ) : null}
               </div>
               <div>
                 <Label className="text-foreground">Role</Label>

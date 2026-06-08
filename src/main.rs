@@ -3666,20 +3666,9 @@ async fn api_create_user(
             }
         }
     }
-    let tenant_id = if role == "admin" {
-        match db::create_personal_tenant(&st.pool, username).await {
-            Ok(tid) => tid,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": format!("tenant: {e}") })),
-                )
-                    .into_response();
-            }
-        }
-    } else {
-        ctx.tenant_id
-    };
+    // Operator/Viewer/Admin do admin tạo — cùng workspace (tenant) để thấy trong danh sách.
+    // Tenant riêng chỉ khi tự đăng ký (/register).
+    let tenant_id = ctx.tenant_id;
     let email_ins = email_patch.as_ref().and_then(|o| o.as_deref());
     match db::insert_admin_user(&st.pool, username, &password_hash, &role, tenant_id, email_ins).await {
         Ok(id) => {
@@ -3696,13 +3685,12 @@ async fn api_create_user(
                 Some(&role),
             )
             .await;
-            match db::list_dashboard_users_for_tenant(&st.pool, ctx.tenant_id).await {
-                Ok(rows) => {
-                    if let Some(u) = rows.into_iter().find(|u| u.id == id) {
-                        return (StatusCode::CREATED, Json(u)).into_response();
-                    }
+            match db::fetch_dashboard_user_public_by_id(&st.pool, id).await {
+                Ok(Some(u)) => return (StatusCode::CREATED, Json(u)).into_response(),
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, user_id = id, "fetch created user failed");
                 }
-                Err(_) => {}
             }
             (
                 StatusCode::CREATED,

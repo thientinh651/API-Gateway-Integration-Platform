@@ -559,7 +559,13 @@ export function fetchSyncLogs(): Promise<SyncLogRow[]> {
 
 export type SyncNowResult = {
   status: string;
-  salesforce: { provider: string; opportunity: number; account: number; demo?: boolean };
+  salesforce: {
+    provider: string;
+    opportunity: number;
+    account: number;
+    contact?: number;
+    demo?: boolean;
+  };
   bridge: IntegrationBridgeRunResult;
   push: {
     created: number;
