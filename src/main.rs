@@ -1037,6 +1037,7 @@ async fn main() {
         .route("/proxy-queue/:id/retry", post(api_retry_proxy_queue))
         .route("/proxy-queue/:id", delete(api_delete_proxy_queue))
         .route("/integrations", get(api_list_integrations))
+        .route("/integrations/setup-hints", get(api_integrations_setup_hints))
         .route(
             "/integrations/salesforce/connect",
             get(api_salesforce_connect),
@@ -1087,6 +1088,7 @@ async fn main() {
         )
         .route("/integrations/sync-now", post(api_sync_now))
         .route("/integrations/sync-logs", get(api_list_sync_logs))
+        .route("/integrations/reset-sync", post(api_reset_integration_sync))
         .route("/settings", get(api_get_settings).put(api_update_settings))
         .route("/dashboard/stats", get(api_dashboard_stats))
         .route("/reload-config", post(api_reload_config))
@@ -4179,6 +4181,13 @@ async fn api_list_integrations(Extension(ctx): Extension<AdminCtx>) -> impl Into
     integrations::api_list_integrations(&ctx).await
 }
 
+async fn api_integrations_setup_hints(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/setup-hints").await;
+    }
+    integrations::api_integrations_setup_hints(&ctx).await
+}
+
 async fn audit_admin_denied(ctx: &AdminCtx, resource: &str) -> Response {
     if let Some(st) = STATE.get() {
         write_audit_failure(
@@ -4361,6 +4370,13 @@ async fn api_list_sync_logs(Extension(ctx): Extension<AdminCtx>) -> impl IntoRes
         return audit_admin_denied(&ctx, "integrations/sync-logs").await;
     }
     integrations::api_list_sync_logs(&ctx).await
+}
+
+async fn api_reset_integration_sync(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/reset-sync").await;
+    }
+    integrations::api_reset_integration_sync(&ctx).await
 }
 
 async fn api_dashboard_stats(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {

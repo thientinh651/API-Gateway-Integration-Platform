@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowLeftRight, ChevronDown, ChevronUp, Play, Settings2 } from 'lucide-react';
+import { ArrowLeftRight, ChevronDown, ChevronUp, Play, Settings2, X } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   fetchIntegrationBridge,
@@ -58,23 +58,30 @@ export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected, onAppli
     });
   };
 
-  const save = async () => {
-    if (!bridge) return;
-    setSaving(true);
-    try {
-      const saved = await updateIntegrationBridge({
-        enabled: bridge.enabled,
-        direction: bridge.direction,
-        mappings: bridge.mappings,
-      });
-      setBridge(saved);
+  const persistBridge = async (next: IntegrationBridgeConfig, quiet = false) => {
+    const saved = await updateIntegrationBridge({
+      enabled: next.enabled,
+      direction: next.direction,
+      mappings: next.mappings,
+    });
+    setBridge(saved);
+    if (!quiet) {
       if (!saved.enabled) {
-        toast.warning('Đã lưu map — tick "Bật bridge" rồi Lưu lại để chạy');
+        toast.warning('Đã lưu map — bật "Bật bridge" để chạy');
       } else if (!saved.both_connected) {
         toast.success('Đã lưu — chờ SF + Zoho connected');
       } else {
         toast.success('Bridge đã bật — sync snapshot hoặc Chạy bridge');
       }
+    }
+    return saved;
+  };
+
+  const save = async () => {
+    if (!bridge) return;
+    setSaving(true);
+    try {
+      await persistBridge(bridge);
     } catch (e) {
       toastApiError(e);
     } finally {
@@ -82,11 +89,31 @@ export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected, onAppli
     }
   };
 
+  const setBridgeEnabled = async (enabled: boolean) => {
+    if (!bridge) return;
+    const next = { ...bridge, enabled };
+    setBridge(next);
+    setSaving(true);
+    try {
+      await persistBridge(next, true);
+      toast.success(enabled ? 'Đã bật bridge' : 'Đã tắt bridge');
+    } catch (e) {
+      toastApiError(e);
+      void load();
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const runBridge = async () => {
+    if (!bridge) return;
     setRunning(true);
     try {
+      await persistBridge(bridge, true);
       const res = await runIntegrationBridge();
-      toast.success(`Bridge OK — ${res.records} bản ghi mapped_deals`);
+      toast.success(
+        `Bridge OK — ${res.records} Opportunity từ Salesforce đã map (không đếm dự án Zoho)`
+      );
       onApplied?.();
     } catch (e) {
       toastApiError(e);
@@ -101,7 +128,7 @@ export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected, onAppli
   const statusHint = (() => {
     if (!bridge) return null;
     if (!bridge.enabled) {
-      return 'Map đã lưu nhưng bridge chưa bật — tick ô "Bật bridge" rồi Lưu.';
+      return 'Bridge chưa bật — tick ô "Bật bridge".';
     }
     if (!bridge.both_connected) {
       return 'Bridge đã bật — cần connected cả Salesforce và Zoho.';
@@ -109,7 +136,7 @@ export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected, onAppli
     if (activeCount === 0) {
       return 'Bật ít nhất một field map rồi Lưu.';
     }
-    return 'Sẵn sàng: sync snapshot SF (Opportunity) rồi bấm Chạy bridge — hoặc sync tự chạy nếu đủ điều kiện.';
+    return 'Sẵn sàng — số map = Opportunity SF trong snapshot.';
   })();
 
   return (
@@ -149,15 +176,28 @@ export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected, onAppli
 
       {open && bridge ? (
         <Card className="mt-4 p-4 bg-slate-950/90 border-cyan-500/20 w-full max-w-md lg:absolute lg:z-20 lg:mt-48 shadow-xl">
-          <div className="flex items-start gap-2 mb-3">
-            <Settings2 className="w-4 h-4 text-cyan-400 mt-0.5 shrink-0" />
-            <div>
-              <h3 className="text-sm font-bold text-white">Cấu hình mũi tên (field map)</h3>
-              <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
-                Map snapshot Salesforce (Opportunity/Account) sang dạng Zoho Project/Task. Lưu rule →
-                bật bridge → sync SF → Chạy bridge (xuất hiện trong Snapshot báo cáo).
-              </p>
+          <div className="flex items-start justify-between gap-2 mb-3">
+            <div className="flex items-start gap-2 min-w-0">
+              <Settings2 className="w-4 h-4 text-cyan-400 mt-0.5 shrink-0" />
+              <div>
+                <h3 className="text-sm font-bold text-white">Cấu hình field map</h3>
+                <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+                  Bridge đếm <strong className="text-slate-300">Opportunity trên Salesforce</strong>{' '}
+                  (snapshot), map field rồi <strong className="text-slate-300">Sync Now</strong> đẩy
+                  sang Zoho. Tạo dự án thủ công trên Zoho không làm số này tăng — bấm{' '}
+                  <strong className="text-slate-300">Đồng bộ snapshot</strong> ở card Zoho để cập nhật
+                  danh sách dự án Zoho.
+                </p>
+              </div>
             </div>
+            <button
+              type="button"
+              className="p-1.5 rounded-lg text-muted-foreground hover:text-white hover:bg-slate-800 shrink-0"
+              onClick={() => setOpen(false)}
+              aria-label="Đóng"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
 
           {statusHint ? (
@@ -184,7 +224,7 @@ export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected, onAppli
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="salesforce_to_zoho">Salesforce → Zoho (deal → dự án)</SelectItem>
+                  <SelectItem value="salesforce_to_zoho">Salesforce → Zoho</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -194,10 +234,10 @@ export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected, onAppli
                 type="checkbox"
                 className="rounded border-border"
                 checked={bridge.enabled}
-                disabled={!isAdmin}
-                onChange={(e) => setBridge({ ...bridge, enabled: e.target.checked })}
+                disabled={!isAdmin || saving}
+                onChange={(e) => void setBridgeEnabled(e.target.checked)}
               />
-              Bật bridge (áp dụng khi cả hai đã connected)
+              Bật bridge (tự lưu khi tick — cần SF + Zoho connected)
             </label>
           </div>
 
@@ -221,11 +261,11 @@ export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected, onAppli
                 size="sm"
                 variant="outline"
                 className="w-full border-cyan-500/30"
-                disabled={running || !bridgeLive || activeCount === 0}
+                disabled={running || saving || !bridge.enabled || !bridge.both_connected || activeCount === 0}
                 onClick={() => void runBridge()}
               >
                 <Play className="w-3.5 h-3.5 mr-2" />
-                {running ? 'Đang chạy…' : 'Chạy bridge (tạo mapped_deals)'}
+                {running ? 'Đang chạy…' : 'Chạy bridge'}
               </Button>
             </div>
           ) : (

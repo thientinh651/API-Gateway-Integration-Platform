@@ -1162,6 +1162,9 @@ pub struct IntegrationPublic {
     pub label: String,
     #[serde(default)]
     pub available: bool,
+    /// Token demo (seed script) — không gọi API SF/Zoho thật.
+    #[serde(default)]
+    pub is_demo: bool,
 }
 
 impl From<IntegrationRow> for IntegrationPublic {
@@ -1181,8 +1184,20 @@ impl From<IntegrationRow> for IntegrationPublic {
             updated_at: r.updated_at,
             label,
             available: true,
+            is_demo: false,
         }
     }
+}
+
+pub async fn delete_integration_entity_links(
+    pool: &PgPool,
+    tenant_id: i64,
+) -> Result<u64, sqlx::Error> {
+    let r = sqlx::query("DELETE FROM integration_entity_links WHERE tenant_id = $1")
+        .bind(tenant_id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
 }
 
 pub async fn list_integrations(

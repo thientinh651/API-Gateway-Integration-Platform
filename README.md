@@ -66,7 +66,7 @@ Chi tiết production: [`deploy/systemd/README.md`](deploy/systemd/README.md), [
 
 **Luận văn / bảo vệ:** [`docs/README.md`](docs/README.md) — 15 chức năng lớn, ma trận FR, sửa Word.
 
-**502 / web không vào:** [`docs/XU_LY_502_BAD_GATEWAY.md`](docs/XU_LY_502_BAD_GATEWAY.md)
+**502 / web không vào:** `sudo bash deploy/fix-502.sh` — hoặc [`docs/XU_LY_502_BAD_GATEWAY.md`](docs/XU_LY_502_BAD_GATEWAY.md)
 
 **Bảo vệ đồ án — trace FR + benchmark:** [`docs/MA_TRAN_DONG_AN.md`](docs/MA_TRAN_DONG_AN.md) · [`docs/BENCHMARK.md`](docs/BENCHMARK.md) · `./scripts/collect-thesis-evidence.sh`
 

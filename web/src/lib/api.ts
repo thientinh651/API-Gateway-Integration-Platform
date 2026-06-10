@@ -495,6 +495,7 @@ export type IntegrationRow = {
   updated_at: string;
   label: string;
   available: boolean;
+  is_demo?: boolean;
 };
 
 export function fetchIntegrations(): Promise<IntegrationRow[]> {
@@ -578,6 +579,10 @@ export type SyncNowResult = {
 
 export function integrationSyncNow(): Promise<SyncNowResult> {
   return fetchJson<SyncNowResult>('/api/integrations/sync-now', { method: 'POST' });
+}
+
+export function resetIntegrationSync(): Promise<{ status: string; entity_links_deleted: number }> {
+  return fetchJson('/api/integrations/reset-sync', { method: 'POST' });
 }
 
 export function salesforceConnectUrl(): string {

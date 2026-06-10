@@ -3,7 +3,6 @@ import { useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import {
   Plug,
-  Plus,
   RefreshCw,
   Unplug,
   FlaskConical,
@@ -28,6 +27,7 @@ import {
   fetchIntegrationSnapshots,
   fetchSyncLogs,
   integrationSyncNow,
+  resetIntegrationSync,
   fetchZohoConfig,
   updateZohoConfig,
   fetchSfConfig,
@@ -40,36 +40,26 @@ import { ApiClientError } from '../../lib/apiClientError';
 import { canManageIntegrations } from '../../lib/rbac';
 import { formatApiErrorToast, toastApiError } from '../../lib/apiClientError';
 import { failClientValidation } from '../../lib/formValidation';
+import { describeOAuthRedirectError } from '../../lib/integrationSetup';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { ConfirmDangerButton } from '../components/forms/ConfirmDangerButton';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '../components/ui/dropdown-menu';
 import { IntegrationBridge } from './integrations/IntegrationBridge';
 
 type ProviderKind = 'salesforce' | 'zoho_projects';
 type FieldErrors = Record<string, string>;
 
-const PROVIDER_META: Record<
-  ProviderKind,
-  { label: string; short: string; description: string }
-> = {
+const PROVIDER_META: Record<ProviderKind, { label: string; short: string }> = {
   salesforce: {
     label: 'Salesforce',
     short: 'Salesforce CRM',
-    description: 'OAuth Connected App — CRM, SOQL sync',
   },
   zoho_projects: {
     label: 'Zoho Projects',
     short: 'Zoho Projects',
-    description: 'OAuth Zoho API Console — Projects & tasks',
   },
 };
 
@@ -156,7 +146,7 @@ function IntegrationsAdmin() {
   const [params, setParams] = useSearchParams();
   const [rows, setRows] = useState<IntegrationRow[]>([]);
   const [loading, setLoading] = useState(true);
-  /** Màn thao tác sau khi bấm (+) — null = chỉ hiện dấu cộng trên canvas. */
+  /** Màn cấu hình khi chưa kết nối — null = không mở form setup. */
   const [workspace, setWorkspace] = useState<ProviderKind | null>(null);
   const [testingProvider, setTestingProvider] = useState<string | null>(null);
   const [syncingProvider, setSyncingProvider] = useState<string | null>(null);
@@ -165,7 +155,7 @@ function IntegrationsAdmin() {
   const [syncLogs, setSyncLogs] = useState<SyncLogRow[]>([]);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [cfgLoading, setCfgLoading] = useState<Partial<Record<ProviderKind, boolean>>>({});
-  const [cfgSaving, setCfgSaving] = useState<Partial<Record<ProviderKind, boolean>>>({});
+  const [connecting, setConnecting] = useState<Partial<Record<ProviderKind, boolean>>>({});
   const [sfCfg, setSfCfg] = useState({
     client_id: '',
     client_secret: '',
@@ -254,16 +244,21 @@ function IntegrationsAdmin() {
     const err = params.get('error');
     if (ok === 'salesforce') {
       toast.success('Salesforce đã kết nối');
-      setWorkspace('salesforce');
+      setWorkspace(null);
       setParams({}, { replace: true });
       void load();
     } else if (ok === 'zoho') {
       toast.success('Zoho Projects đã kết nối');
-      setWorkspace('zoho_projects');
+      setWorkspace(null);
       setParams({}, { replace: true });
       void load();
     } else if (err) {
-      toast.error(`OAuth lỗi: ${err}`);
+      const detail = params.get('detail');
+      const provider = params.get('provider');
+      toast.error(describeOAuthRedirectError(err, detail));
+      if (provider === 'salesforce' || provider === 'zoho_projects') {
+        setWorkspace(provider);
+      }
       setParams({}, { replace: true });
       void load();
     }
@@ -300,13 +295,12 @@ function IntegrationsAdmin() {
     }
   };
 
-  const saveSfConfig = async () => {
+  const persistSfConfig = async (): Promise<boolean> => {
     const errors = validateSfConfig(sfCfg);
     if (Object.keys(errors).length > 0) {
       failClientValidation(setSfCfgErrors, errors);
-      return;
+      return false;
     }
-    setCfgSaving((s) => ({ ...s, salesforce: true }));
     setSfCfgErrors({});
     try {
       const res = await updateSfConfig({
@@ -321,8 +315,7 @@ function IntegrationsAdmin() {
         secret_masked: res.secret_masked ?? '',
         has_secret: res.has_secret ?? true,
       }));
-      toast.success('Đã lưu cấu hình Salesforce');
-      await load();
+      return true;
     } catch (e) {
       if (e instanceof ApiClientError && e.fields && Object.keys(e.fields).length > 0) {
         setSfCfgErrors(e.fields);
@@ -331,18 +324,16 @@ function IntegrationsAdmin() {
         setSfCfgErrors({ _form: formatApiErrorToast(e) });
         toastApiError(e);
       }
-    } finally {
-      setCfgSaving((s) => ({ ...s, salesforce: false }));
+      return false;
     }
   };
 
-  const saveZohoConfig = async () => {
+  const persistZohoConfig = async (): Promise<boolean> => {
     const errors = validateZohoConfig(zohoCfg);
     if (Object.keys(errors).length > 0) {
       failClientValidation(setZohoCfgErrors, errors);
-      return;
+      return false;
     }
-    setCfgSaving((s) => ({ ...s, zoho_projects: true }));
     setZohoCfgErrors({});
     try {
       const res = await updateZohoConfig({
@@ -358,8 +349,7 @@ function IntegrationsAdmin() {
         secret_masked: res.secret_masked ?? '',
         has_secret: res.has_secret ?? true,
       }));
-      toast.success('Đã lưu cấu hình Zoho');
-      await load();
+      return true;
     } catch (e) {
       if (e instanceof ApiClientError && e.fields && Object.keys(e.fields).length > 0) {
         setZohoCfgErrors(e.fields);
@@ -368,15 +358,27 @@ function IntegrationsAdmin() {
         setZohoCfgErrors({ _form: formatApiErrorToast(e) });
         toastApiError(e);
       }
+      return false;
+    }
+  };
+
+  const handleConnect = async (kind: ProviderKind) => {
+    setConnecting((s) => ({ ...s, [kind]: true }));
+    try {
+      const ok =
+        kind === 'salesforce' ? await persistSfConfig() : await persistZohoConfig();
+      if (!ok) return;
+      window.location.href =
+        kind === 'salesforce' ? salesforceConnectUrl() : zohoConnectUrl();
     } finally {
-      setCfgSaving((s) => ({ ...s, zoho_projects: false }));
+      setConnecting((s) => ({ ...s, [kind]: false }));
     }
   };
 
   const toastBridgeAfterSync = (bridge?: { status: string; records?: number; reason?: string }) => {
     if (!bridge) return;
     if (bridge.status === 'ok' && bridge.records != null) {
-      toast.message(`Bridge tự chạy: ${bridge.records} mapped_deals`);
+      toast.message(`Bridge: ${bridge.records} Opportunity SF đã map (nguồn Salesforce)`);
     }
   };
 
@@ -544,11 +546,7 @@ function IntegrationsAdmin() {
               className={fieldInputClass(Boolean(sfCfgErrors.client_secret))}
               value={sfCfg.client_secret}
               onChange={(e) => patchSfCfg({ client_secret: e.target.value }, 'client_secret')}
-              placeholder={
-                sfCfg.has_secret
-                  ? `Đã lưu ${sfCfg.secret_masked} — để trống nếu không đổi`
-                  : 'Nhập Consumer Secret'
-              }
+              placeholder={sfCfg.has_secret ? '' : 'Nhập Consumer Secret'}
               disabled={!isAdmin}
             />
             <FieldHint error={sfCfgErrors.client_secret} />
@@ -573,15 +571,6 @@ function IntegrationsAdmin() {
             />
             <FieldHint error={sfCfgErrors.redirect_uri} />
           </div>
-          {isAdmin ? (
-            <Button
-              className="bg-primary hover:bg-primary/90"
-              onClick={() => void saveSfConfig()}
-              disabled={cfgSaving.salesforce}
-            >
-              {cfgSaving.salesforce ? 'Đang lưu…' : 'Lưu cấu hình'}
-            </Button>
-          ) : null}
         </>
       )}
     </div>
@@ -614,11 +603,7 @@ function IntegrationsAdmin() {
               className={fieldInputClass(Boolean(zohoCfgErrors.client_secret))}
               value={zohoCfg.client_secret}
               onChange={(e) => patchZohoCfg({ client_secret: e.target.value }, 'client_secret')}
-              placeholder={
-                zohoCfg.has_secret
-                  ? `Đã lưu ${zohoCfg.secret_masked} — để trống nếu không đổi`
-                  : 'Nhập Client Secret'
-              }
+              placeholder={zohoCfg.has_secret ? '' : 'Nhập Client Secret'}
               disabled={!isAdmin}
             />
             <FieldHint error={zohoCfgErrors.client_secret} />
@@ -653,22 +638,13 @@ function IntegrationsAdmin() {
             />
             <FieldHint error={zohoCfgErrors.scopes} />
           </div>
-          {isAdmin ? (
-            <Button
-              className="bg-primary hover:bg-primary/90"
-              onClick={() => void saveZohoConfig()}
-              disabled={cfgSaving.zoho_projects}
-            >
-              {cfgSaving.zoho_projects ? 'Đang lưu…' : 'Lưu cấu hình'}
-            </Button>
-          ) : null}
         </>
       )}
     </div>
   );
 
-  const renderConnectedActions = (kind: ProviderKind, row: IntegrationRow) => (
-    <div className="flex flex-wrap gap-2 mt-6 pt-4 border-t border-border">
+  const renderConnectedActions = (kind: ProviderKind) => (
+    <div className="flex flex-wrap gap-2">
       <Button
         variant="outline"
         className="border-border"
@@ -699,54 +675,107 @@ function IntegrationsAdmin() {
         </>
       ) : null}
       {isAdmin ? (
-        <>
-          <Button
-            variant="outline"
-            className="border-border"
-            disabled={syncingProvider === kind}
-            onClick={() => void (kind === 'salesforce' ? handleSfSync() : handleZohoSync())}
-          >
-            <Database className="w-4 h-4 mr-2" />
-            {syncingProvider === kind ? 'Đang sync…' : 'Đồng bộ snapshot'}
-          </Button>
-          <ConfirmDangerButton
-            variant="outline"
-            size="default"
-            className="border-border text-red-400"
-            title={`Ngắt kết nối ${PROVIDER_META[kind].label}?`}
-            description="OAuth token sẽ bị xóa — cần kết nối lại để sync/test."
-            confirmLabel="Ngắt kết nối"
-            pendingLabel="Đang ngắt…"
-            onConfirm={() => handleDisconnect(kind)}
-          >
-            <Unplug className="w-4 h-4 mr-2" />
-            Ngắt kết nối
-          </ConfirmDangerButton>
-        </>
+        <Button
+          variant="outline"
+          className="border-border"
+          disabled={syncingProvider === kind}
+          onClick={() => void (kind === 'salesforce' ? handleSfSync() : handleZohoSync())}
+        >
+          <Database className="w-4 h-4 mr-2" />
+          {syncingProvider === kind ? 'Đang sync…' : 'Đồng bộ snapshot'}
+        </Button>
       ) : null}
     </div>
   );
 
-  const renderWorkspace = (kind: ProviderKind) => {
+  const renderConnectedCard = (kind: ProviderKind, row: IntegrationRow) => {
+    const meta = PROVIDER_META[kind];
+    return (
+      <Card key={kind} className="p-6 bg-card/80 border-border">
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div className="flex items-start gap-3 min-w-0">
+            <div className="p-2 rounded-lg bg-primary/10 shrink-0">
+              <Cloud className="w-5 h-5 text-primary" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="font-bold text-white text-lg">{meta.short}</h2>
+                <Badge className={`${statusBadge(row.status)} border`}>connected</Badge>
+                {row.is_demo ? (
+                  <Badge className="bg-amber-500/10 text-amber-400 border-amber-500/20 border">demo</Badge>
+                ) : null}
+              </div>
+              {row.last_sync_at ? (
+                <p className="text-xs text-muted-foreground mt-1">Sync gần nhất: {row.last_sync_at}</p>
+              ) : null}
+              {row.last_error && row.status === 'error' ? (
+                <p className="text-xs text-red-400 mt-2 break-all">{row.last_error}</p>
+              ) : null}
+            </div>
+          </div>
+          {isAdmin ? (
+            <ConfirmDangerButton
+              variant="outline"
+              size="default"
+              className="border-red-500/30 text-red-400 hover:bg-red-500/10 shrink-0"
+              title={`Ngắt kết nối ${meta.label}?`}
+              description="OAuth token sẽ bị xóa — cần kết nối lại để sync/test."
+              confirmLabel="Ngắt kết nối"
+              pendingLabel="Đang ngắt…"
+              onConfirm={() => handleDisconnect(kind)}
+            >
+              <Unplug className="w-4 h-4 mr-2" />
+              Ngắt kết nối
+            </ConfirmDangerButton>
+          ) : null}
+        </div>
+        {renderConnectedActions(kind)}
+      </Card>
+    );
+  };
+
+  const renderConnectPrompt = (kind: ProviderKind) => {
+    const meta = PROVIDER_META[kind];
+    if (workspace === kind) return null;
+    return (
+      <Card
+        key={`connect-${kind}`}
+        className="p-6 bg-card/40 border-dashed border-2 border-border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
+      >
+        <div>
+          <h2 className="font-semibold text-white">{meta.short}</h2>
+          <p className="text-sm text-muted-foreground mt-1">Chưa kết nối OAuth</p>
+        </div>
+        {isAdmin ? (
+          <Button
+            className="bg-primary hover:bg-primary/90 shrink-0"
+            onClick={() => openWorkspace(kind)}
+          >
+            <Plug className="w-4 h-4 mr-2" />
+            Kết nối {meta.label}
+          </Button>
+        ) : (
+          <p className="text-sm text-muted-foreground">Chỉ admin cấu hình và kết nối.</p>
+        )}
+      </Card>
+    );
+  };
+
+  const renderSetupWorkspace = (kind: ProviderKind) => {
     const meta = PROVIDER_META[kind];
     const row = rows.find((r) => r.provider === kind);
-    const status = row?.status ?? 'disconnected';
-    const configReady = Boolean(row?.available);
-    const connected = status === 'connected';
+    if (row?.status === 'connected') return null;
 
     return (
-      <div className="w-full max-w-xl mx-auto text-left">
+      <Card key={`setup-${kind}`} className="p-6 bg-card/80 border-primary/30 border">
         <div className="flex items-start justify-between gap-3 mb-4">
           <div className="flex items-start gap-3 min-w-0">
             <div className="p-2 rounded-lg bg-primary/10 shrink-0">
               <Cloud className="w-5 h-5 text-primary" />
             </div>
             <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="font-bold text-white text-lg">{meta.short}</h2>
-                <Badge className={`${statusBadge(status)} border`}>{status}</Badge>
-              </div>
-              <p className="text-xs text-muted-foreground mt-1">{meta.description}</p>
+              <h2 className="font-bold text-white text-lg">Cấu hình {meta.short}</h2>
+              <p className="text-xs text-muted-foreground mt-1">Nhập OAuth app rồi bấm Kết nối</p>
             </div>
           </div>
           <button
@@ -759,49 +788,38 @@ function IntegrationsAdmin() {
           </button>
         </div>
 
-        {row?.last_error ? <p className="text-xs text-amber-400 mb-3">{row.last_error}</p> : null}
-        {row?.last_sync_at ? (
-          <p className="text-xs text-muted-foreground mb-3">Sync gần nhất: {row.last_sync_at}</p>
-        ) : null}
-
-        {connected ? (
-          renderConnectedActions(kind, row!)
-        ) : isAdmin ? (
+        {isAdmin ? (
           <>
-            <p className="text-sm text-muted-foreground mb-4">
-              Bước 1: nhập OAuth app → Lưu cấu hình. Bước 2: Kết nối (chỉ hiện sau khi lưu).
-            </p>
             {kind === 'salesforce' ? renderSfConfigForm() : renderZohoConfigForm()}
-            {configReady ? (
-              <div className="mt-6 pt-4 border-t border-dashed border-border">
-                <Button
-                  className="w-full sm:w-auto bg-primary hover:bg-primary/90"
-                  onClick={() => {
-                    window.location.href =
-                      kind === 'salesforce' ? salesforceConnectUrl() : zohoConnectUrl();
-                  }}
-                >
-                  <Plug className="w-4 h-4 mr-2" />
-                  Kết nối {meta.label}
-                </Button>
-              </div>
-            ) : (
-              <p className="text-xs text-muted-foreground mt-4">
-                Lưu cấu hình xong mới bật nút Kết nối.
-              </p>
-            )}
+            <div className="mt-6 pt-4 border-t border-dashed border-border">
+              <Button
+                className="w-full sm:w-auto bg-primary hover:bg-primary/90"
+                disabled={connecting[kind]}
+                onClick={() => void handleConnect(kind)}
+              >
+                <Plug className="w-4 h-4 mr-2" />
+                {connecting[kind] ? 'Đang chuyển OAuth…' : `Kết nối ${meta.label}`}
+              </Button>
+            </div>
           </>
         ) : (
           <p className="text-sm text-muted-foreground">Chỉ admin cấu hình và kết nối.</p>
         )}
-      </div>
+      </Card>
     );
   };
 
-  const statusSummary = [
-    sf?.status === 'connected' ? 'Salesforce ✓' : null,
-    zoho?.status === 'connected' ? 'Zoho ✓' : null,
-  ].filter(Boolean);
+  const inDemoMode = Boolean(sf?.is_demo || zoho?.is_demo);
+
+  const handleResetSync = async () => {
+    try {
+      const res = await resetIntegrationSync();
+      toast.success(`Đã xóa ${res.entity_links_deleted} link đồng bộ cũ — Sync Now lại`);
+      await load();
+    } catch (e) {
+      toastApiError(e);
+    }
+  };
 
   return (
     <>
@@ -827,28 +845,41 @@ function IntegrationsAdmin() {
         </div>
       </div>
 
+      {!loading && inDemoMode ? (
+        <Card className="mb-6 p-4 border-amber-500/40 bg-amber-500/10 text-sm text-amber-100">
+          <p className="font-semibold text-amber-300 mb-1">Đang chạy chế độ demo</p>
+          <p className="text-xs leading-relaxed text-amber-100/90">
+            Log <code className="text-amber-200">[demo]</code> chỉ ghi vào Gateway —{' '}
+            <strong>không tạo dự án trên Zoho thật</strong> (portal{' '}
+            <code className="text-amber-200">thientinh651gmaildotcom</code>). Ngắt kết nối →
+            Kết nối OAuth thật → Xóa link cũ → Sync Now.
+          </p>
+          {isAdmin ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-3 border-amber-500/40"
+              onClick={() => void handleResetSync()}
+            >
+              Xóa link đồng bộ demo
+            </Button>
+          ) : null}
+        </Card>
+      ) : null}
+
       {loading ? (
         <p className="text-muted-foreground">Đang tải…</p>
       ) : (
-        <div className="space-y-6">
-          <Card className="p-10 sm:p-14 bg-card/40 border-dashed border-2 border-border flex flex-col items-center justify-center text-center min-h-[280px]">
-            {!workspace ? (
-              <>
-                {statusSummary.length > 0 ? (
-                  <p className="text-xs text-emerald-400/90 mb-4">{statusSummary.join(' · ')}</p>
-                ) : null}
-                {isAdmin ? (
-                  <AddIntegrationMenu onPick={openWorkspace} large />
-                ) : (
-                  <p className="text-sm text-muted-foreground">Chỉ admin thêm tích hợp.</p>
-                )}
-              </>
-            ) : (
-              renderWorkspace(workspace)
-            )}
-          </Card>
+        <div className="space-y-4">
+          {sf?.status === 'connected' ? renderConnectedCard('salesforce', sf) : null}
+          {zoho?.status === 'connected' ? renderConnectedCard('zoho_projects', zoho) : null}
 
-          {showBridge && !workspace ? (
+          {workspace ? renderSetupWorkspace(workspace) : null}
+
+          {sf?.status !== 'connected' ? renderConnectPrompt('salesforce') : null}
+          {zoho?.status !== 'connected' ? renderConnectPrompt('zoho_projects') : null}
+
+          {showBridge ? (
             <Card className="p-6 bg-card/80 border-border">
               <IntegrationBridge
                 isAdmin={isAdmin}
@@ -932,36 +963,6 @@ function IntegrationsAdmin() {
         </Card>
       ) : null}
     </>
-  );
-}
-
-function AddIntegrationMenu({
-  onPick,
-  large,
-}: {
-  onPick: (k: ProviderKind) => void;
-  large?: boolean;
-}) {
-  const kinds: ProviderKind[] = ['salesforce', 'zoho_projects'];
-  return (
-    <div className={large ? 'flex flex-col sm:flex-row items-center gap-3' : 'flex items-center gap-2'}>
-      {kinds.map((k) => (
-        <Button
-          key={k}
-          type="button"
-          variant="outline"
-          className={
-            large
-              ? 'h-14 px-6 rounded-xl border-dashed border-2 border-primary/40 hover:border-primary hover:bg-primary/10 text-primary font-semibold gap-2'
-              : 'border-dashed border-border gap-1 text-xs'
-          }
-          onClick={() => onPick(k)}
-        >
-          <Plus className={large ? 'w-5 h-5' : 'w-3 h-3'} />
-          {PROVIDER_META[k].label}
-        </Button>
-      ))}
-    </div>
   );
 }
 
