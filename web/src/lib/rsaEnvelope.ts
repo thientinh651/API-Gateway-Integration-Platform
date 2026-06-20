@@ -13,6 +13,8 @@ export type EncryptedCreateKeyPlain = {
   name: string;
   integration_type: string;
   secret_key?: string;
+  rate_limit_per_min?: number;
+  route_ids?: number[];
 };
 
 function pemToSpkiDer(pem: string): ArrayBuffer {

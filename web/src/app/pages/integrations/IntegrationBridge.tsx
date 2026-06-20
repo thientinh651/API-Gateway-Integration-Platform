@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import { ArrowLeftRight, ChevronDown, ChevronUp, Play, Settings2, X } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -112,7 +113,7 @@ export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected, onAppli
       await persistBridge(bridge, true);
       const res = await runIntegrationBridge();
       toast.success(
-        `Bridge OK — ${res.records} Opportunity từ Salesforce đã map (không đếm dự án Zoho)`
+        `Bridge OK — ${res.records} Opportunity từ Salesforce đã map `
       );
       onApplied?.();
     } catch (e) {
@@ -180,14 +181,7 @@ export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected, onAppli
             <div className="flex items-start gap-2 min-w-0">
               <Settings2 className="w-4 h-4 text-cyan-400 mt-0.5 shrink-0" />
               <div>
-                <h3 className="text-sm font-bold text-white">Cấu hình field map</h3>
-                <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
-                  Bridge đếm <strong className="text-slate-300">Opportunity trên Salesforce</strong>{' '}
-                  (snapshot), map field rồi <strong className="text-slate-300">Sync Now</strong> đẩy
-                  sang Zoho. Tạo dự án thủ công trên Zoho không làm số này tăng — bấm{' '}
-                  <strong className="text-slate-300">Đồng bộ snapshot</strong> ở card Zoho để cập nhật
-                  danh sách dự án Zoho.
-                </p>
+                <h3 className="text-sm font-bold text-white">Field map</h3>
               </div>
             </div>
             <button
@@ -200,16 +194,8 @@ export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected, onAppli
             </button>
           </div>
 
-          {statusHint ? (
-            <p
-              className={`text-xs mb-3 rounded border px-2 py-1.5 ${
-                bridgeLive && activeCount > 0
-                  ? 'text-emerald-400/90 border-emerald-500/25 bg-emerald-500/10'
-                  : 'text-amber-400/90 border-amber-500/25 bg-amber-500/10'
-              }`}
-            >
-              {statusHint}
-            </p>
+          {statusHint && !bridgeLive ? (
+            <p className="text-xs mb-3 text-amber-400">{statusHint}</p>
           ) : null}
 
           <div className="space-y-3 mb-4">
@@ -237,7 +223,7 @@ export function IntegrationBridge({ isAdmin, sfConnected, zohoConnected, onAppli
                 disabled={!isAdmin || saving}
                 onChange={(e) => void setBridgeEnabled(e.target.checked)}
               />
-              Bật bridge (tự lưu khi tick — cần SF + Zoho connected)
+              Bật bridge
             </label>
           </div>
 

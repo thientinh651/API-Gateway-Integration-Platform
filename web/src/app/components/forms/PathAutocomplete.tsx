@@ -193,7 +193,7 @@ export function PathAutocomplete({
         <ul
           id={listId}
           role="listbox"
-          className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md border border-border bg-card text-foreground shadow-md py-1"
+          className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md border border-border bg-popover text-popover-foreground shadow-md py-1"
         >
           {filtered.map((s, idx) => {
             const prev = filtered[idx - 1];
@@ -213,12 +213,28 @@ export function PathAutocomplete({
                   onClick={() => pick(s.path)}
                   className={cn(
                     'flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left text-sm transition-colors',
-                    idx === activeIdx ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50',
+                    idx === activeIdx
+                      ? 'bg-primary/15 text-foreground'
+                      : 'text-foreground hover:bg-slate-800/70',
                   )}
                 >
-                  <span className="font-mono text-xs">{s.path}</span>
+                  <span
+                    className={cn(
+                      'font-mono text-xs',
+                      idx === activeIdx ? 'text-primary' : 'text-foreground',
+                    )}
+                  >
+                    {s.path}
+                  </span>
                   {s.hint ? (
-                    <span className="text-[10px] text-muted-foreground truncate max-w-full">{s.hint}</span>
+                    <span
+                      className={cn(
+                        'text-[10px] truncate max-w-full',
+                        idx === activeIdx ? 'text-slate-300' : 'text-muted-foreground',
+                      )}
+                    >
+                      {s.hint}
+                    </span>
                   ) : null}
                 </button>
               </li>
@@ -228,7 +244,7 @@ export function PathAutocomplete({
       ) : null}
 
       {open && value.trim() && filtered.length === 0 ? (
-        <p className="absolute z-50 mt-1 w-full rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground shadow-lg">
+        <p className="absolute z-50 mt-1 w-full rounded-md border border-border bg-popover px-3 py-2 text-xs text-muted-foreground shadow-lg">
           Không có path trùng — vẫn gõ tự do hoặc thêm route tại Quản lý Route.
         </p>
       ) : null}

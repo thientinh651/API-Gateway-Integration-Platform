@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -21,7 +21,10 @@ import {
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import { canViewAudit, canViewLogs } from '../../lib/rbac';
 import { toastApiError } from '../../lib/apiClientError';
+import { toast } from 'sonner';
 import { formatDbTimestamp, formatDbTimestampForExport } from '../../lib/formatDbTimestamp';
+import { reasonLabel, MIDDLEWARE_REASON_FILTER_OPTIONS } from '../../lib/middlewareLabels';
+import { MiddlewareStageBadge } from '../components/auth/MiddlewareStageBadge';
 
 type LogKind = 'traffic' | 'admin';
 type KindFilter = 'all' | LogKind;
@@ -65,8 +68,10 @@ function exportCsv(entries: UnifiedLogEntry[]) {
     'summary',
     'detail',
     'ip',
-    'result',
-    'extra',
+    'outcome',
+    'middleware_reason',
+    'client_key_id',
+    'api_key_masked',
   ];
   const lines = entries.map((e) => {
     if (e.kind === 'traffic') {
@@ -78,6 +83,8 @@ function exportCsv(entries: UnifiedLogEntry[]) {
         `${r.status} ${r.duration_ms}ms`,
         r.client_ip ?? '',
         r.outcome,
+        reasonLabel(r.reason),
+        r.client_key_id != null ? String(r.client_key_id) : '',
         r.api_key_masked ?? '',
       ];
     }
@@ -89,6 +96,7 @@ function exportCsv(entries: UnifiedLogEntry[]) {
       `${r.actor} (${r.role})`,
       r.source_ip ?? '',
       r.result,
+      '',
       r.details ?? '',
     ];
   });
@@ -113,7 +121,7 @@ function getStatusBadgeClass(status: number) {
 
 /** Grid 6 cột — header tách khỏi body, sticky ổn định (không dùng table thead). */
 const LOG_GRID =
-  'grid w-full min-w-[640px] grid-cols-[13%_10%_27%_22%_13%_15%] items-center';
+  'grid w-full min-w-0 grid-cols-[13%_10%_27%_22%_13%_15%] items-center';
 const LOG_CELL = 'px-4 sm:px-6 py-3 min-w-0';
 const LOG_HEAD =
   'text-[10px] uppercase text-muted-foreground font-bold whitespace-nowrap bg-slate-950';
@@ -128,6 +136,64 @@ function LogColumnHeader() {
       <div className={`${LOG_CELL} ${LOG_HEAD} hidden sm:block`}>IP</div>
       <div className={`${LOG_CELL} ${LOG_HEAD}`}>Kết quả</div>
     </div>
+  );
+}
+
+const LOG_DETAIL_INLINE_MAX = 52;
+
+function LogDetailText({
+  text,
+  title = 'Chi tiết',
+  className = 'text-xs text-slate-400',
+  onAction,
+  actionLabel = 'Lọc',
+}: {
+  text: string;
+  title?: string;
+  className?: string;
+  onAction?: () => void;
+  actionLabel?: string;
+}) {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  if (trimmed.length <= LOG_DETAIL_INLINE_MAX) {
+    if (onAction) {
+      return (
+        <button
+          type="button"
+          className={`${className} hover:text-primary hover:underline text-left break-words`}
+          onClick={onAction}
+        >
+          {trimmed}
+        </button>
+      );
+    }
+    return <span className={`${className} break-words`}>{trimmed}</span>;
+  }
+
+  const preview = `${trimmed.slice(0, LOG_DETAIL_INLINE_MAX).trim()}…`;
+
+  return (
+    <span className={`${className} inline-flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0`}>
+      <span className="break-words">{preview}</span>
+      <button
+        type="button"
+        className="shrink-0 text-[10px] text-primary hover:underline"
+        onClick={() => toast.message(title, { description: trimmed, duration: 10_000 })}
+      >
+        Xem đủ
+      </button>
+      {onAction ? (
+        <button
+          type="button"
+          className="shrink-0 text-[10px] text-muted-foreground hover:underline"
+          onClick={onAction}
+        >
+          {actionLabel}
+        </button>
+      ) : null}
+    </span>
   );
 }
 
@@ -150,7 +216,7 @@ export function Logs() {
 
   const [entries, setEntries] = useState<UnifiedLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = useState(() => params.get('search') ?? '');
   const [kindFilter, setKindFilter] = useState<KindFilter>(() => {
     const k = params.get('kind');
     if (k === 'admin' || k === 'traffic') return k;
@@ -164,6 +230,12 @@ export function Logs() {
     const r = params.get('result');
     if (r === 'success' || r === 'failure') return r;
     return 'all';
+  });
+  const [reasonFilter, setReasonFilter] = useState(() => params.get('reason') ?? 'all');
+  const [clientKeyFilter, setClientKeyFilter] = useState<number | null>(() => {
+    const raw = params.get('client_key_id');
+    if (!raw || !/^\d+$/.test(raw)) return null;
+    return Number(raw);
   });
 
   const effectiveKind = useMemo((): KindFilter => {
@@ -196,6 +268,8 @@ export function Logs() {
               status: statusFilter as 'all' | '2xx' | '4xx' | '5xx',
               outcome: outcomeParam,
               search: searchTerm,
+              reason: reasonFilter,
+              client_key_id: clientKeyFilter ?? undefined,
             })
           : Promise.resolve([] as TransactionLogRow[]),
         fetchAdmin
@@ -221,6 +295,8 @@ export function Logs() {
     statusFilter,
     resultFilter,
     searchTerm,
+    reasonFilter,
+    clientKeyFilter,
   ]);
 
   useEffect(() => {
@@ -238,6 +314,36 @@ export function Logs() {
     setParams(next, { replace: true });
   }, [effectiveKind, params, setParams]);
 
+  useEffect(() => {
+    const current = params.get('reason');
+    const desired = reasonFilter === 'all' ? null : reasonFilter;
+    if (current === desired) return;
+    const next = new URLSearchParams(params);
+    if (desired) next.set('reason', desired);
+    else next.delete('reason');
+    setParams(next, { replace: true });
+  }, [reasonFilter, params, setParams]);
+
+  useEffect(() => {
+    const current = params.get('search');
+    const desired = searchTerm.trim() || null;
+    if (current === desired) return;
+    const next = new URLSearchParams(params);
+    if (desired) next.set('search', desired);
+    else next.delete('search');
+    setParams(next, { replace: true });
+  }, [searchTerm, params, setParams]);
+
+  useEffect(() => {
+    const current = params.get('client_key_id');
+    const desired = clientKeyFilter != null ? String(clientKeyFilter) : null;
+    if (current === desired) return;
+    const next = new URLSearchParams(params);
+    if (desired) next.set('client_key_id', desired);
+    else next.delete('client_key_id');
+    setParams(next, { replace: true });
+  }, [clientKeyFilter, params, setParams]);
+
   const showMethodStatusFilters =
     showTraffic && (effectiveKind === 'all' || effectiveKind === 'traffic');
   const showResultFilter =
@@ -250,10 +356,13 @@ export function Logs() {
   return (
     <>
       <div className="mb-6 sm:mb-8">
+        <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1">
+          Observability
+        </p>
         <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Log vận hành</h1>
       </div>
 
-      <Card className="rounded-2xl bg-card/80 backdrop-blur-sm border-border p-0">
+      <Card className="rounded-2xl bg-card/80 backdrop-blur-sm border-border p-0 scroll-mt-24 min-w-0" id="section-logs">
         <div className="sticky top-0 z-30 isolate rounded-t-2xl bg-card shadow-[0_12px_28px_-14px_rgba(0,0,0,0.65)]">
           <div className="p-4 sm:p-6 space-y-4 border-b border-border/80 bg-card/98 backdrop-blur-md">
         <div className="flex flex-wrap gap-3">
@@ -328,6 +437,21 @@ export function Logs() {
             </Select>
           ) : null}
 
+          {showMethodStatusFilters ? (
+            <Select value={reasonFilter} onValueChange={setReasonFilter}>
+              <SelectTrigger className="w-[200px] bg-input border-border">
+                <SelectValue placeholder="Middleware reason" />
+              </SelectTrigger>
+              <SelectContent className="bg-card border-border max-h-72">
+                {MIDDLEWARE_REASON_FILTER_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+
           <Button
             variant="outline"
             className="border-border"
@@ -374,6 +498,21 @@ export function Logs() {
             <strong className="text-slate-300">5xx</strong> = upstream/server
           </p>
         ) : null}
+        {clientKeyFilter != null ? (
+          <p className="text-xs text-cyan-400/90 flex flex-wrap items-center gap-2">
+            Lọc client #{clientKeyFilter}
+            <Link to={`/auth?open=${clientKeyFilter}`} className="text-primary hover:underline">
+              Mở registry
+            </Link>
+            <button
+              type="button"
+              className="text-muted-foreground hover:underline"
+              onClick={() => setClientKeyFilter(null)}
+            >
+              Bỏ lọc
+            </button>
+          </p>
+        ) : null}
           </div>
           <LogColumnHeader />
         </div>
@@ -417,9 +556,44 @@ export function Logs() {
                         {log.request_id}
                       </p>
                     </div>
-                    <div className={`${LOG_CELL} hidden sm:block text-xs text-slate-400`}>
-                      {log.duration_ms}ms
-                      {log.api_key_masked ? ` · ${log.api_key_masked}` : ''}
+                    <div className={`${LOG_CELL} hidden sm:block text-xs text-slate-400 min-w-0`}>
+                      <p className="break-words">
+                        {log.duration_ms}ms
+                        {log.api_key_masked ? (
+                          <>
+                            {' · '}
+                            <button
+                              type="button"
+                              className="font-mono text-sky-400 hover:underline"
+                              title="Lọc theo API key"
+                              onClick={() => setSearchTerm(log.api_key_masked ?? '')}
+                            >
+                              {log.api_key_masked}
+                            </button>
+                            {log.client_key_id ? (
+                              <>
+                                {' · '}
+                                <Link
+                                  to={`/auth?open=${log.client_key_id}`}
+                                  className="text-primary hover:underline"
+                                >
+                                  client #{log.client_key_id}
+                                </Link>
+                              </>
+                            ) : null}
+                          </>
+                        ) : null}
+                      </p>
+                      {log.reason ? (
+                        <p className="mt-0.5">
+                          <LogDetailText
+                            text={reasonLabel(log.reason)}
+                            title="Lý do middleware"
+                            className="text-[10px] text-slate-500"
+                            onAction={() => setReasonFilter(log.reason)}
+                          />
+                        </p>
+                      ) : null}
                     </div>
                     <div
                       className={`${LOG_CELL} hidden sm:block font-mono text-xs text-slate-500 whitespace-nowrap`}
@@ -427,9 +601,16 @@ export function Logs() {
                       {log.client_ip ?? '—'}
                     </div>
                     <div className={LOG_CELL}>
-                      <Badge className={`${getStatusBadgeClass(log.status)} border font-mono`}>
-                        {log.status}
-                      </Badge>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Badge className={`${getStatusBadgeClass(log.status)} border font-mono`}>
+                          {log.status}
+                        </Badge>
+                        <MiddlewareStageBadge
+                          status={log.status}
+                          reason={log.reason}
+                          outcome={log.outcome}
+                        />
+                      </div>
                       {log.outcome !== 'success' ? (
                         <p className="text-[10px] text-red-400/90 mt-0.5 font-mono">{log.outcome}</p>
                       ) : null}
@@ -456,12 +637,14 @@ export function Logs() {
                     <p className="font-mono text-xs text-primary">{log.action}</p>
                     <p className="text-xs text-slate-400 truncate max-w-[14rem]">{log.resource}</p>
                   </div>
-                  <div className={`${LOG_CELL} hidden sm:block text-xs text-slate-400`}>
-                    {log.actor}
-                    <span className="text-muted-foreground"> · {log.role}</span>
+                  <div className={`${LOG_CELL} hidden sm:block text-xs text-slate-400 min-w-0`}>
+                    <p className="break-words">
+                      {log.actor}
+                      <span className="text-muted-foreground"> · {log.role}</span>
+                    </p>
                     {log.details ? (
-                      <p className="text-[10px] text-muted-foreground truncate max-w-[12rem] mt-0.5">
-                        {log.details}
+                      <p className="mt-0.5">
+                        <LogDetailText text={log.details} title="Chi tiết thao tác" />
                       </p>
                     ) : null}
                   </div>

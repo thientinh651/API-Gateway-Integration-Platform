@@ -3,7 +3,6 @@ import { Link } from 'react-router';
 import {
   ArrowDown,
   ArrowRight,
-  Box,
   Cpu,
   FileCode,
   GitBranch,
@@ -38,38 +37,38 @@ const TERMINAL_LINES = [
 const STACK = ['Rust', 'Tokio', 'Axum', 'SQLite', 'HMAC-SHA256', 'RBAC'];
 
 const FLOW = [
-  { label: 'Client / AI App', icon: Network, tone: 'from-blue-500/20 to-blue-500/5 border-blue-500/30' },
-  { label: 'AVASO Gateway', icon: Layers, tone: 'from-primary/25 to-primary/5 border-primary/40' },
-  { label: 'Salesforce · Zoho', icon: GitBranch, tone: 'from-violet-500/20 to-violet-500/5 border-violet-500/30' },
-  { label: 'Upstream APIs', icon: Server, tone: 'from-emerald-500/20 to-emerald-500/5 border-emerald-500/30' },
+  { label: 'ERP / Mobile / AI', icon: Network, tone: 'from-blue-500/20 to-blue-500/5 border-blue-500/30' },
+  { label: 'Integration Platform', icon: Layers, tone: 'from-primary/25 to-primary/5 border-primary/40' },
+  { label: 'Transform + Route', icon: GitBranch, tone: 'from-cyan-500/20 to-cyan-500/5 border-cyan-500/30' },
+  { label: 'Salesforce · Zoho · API', icon: Server, tone: 'from-emerald-500/20 to-emerald-500/5 border-emerald-500/30' },
 ];
 
 const CAPABILITIES = [
   {
-    icon: Shield,
-    title: 'Zero-trust data plane',
-    text: 'HMAC + timestamp + chống replay.',
-    tag: 'Security',
-    to: '/api-docs',
-  },
-  {
-    icon: Zap,
-    title: 'Async proxy engine',
-    text: 'Rust/Tokio — không GC pause. Rate limit, retry, DLQ, transform header theo route.',
-    tag: 'Performance',
-    to: '/login',
-  },
-  {
-    icon: Box,
-    title: 'Đa tích hợp CRM',
-    text: 'OAuth Salesforce & Zoho, snapshot KPI trên dashboard — một cổng cho nhiều nguồn dữ liệu.',
+    icon: GitBranch,
+    title: 'Đa tích hợp + Transform',
+    text: 'Canonical schema — SF firstName → name → Zoho task. Một cổng thay kết nối điểm-điểm.',
     tag: 'Integration',
     to: '/login',
   },
   {
+    icon: Zap,
+    title: 'Connector + Queue',
+    text: 'OAuth SF/Zoho, retry, DLQ PostgreSQL + worker tự replay. Transaction log mọi giao dịch.',
+    tag: 'Reliability',
+    to: '/login',
+  },
+  {
+    icon: Shield,
+    title: 'Bảo vệ luồng tích hợp',
+    text: 'HMAC, ACL route, rate limit — lớp bảo vệ cho integration, không phải mục tiêu chính.',
+    tag: 'Security',
+    to: '/api-docs',
+  },
+  {
     icon: Lock,
-    title: 'Admin plane tách biệt',
-    text: 'Session + RBAC (Admin / Operator / Viewer). Audit log mọi thao tác nhạy cảm.',
+    title: 'Admin control plane',
+    text: 'Session + RBAC. Cấu hình connector, bridge, transform trên dashboard.',
     tag: 'Governance',
     to: '/login',
   },

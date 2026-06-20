@@ -11,6 +11,7 @@ use crate::session::{self, SessionError, SessionStore};
 pub struct AdminCtx {
     pub user_id: i64,
     pub username: String,
+    pub home_tenant_id: i64,
     pub tenant_id: i64,
     pub role: String,
     pub via_api_key: bool,
@@ -18,10 +19,12 @@ pub struct AdminCtx {
 
 impl AdminCtx {
     pub fn from_user(row: &AdminUserRow) -> Self {
+        let home = row.tenant_id.unwrap_or(1);
         Self {
             user_id: row.id,
             username: row.username.clone(),
-            tenant_id: row.tenant_id.unwrap_or(1),
+            home_tenant_id: home,
+            tenant_id: home,
             role: row.role.clone(),
             via_api_key: false,
         }
@@ -44,6 +47,7 @@ impl AdminCtx {
         Self {
             user_id: 0,
             username: "api-key".into(),
+            home_tenant_id: 1,
             tenant_id: 1,
             role: "admin".into(),
             via_api_key: true,
@@ -77,7 +81,18 @@ pub fn admin_api_key_enabled() -> bool {
         .unwrap_or(false)
 }
 
-/// Đăng ký công khai — chỉ tạo role `viewer`, workspace riêng.
+/// Mặc định on-prem (một tổ chức / instance). SaaS: `DEPLOYMENT_MODE=saas`.
+pub fn on_prem_single_org() -> bool {
+    !std::env::var("DEPLOYMENT_MODE")
+        .map(|v| v.trim().eq_ignore_ascii_case("saas"))
+        .unwrap_or(false)
+}
+
+pub fn workspace_collaboration_enabled() -> bool {
+    !on_prem_single_org()
+}
+
+/// Đăng ký công khai — chỉ khi bật env; on-prem mặc định tắt (admin tạo user).
 pub fn viewer_registration_enabled() -> bool {
     std::env::var("ALLOW_VIEWER_REGISTRATION")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -97,6 +112,9 @@ pub fn rbac_allow(method: &Method, path: &str, role: &str) -> bool {
 
     if role == "viewer" {
         if write {
+            if p == "/workspace/switch" && *method == Method::POST {
+                return true;
+            }
             return false;
         }
         if p.starts_with("/client-keys")
@@ -107,6 +125,7 @@ pub fn rbac_allow(method: &Method, path: &str, role: &str) -> bool {
             || p.starts_with("/audit-logs")
             || p.starts_with("/proxy-queue")
             || p.starts_with("/integrations")
+            || p.starts_with("/workspace/members")
             || p == "/reload-config"
         {
             return false;
@@ -115,14 +134,17 @@ pub fn rbac_allow(method: &Method, path: &str, role: &str) -> bool {
             && (p == "/routes"
                 || p.starts_with("/routes/")
                 || p == "/dashboard/stats"
+                || p == "/middleware/status"
                 || p == "/me"
-                || p == "/ping");
+                || p == "/ping"
+                || p == "/workspace/memberships");
     }
 
     // operator — vận hành trong tenant, không quản trị user/settings/integrations
     if p.starts_with("/users")
         || p.starts_with("/settings")
         || p.starts_with("/integrations")
+        || p.starts_with("/workspace/members")
         || p == "/reload-config"
     {
         return false;
@@ -140,13 +162,43 @@ pub fn rbac_allow(method: &Method, path: &str, role: &str) -> bool {
         if p == "/client-keys" && *method == Method::POST {
             return true;
         }
+        if p == "/client-keys/bulk-status" && *method == Method::POST {
+            return true;
+        }
+        if p == "/client-keys/traffic-summary" && get {
+            return true;
+        }
         if p == "/client-keys/encrypted" && *method == Method::POST {
             return true;
         }
         if p.starts_with("/client-keys/") && *method == Method::DELETE {
             return true;
         }
+        if p.starts_with("/client-keys/") && *method == Method::PATCH {
+            return true;
+        }
+        if p.starts_with("/client-keys/") && get && p != "/client-keys/encrypted" {
+            return true;
+        }
+        if p.ends_with("/routes") && p.starts_with("/client-keys/") && (*method == Method::PUT || get) {
+            return true;
+        }
+        if p.ends_with("/rotate") && p.starts_with("/client-keys/") && *method == Method::POST {
+            return true;
+        }
+        if p.ends_with("/traffic") && p.starts_with("/client-keys/") && get {
+            return true;
+        }
+        if p == "/routes/acl-summary" && get {
+            return true;
+        }
+        if p.starts_with("/routes/") && p.ends_with("/clients") && get {
+            return true;
+        }
         return false;
+    }
+    if p == "/middleware/status" && get {
+        return true;
     }
     if get {
         return true;
@@ -283,11 +335,32 @@ pub async fn resolve_session_ctx(
     let now = session::now_unix_ts();
     let recheck = session::db_recheck_secs();
     if now.saturating_sub(rec.last_db_check) >= recheck {
-        match db::fetch_admin_user_by_id(pool, rec.user_id, rec.tenant_id).await {
+        match db::fetch_admin_user_by_id_any(pool, rec.user_id).await {
             Ok(Some(user)) if user.is_active != 0 => {
+                rec.normalize_legacy();
+                let home = user.tenant_id.unwrap_or(1);
+                rec.home_tenant_id = home;
                 rec.username = user.username;
-                rec.role = user.role;
-                rec.tenant_id = user.tenant_id.unwrap_or(1);
+                if on_prem_single_org() {
+                    rec.tenant_id = home;
+                    rec.role = user.role.clone();
+                } else {
+                    if !db::user_can_access_workspace(pool, rec.user_id, home, rec.tenant_id)
+                        .await
+                        .unwrap_or(false)
+                    {
+                        rec.tenant_id = home;
+                    }
+                    rec.role = db::effective_workspace_role(
+                        pool,
+                        rec.user_id,
+                        home,
+                        &user.role,
+                        rec.tenant_id,
+                    )
+                    .await
+                    .unwrap_or_else(|_| user.role.clone());
+                }
                 rec.last_db_check = now;
                 store.save(sid, &rec).await?;
             }
@@ -300,9 +373,11 @@ pub async fn resolve_session_ctx(
 
     store.touch(sid).await?;
 
+    rec.normalize_legacy();
     Ok(Some(AdminCtx {
         user_id: rec.user_id,
         username: rec.username,
+        home_tenant_id: rec.home_tenant_id,
         tenant_id: rec.tenant_id,
         role: rec.role,
         via_api_key: false,

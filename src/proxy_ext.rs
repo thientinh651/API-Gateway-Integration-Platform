@@ -1,4 +1,4 @@
-//! Request transform, upstream retry, in-memory DLQ (Document.docx optional extensions).
+//! Request transform, upstream retry, persistent DLQ (PostgreSQL) + background replay worker.
 
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -15,6 +15,10 @@ use crate::RouteRow;
 
 const MAX_QUEUE_ITEMS: usize = 500;
 const RETRY_BACKOFF_MS: u64 = 150;
+const DLQ_WORKER_INTERVAL_SECS: u64 = 60;
+const DLQ_WORKER_BATCH: i64 = 10;
+const DLQ_WORKER_MAX_AUTO_ATTEMPTS: u32 = 5;
+const DLQ_WORKER_DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExtensionToggles {
@@ -293,6 +297,32 @@ impl ProxyQueue {
             .map(|r| r.rows_affected() > 0)
             .unwrap_or(false)
     }
+
+    /// Oldest items across tenants — for background DLQ worker.
+    pub async fn list_oldest(&self, limit: i64) -> Vec<ProxyQueueItem> {
+        let rows = sqlx::query_as::<_, QueueRow>(
+            "SELECT id, tenant_id, route_id, method, path, upstream_url, headers_json, body_b64, failure_reason, retry_attempts, created_at_unix
+             FROM gateway_proxy_queue ORDER BY created_at ASC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+        rows.into_iter().filter_map(row_to_item).collect()
+    }
+
+    pub async fn update_attempts(&self, tenant_id: i64, id: &str, attempts: u32) -> bool {
+        sqlx::query(
+            "UPDATE gateway_proxy_queue SET retry_attempts = $3 WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant_id)
+        .bind(id)
+        .bind(attempts as i32)
+        .execute(&self.pool)
+        .await
+        .map(|r| r.rows_affected() > 0)
+        .unwrap_or(false)
+    }
 }
 
 fn now_unix() -> u64 {
@@ -459,6 +489,81 @@ pub async fn replay_queue_item(
         Err(UpstreamFailure::Timeout) => Err("upstream_timeout".into()),
         Err(UpstreamFailure::Connection(e)) => Err(e),
     }
+}
+
+async fn route_timeout_secs(pool: &PgPool, route_id: i64) -> u64 {
+    sqlx::query_scalar::<_, i32>("SELECT timeout_secs FROM gateway_routes WHERE id = $1")
+        .bind(route_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|t| t.max(1) as u64)
+        .unwrap_or(DLQ_WORKER_DEFAULT_TIMEOUT_SECS)
+}
+
+/// Background worker: tự replay DLQ khi `runtime_queue_enabled` bật (PostgreSQL-backed).
+pub fn spawn_dlq_replay_worker(pool: PgPool) {
+    if std::env::var("DLQ_WORKER_DISABLED")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        tracing::info!("DLQ auto-replay worker disabled (DLQ_WORKER_DISABLED)");
+        return;
+    }
+    tokio::spawn(async move {
+        let queue = ProxyQueue::new(pool.clone());
+        let http = Client::new();
+        let mut ticker = tokio::time::interval(Duration::from_secs(DLQ_WORKER_INTERVAL_SECS));
+        ticker.tick().await;
+        tracing::info!(
+            interval_secs = DLQ_WORKER_INTERVAL_SECS,
+            "DLQ auto-replay worker started (PostgreSQL queue)"
+        );
+        loop {
+            ticker.tick().await;
+            let queue_enabled = match crate::STATE.get() {
+                Some(st) => st.config.read().await.settings.extensions.queue_enabled,
+                None => false,
+            };
+            if !queue_enabled {
+                continue;
+            }
+            let items = queue.list_oldest(DLQ_WORKER_BATCH).await;
+            for item in items {
+                if item.retry_attempts >= DLQ_WORKER_MAX_AUTO_ATTEMPTS {
+                    continue;
+                }
+                let timeout = route_timeout_secs(&pool, item.route_id).await;
+                match replay_queue_item(&http, &item, timeout).await {
+                    Ok((status, _)) if status.is_success() => {
+                        let _ = queue.remove(item.tenant_id, &item.id).await;
+                        tracing::info!(queue_id = %item.id, "dlq_worker replay success");
+                    }
+                    Ok((status, _)) => {
+                        let next = item.retry_attempts + 1;
+                        let _ = queue.update_attempts(item.tenant_id, &item.id, next).await;
+                        tracing::warn!(
+                            queue_id = %item.id,
+                            status = status.as_u16(),
+                            attempts = next,
+                            "dlq_worker replay upstream failure"
+                        );
+                    }
+                    Err(e) => {
+                        let next = item.retry_attempts + 1;
+                        let _ = queue.update_attempts(item.tenant_id, &item.id, next).await;
+                        tracing::warn!(
+                            queue_id = %item.id,
+                            error = %e,
+                            attempts = next,
+                            "dlq_worker replay error"
+                        );
+                    }
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]

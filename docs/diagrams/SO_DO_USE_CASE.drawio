@@ -1,0 +1,113 @@
+<mxfile host="app.diagrams.net" agent="avaso-gateway" version="22.1.0" type="device">
+  <diagram id="so-do-use-case" name="2.3.3 Use case tong quat">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="780" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="Hình 2.3.3 — Biểu đồ use case tổng quát (khớp Hình 2.3.2)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=14;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="250" y="15" width="600" height="28" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="sys" value="Nền tảng API Gateway" style="swimlane;startSize=30;horizontal=1;fillColor=#ffffff;strokeColor=#000000;strokeWidth=2;fontStyle=1;fontSize=13;align=center;" vertex="1" parent="1">
+          <mxGeometry x="320" y="55" width="460" height="560" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="uc1" value="Quản trị hệ thống" style="ellipse;whiteSpace=wrap;html=1;strokeColor=#000000;fontSize=12;" vertex="1" parent="sys">
+          <mxGeometry x="130" y="50" width="200" height="55" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="uc2" value="Quản lý tuyến &amp; khách" style="ellipse;whiteSpace=wrap;html=1;strokeColor=#000000;fontSize=12;" vertex="1" parent="sys">
+          <mxGeometry x="130" y="150" width="200" height="55" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="uc3" value="Xử lý yêu cầu&#xa;(do Gateway thực hiện)" style="ellipse;whiteSpace=wrap;html=1;strokeColor=#000000;fillColor=#fff2cc;fontStyle=1;fontSize=12;" vertex="1" parent="sys">
+          <mxGeometry x="115" y="245" width="230" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="uc4" value="Kết nối mở rộng" style="ellipse;whiteSpace=wrap;html=1;strokeColor=#000000;dashed=1;dashPattern=8 8;fontSize=12;" vertex="1" parent="sys">
+          <mxGeometry x="130" y="350" width="200" height="55" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="uc5" value="Giám sát &amp; nhật ký" style="ellipse;whiteSpace=wrap;html=1;strokeColor=#000000;fontSize=12;" vertex="1" parent="sys">
+          <mxGeometry x="130" y="450" width="200" height="55" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="actor_client" value="Client hệ thống" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;strokeColor=#000000;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="150" y="300" width="40" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="actor_upstream" value="Hệ thống&#xa;upstream" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;strokeColor=#000000;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="150" y="430" width="40" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="actor_ext" value="Salesforce /&#xa;Zoho Projects" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;strokeColor=#000000;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="150" y="540" width="40" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="actor_admin" value="Quản trị viên&#xa;(Admin)" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;strokeColor=#000000;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="900" y="120" width="40" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="actor_operator" value="Vận hành viên&#xa;(Operator)" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;strokeColor=#000000;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="900" y="280" width="40" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="actor_viewer" value="Người xem&#xa;(Viewer)" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;strokeColor=#000000;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="900" y="440" width="40" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- Client KÍCH HOẠT — Gateway xử lý bên trong biên hệ thống -->
+        <mxCell id="a_c3" edge="1" parent="1" source="actor_client" target="uc3" style="endArrow=none;html=1;strokeColor=#000000;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="lbl_client" value="gửi yêu cầu" style="text;html=1;strokeColor=none;fillColor=none;fontSize=10;fontColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="200" y="295" width="80" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="a_u3" edge="1" parent="1" source="actor_upstream" target="uc3" style="endArrow=open;endFill=0;dashed=1;html=1;strokeColor=#666666;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="a_e4" edge="1" parent="1" source="actor_ext" target="uc4" style="endArrow=open;endFill=0;dashed=1;html=1;strokeColor=#666666;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Admin -->
+        <mxCell id="a_a1" edge="1" parent="1" source="actor_admin" target="uc1" style="endArrow=none;html=1;strokeColor=#000000;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="a_a2" edge="1" parent="1" source="actor_admin" target="uc2" style="endArrow=none;html=1;strokeColor=#000000;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="a_a4" edge="1" parent="1" source="actor_admin" target="uc4" style="endArrow=none;html=1;strokeColor=#000000;dashed=1;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="a_a5" edge="1" parent="1" source="actor_admin" target="uc5" style="endArrow=none;html=1;strokeColor=#000000;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Operator: vận hành, KHÔNG quản trị hệ thống -->
+        <mxCell id="a_o2" edge="1" parent="1" source="actor_operator" target="uc2" style="endArrow=none;html=1;strokeColor=#000000;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="a_o5" edge="1" parent="1" source="actor_operator" target="uc5" style="endArrow=none;html=1;strokeColor=#000000;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Viewer: KHÔNG nối UC quản trị/quản lý; chỉ xem dashboard (một phần UC5) -->
+        <mxCell id="a_v5" edge="1" parent="1" source="actor_viewer" target="uc5" style="endArrow=none;html=1;strokeColor=#666666;dashed=1;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="lbl_viewer" value="chỉ dashboard" style="text;html=1;strokeColor=none;fillColor=none;fontSize=10;fontColor=#666666;fontStyle=2" vertex="1" parent="1">
+          <mxGeometry x="820" y="500" width="90" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="note" value="Use case nằm TRONG biên hệ thống = Gateway thực hiện. Client chỉ gửi yêu cầu (kích hoạt).&#xa;Viewer không quản trị, không quản lý tuyến/client, không xem nhật ký chi tiết (khớp rbac_allow)." style="text;html=1;strokeColor=#cccccc;fillColor=#fafafa;align=left;verticalAlign=top;fontSize=10;spacingLeft=6;spacingTop=4;" vertex="1" parent="1">
+          <mxGeometry x="320" y="630" width="460" height="50" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

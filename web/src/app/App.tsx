@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
 import { AppToaster } from './components/AppToaster';
+import { ToastNavigateBridge } from './components/ToastNavigateBridge';
 import { AdminAuthProvider } from '../contexts/AdminAuthContext';
 import { MainLayout } from './components/layout/MainLayout';
 import { Overview } from './pages/Overview';
@@ -23,6 +24,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <AdminAuthProvider>
+        <ToastNavigateBridge />
         <AppToaster
           dir="ltr"
           position="top-right"

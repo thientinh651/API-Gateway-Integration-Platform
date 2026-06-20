@@ -1,19 +1,23 @@
 import { Button } from '../../components/ui/button';
 import { Card } from '../../components/ui/card';
 import { ConfirmDangerButton } from '../../components/forms/ConfirmDangerButton';
-import { Edit, RefreshCw, Trash2 } from 'lucide-react';
+import { Edit, RefreshCw, Trash2, Users } from 'lucide-react';
+import type { RouteAclSummaryRow } from '../../../lib/api';
 import type { UiRoute } from './routeTypes';
 
 type Props = {
   routes: UiRoute[];
+  aclSummary: RouteAclSummaryRow[];
   loading: boolean;
   error: string | null;
   onReload: () => void;
   onEdit?: (route: UiRoute) => void;
   onDelete?: (id: string) => void;
+  onViewAcl?: (route: UiRoute) => void;
 };
 
-export function RoutesTable({ routes, loading, error, onReload, onEdit, onDelete }: Props) {
+export function RoutesTable({ routes, aclSummary, loading, error, onReload, onEdit, onDelete, onViewAcl }: Props) {
+  const aclMap = new Map(aclSummary.map((a) => [a.route_id, a]));
   return (
     <Card className="rounded-2xl overflow-hidden bg-card/80 backdrop-blur-sm border-border">
       <div className="p-6 border-b border-border flex justify-between items-center flex-wrap gap-2">
@@ -40,13 +44,14 @@ export function RoutesTable({ routes, loading, error, onReload, onEdit, onDelete
               <th className="px-6 py-4">Upstream</th>
               <th className="px-6 py-4">Timeout</th>
               <th className="px-6 py-4">Rate limit</th>
+              <th className="px-6 py-4">Client ACL</th>
               <th className="px-6 py-4 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="text-sm">
             {loading ? (
               <tr className="border-b border-border/50">
-                <td className="px-6 py-4 text-muted-foreground" colSpan={5}>
+                <td className="px-6 py-4 text-muted-foreground" colSpan={6}>
                   Đang tải…
                 </td>
               </tr>
@@ -58,6 +63,25 @@ export function RoutesTable({ routes, loading, error, onReload, onEdit, onDelete
                   <td className="px-6 py-4 text-slate-400">{route.timeout}s</td>
                   <td className="px-6 py-4 text-slate-400">
                     {route.rateLimit > 0 ? `${route.rateLimit}/min` : 'config.yaml'}
+                  </td>
+                  <td className="px-6 py-4 text-xs text-slate-400 max-w-[140px]">
+                    {(() => {
+                      const acl = aclMap.get(Number(route.id));
+                      if (!acl || acl.client_count === 0) {
+                        return <span className="text-muted-foreground">Mọi client tenant</span>;
+                      }
+                      return (
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 text-sky-400 hover:underline"
+                          title={acl.client_names.join(', ')}
+                          onClick={() => onViewAcl?.(route)}
+                        >
+                          <Users className="w-3 h-3" />
+                          {acl.client_count} client
+                        </button>
+                      );
+                    })()}
                   </td>
                   <td className="px-6 py-4 text-right">
                     {onEdit || onDelete ? (

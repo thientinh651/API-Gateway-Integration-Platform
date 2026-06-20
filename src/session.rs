@@ -40,11 +40,23 @@ pub fn now_unix_ts() -> i64 {
 pub struct SessionRecord {
     pub user_id: i64,
     pub username: String,
+    /// Workspace sở hữu (tenant cá nhân).
+    #[serde(default)]
+    pub home_tenant_id: i64,
+    /// Workspace đang thao tác (active) — tương thích field cũ `tenant_id`.
     pub tenant_id: i64,
     pub role: String,
     /// Unix timestamp — lần cuối đối chiếu dashboard_users.
     #[serde(default)]
     pub last_db_check: i64,
+}
+
+impl SessionRecord {
+    pub fn normalize_legacy(&mut self) {
+        if self.home_tenant_id <= 0 {
+            self.home_tenant_id = self.tenant_id;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,10 +132,12 @@ impl SessionStore {
         let Some(json) = raw else {
             return Ok(None);
         };
-        serde_json::from_str(&json).map(Some).map_err(|e| {
+        let mut rec: SessionRecord = serde_json::from_str(&json).map_err(|e| {
             error!(error = %e, "session json corrupt");
             SessionError::InvalidData
-        })
+        })?;
+        rec.normalize_legacy();
+        Ok(Some(rec))
     }
 
     async fn set_raw(&self, sid: &str, record: &SessionRecord) -> Result<(), SessionError> {
@@ -281,6 +295,7 @@ mod tests {
             user_id: 1,
             username: "admin".into(),
             tenant_id: 1,
+            home_tenant_id: 1,
             role: "admin".into(),
             last_db_check: 1_700_000_000,
         };

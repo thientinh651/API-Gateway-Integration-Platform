@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import {
   Plug,
@@ -48,6 +48,9 @@ import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { IntegrationBridge } from './integrations/IntegrationBridge';
+import { TransformEngine } from './integrations/TransformEngine';
+import { IntegrationOffice } from './integrations/IntegrationOffice';
+import { OpportunityTemplates } from './integrations/OpportunityTemplates';
 
 type ProviderKind = 'salesforce' | 'zoho_projects';
 type FieldErrors = Record<string, string>;
@@ -378,7 +381,7 @@ function IntegrationsAdmin() {
   const toastBridgeAfterSync = (bridge?: { status: string; records?: number; reason?: string }) => {
     if (!bridge) return;
     if (bridge.status === 'ok' && bridge.records != null) {
-      toast.message(`Bridge: ${bridge.records} Opportunity SF đã map (nguồn Salesforce)`);
+      toast.message(`Bridge: ${bridge.records} Opportunity SF đã map`);
     }
   };
 
@@ -417,9 +420,13 @@ function IntegrationsAdmin() {
     try {
       const res = await integrationSyncNow();
       const push = res.push;
-      toast.success(
-        `Đồng bộ xong: SF ${res.salesforce.account} accounts → Zoho tạo ${push.created} dự án (${push.skipped} bỏ qua)`
-      );
+      if (push?.status === 'skipped' && push?.reason === 'need_both_connected') {
+        toast.message('Đã sync Salesforce — kết nối Zoho Projects để đẩy dự án');
+      } else {
+        toast.success(
+          `Đồng bộ xong: SF ${res.salesforce.account} accounts → Zoho tạo ${push.created ?? 0} dự án (${push.skipped ?? 0} bỏ qua)`
+        );
+      }
       toastBridgeAfterSync(res.bridge);
       await load();
     } catch (e) {
@@ -691,7 +698,7 @@ function IntegrationsAdmin() {
   const renderConnectedCard = (kind: ProviderKind, row: IntegrationRow) => {
     const meta = PROVIDER_META[kind];
     return (
-      <Card key={kind} className="p-6 bg-card/80 border-border">
+      <Card key={kind} id={kind === 'salesforce' ? 'section-salesforce' : 'section-zoho'} className="p-6 bg-card/80 border-border scroll-mt-24">
         <div className="flex items-start justify-between gap-4 mb-4">
           <div className="flex items-start gap-3 min-w-0">
             <div className="p-2 rounded-lg bg-primary/10 shrink-0">
@@ -846,22 +853,16 @@ function IntegrationsAdmin() {
       </div>
 
       {!loading && inDemoMode ? (
-        <Card className="mb-6 p-4 border-amber-500/40 bg-amber-500/10 text-sm text-amber-100">
-          <p className="font-semibold text-amber-300 mb-1">Đang chạy chế độ demo</p>
-          <p className="text-xs leading-relaxed text-amber-100/90">
-            Log <code className="text-amber-200">[demo]</code> chỉ ghi vào Gateway —{' '}
-            <strong>không tạo dự án trên Zoho thật</strong> (portal{' '}
-            <code className="text-amber-200">thientinh651gmaildotcom</code>). Ngắt kết nối →
-            Kết nối OAuth thật → Xóa link cũ → Sync Now.
-          </p>
+        <Card className="mb-6 p-3 border-red-500/40 bg-red-500/10 text-sm text-red-200">
+          <p className="font-medium text-red-300">Token demo</p>
           {isAdmin ? (
             <Button
               variant="outline"
               size="sm"
-              className="mt-3 border-amber-500/40"
+              className="mt-3 border-red-500/40"
               onClick={() => void handleResetSync()}
             >
-              Xóa link đồng bộ demo
+              Xóa link đồng bộ cũ
             </Button>
           ) : null}
         </Card>
@@ -880,14 +881,31 @@ function IntegrationsAdmin() {
           {zoho?.status !== 'connected' ? renderConnectPrompt('zoho_projects') : null}
 
           {showBridge ? (
-            <Card className="p-6 bg-card/80 border-border">
-              <IntegrationBridge
+            <>
+              <OpportunityTemplates isAdmin={isAdmin} />
+              <TransformEngine
+                isAdmin={isAdmin}
+                sfConnected={sf?.status === 'connected'}
+                zohoConnected={zoho?.status === 'connected'}
+                sfSyncKey={sf?.last_sync_at}
+              />
+              <Card id="section-integration-bridge" className="p-6 bg-card/80 border-border scroll-mt-24">
+                <IntegrationBridge
                 isAdmin={isAdmin}
                 sfConnected={sf?.status === 'connected'}
                 zohoConnected={zoho?.status === 'connected'}
                 onApplied={() => void load()}
               />
             </Card>
+            </>
+          ) : null}
+
+          {isAdmin ? (
+            <IntegrationOffice
+              isAdmin={isAdmin}
+              sfConnected={sf?.status === 'connected'}
+              zohoConnected={zoho?.status === 'connected'}
+            />
           ) : null}
         </div>
       )}
@@ -900,8 +918,8 @@ function IntegrationsAdmin() {
       ) : null}
 
       {!loading && syncLogs.length > 0 ? (
-        <Card className="mt-6 p-4 bg-slate-950 border-border">
-          <h3 className="text-sm font-bold text-white mb-3">Nhật ký đồng bộ</h3>
+        <Card className="mt-6 p-4 bg-slate-950 border-border scroll-mt-24" id="section-sync-logs">
+          <h3 className="text-sm font-bold text-white mb-3">Nhật ký đồng bộ middleware</h3>
           <div className="space-y-2 max-h-64 overflow-auto">
             {syncLogs.map((log) => (
               <div
@@ -915,7 +933,11 @@ function IntegrationsAdmin() {
                         ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                         : log.status === 'FAILED'
                           ? 'bg-red-500/10 text-red-400 border-red-500/20'
-                          : 'bg-slate-500/10 text-slate-400 border-slate-500/20'
+                          : log.status === 'SKIPPED'
+                            ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                            : log.status === 'RETRY'
+                              ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
+                              : 'bg-slate-500/10 text-slate-400 border-slate-500/20'
                     }
                   >
                     {log.status}
@@ -949,19 +971,6 @@ function IntegrationsAdmin() {
         </Card>
       ) : null}
 
-      {!loading && (sf?.status === 'connected' || zoho?.status === 'connected') ? (
-        <Card className="mt-6 p-4 border-primary/20 bg-primary/5 text-sm text-slate-200">
-          <h3 className="font-semibold text-white mb-2">Data plane</h3>
-          <ul className="text-xs space-y-1 font-mono">
-            <li>
-              <code>GET /v1/api/sf/limits</code>
-            </li>
-            <li>
-              <code>GET /v1/api/zoho/api/v3/portals</code>
-            </li>
-          </ul>
-        </Card>
-      ) : null}
     </>
   );
 }

@@ -15,13 +15,42 @@ export function apiUrl(path: string): string {
   return o ? `${o}${p}` : p;
 }
 
+export type WorkspaceInfo = {
+  tenant_id: number;
+  name: string;
+  role: string;
+  is_home: boolean;
+};
+
 export type AdminMe = {
   username: string;
   email?: string | null;
   role?: string;
   tenant_id?: number;
+  home_tenant_id?: number;
   user_id?: number;
+  workspaces?: WorkspaceInfo[];
 };
+
+export async function switchWorkspace(tenantId: number): Promise<{ status: string; tenant_id: number; role: string }> {
+  return fetchJson('/api/workspace/switch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tenant_id: tenantId }),
+  });
+}
+
+export async function inviteWorkspaceMember(body: { username: string; role: string }): Promise<{ status: string }> {
+  return fetchJson('/api/workspace/members', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function removeWorkspaceMember(userId: number): Promise<void> {
+  return fetchOk(`/api/workspace/members/${userId}`, { method: 'DELETE' });
+}
 
 export async function adminMe(): Promise<AdminMe> {
   return fetchJson<AdminMe>('/api/me');
@@ -167,7 +196,7 @@ export async function fetchJson<T>(input: string, init?: RequestInit): Promise<T
   const r = await fetch(apiUrl(input), adminFetchInit(init));
   const t = await r.text().catch(() => '');
   if (!r.ok) {
-    const err = parseApiError(r.status, t);
+    const err = parseApiError(r.status, t, input);
     if (r.status === 401 && shouldForceLogout(input)) {
       forceLogoutOnSessionExpired();
     }
@@ -177,7 +206,7 @@ export async function fetchJson<T>(input: string, init?: RequestInit): Promise<T
   try {
     return JSON.parse(t) as T;
   } catch {
-    throw new ApiClientError(r.status, 'invalid_json', `HTTP ${r.status}: body không phải JSON`);
+    throw new ApiClientError(r.status, 'invalid_json', `HTTP ${r.status}: body không phải JSON`, undefined, input);
   }
 }
 
@@ -185,7 +214,7 @@ export async function fetchOk(input: string, init?: RequestInit): Promise<void> 
   const r = await fetch(apiUrl(input), adminFetchInit(init));
   if (!r.ok) {
     const t = await r.text().catch(() => '');
-    const err = parseApiError(r.status, t);
+    const err = parseApiError(r.status, t, input);
     if (r.status === 401 && shouldForceLogout(input)) {
       forceLogoutOnSessionExpired();
     }
@@ -243,6 +272,22 @@ export type ClientKeyMeta = {
   auth_mode: string;
   integration_type: string;
   tenant_id: number;
+  status: string;
+  rate_limit_per_min: number;
+  allowed_route_ids: number[];
+  last_used_at: string | null;
+};
+
+export type RouteAclSummaryRow = {
+  route_id: number;
+  client_count: number;
+  client_names: string[];
+};
+
+export type RouteAclClientRow = {
+  id: number;
+  name: string;
+  status: string;
 };
 
 export function fetchClientKeys(): Promise<ClientKeyMeta[]> {
@@ -262,12 +307,19 @@ export type CreateClientKeyResponse = {
 
 export async function createClientKey(
   name: string,
-  integrationType: string
+  integrationType: string,
+  rateLimitPerMin = 0,
+  routeIds: number[] = []
 ): Promise<CreateClientKeyResponse> {
   return fetchJson<CreateClientKeyResponse>('/api/client-keys', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, integration_type: integrationType }),
+    body: JSON.stringify({
+      name,
+      integration_type: integrationType,
+      rate_limit_per_min: rateLimitPerMin,
+      route_ids: routeIds,
+    }),
   });
 }
 
@@ -391,6 +443,7 @@ export type TransactionLogRow = {
   duration_ms: number;
   client_ip: string | null;
   api_key_masked: string | null;
+  client_key_id: number | null;
   outcome: string;
   reason: string;
   upstream: string | null;
@@ -403,6 +456,18 @@ export type TransactionLogsQuery = {
   status?: 'all' | '2xx' | '4xx' | '5xx';
   outcome?: 'all' | 'success' | 'failure';
   search?: string;
+  reason?: string;
+  client_key_id?: number;
+};
+
+export type ClientKeyTrafficStats = {
+  hours: number;
+  total: number;
+  success: number;
+  denied: number;
+  upstream_error: number;
+  avg_duration_ms: number;
+  top_paths: [string, number][];
 };
 
 export function fetchTransactionLogs(q?: TransactionLogsQuery): Promise<TransactionLogRow[]> {
@@ -412,6 +477,8 @@ export function fetchTransactionLogs(q?: TransactionLogsQuery): Promise<Transact
   if (q?.status && q.status !== 'all') params.set('status', q.status);
   if (q?.outcome && q.outcome !== 'all') params.set('outcome', q.outcome);
   if (q?.search?.trim()) params.set('search', q.search.trim());
+  if (q?.reason && q.reason !== 'all') params.set('reason', q.reason);
+  if (q?.client_key_id) params.set('client_key_id', String(q.client_key_id));
   const qs = params.toString();
   return fetchJson<TransactionLogRow[]>(`/api/transaction-logs${qs ? `?${qs}` : ''}`);
 }
@@ -569,19 +636,97 @@ export type SyncNowResult = {
   };
   bridge: IntegrationBridgeRunResult;
   push: {
-    created: number;
-    skipped: number;
+    status?: string;
+    created?: number;
+    skipped?: number;
     tasks_created?: number;
+    documents_created?: number;
+    office_integrator?: boolean;
     demo?: boolean;
     reason?: string;
+    message?: string;
   };
 };
+
+export type EntityLinkRow = {
+  sf_entity_type: string;
+  sf_id: string;
+  zoho_id: string;
+  zoho_name: string | null;
+  last_synced_at: string;
+  document_id: number | null;
+  document_filename: string | null;
+};
+
+export function fetchEntityLinks(): Promise<EntityLinkRow[]> {
+  return fetchJson<EntityLinkRow[]>('/api/integrations/entity-links');
+}
+
+export type IntegrationDocumentRow = {
+  id: number;
+  sf_entity_type: string;
+  sf_id: string;
+  zoho_project_id: string | null;
+  filename: string;
+  content_type: string;
+  file_size: number;
+  source_provider: string;
+  created_at: string;
+};
+
+export function fetchIntegrationDocuments(): Promise<IntegrationDocumentRow[]> {
+  return fetchJson<IntegrationDocumentRow[]>('/api/integrations/documents');
+}
+
+export function integrationDocumentDownloadUrl(id: number): string {
+  return apiUrl(`/api/integrations/documents/${id}/download`);
+}
+
+export type ZohoOfficeConfigPublic = {
+  api_domain: string;
+  template_path: string;
+  enabled: boolean;
+  has_api_key: boolean;
+  api_key_masked?: string | null;
+  updated_by?: string | null;
+  updated_at?: string | null;
+};
+
+export function fetchOfficeConfig(): Promise<ZohoOfficeConfigPublic> {
+  return fetchJson<ZohoOfficeConfigPublic>('/api/integrations/office/config');
+}
+
+export function updateOfficeConfig(body: {
+  api_key: string;
+  api_domain: string;
+  template_path: string;
+  enabled: boolean;
+}): Promise<ZohoOfficeConfigPublic> {
+  return fetchJson<ZohoOfficeConfigPublic>('/api/integrations/office/config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export function officeIntegratorTest(): Promise<{
+  status: string;
+  provider: string;
+  template: string;
+  pdf_bytes: number;
+}> {
+  return fetchJson('/api/integrations/office/test');
+}
 
 export function integrationSyncNow(): Promise<SyncNowResult> {
   return fetchJson<SyncNowResult>('/api/integrations/sync-now', { method: 'POST' });
 }
 
-export function resetIntegrationSync(): Promise<{ status: string; entity_links_deleted: number }> {
+export function resetIntegrationSync(): Promise<{
+  status: string;
+  entity_links_deleted: number;
+  documents_deleted?: number;
+}> {
   return fetchJson('/api/integrations/reset-sync', { method: 'POST' });
 }
 
@@ -674,9 +819,42 @@ export function fetchIntegrationSnapshots(provider?: string): Promise<Integratio
   return fetchJson<IntegrationSnapshotSummary[]>(`/api/integrations/snapshots${q}`);
 }
 
+export type SnapshotContactRow = {
+  id: string;
+  name?: string;
+  email?: string;
+  account_id?: string;
+  url?: string;
+};
+
+export type SnapshotRecordsResponse = {
+  provider: string;
+  entity_type: string;
+  fetched_at: string | null;
+  record_count: number;
+  records: SnapshotContactRow[];
+  hint?: string;
+};
+
+export function fetchSnapshotRecords(
+  provider = 'salesforce',
+  entityType = 'contact',
+): Promise<SnapshotRecordsResponse> {
+  const q = new URLSearchParams({
+    provider,
+    entity_type: entityType,
+  });
+  return fetchJson<SnapshotRecordsResponse>(`/api/integrations/snapshots/records?${q}`);
+}
+
 export type DashboardStats = {
   routes_count: number;
   client_keys_count: number;
+  client_registry: {
+    total: number;
+    active: number;
+    disabled: number;
+  };
   traffic_24h: {
     total: number;
     success: number;
@@ -689,6 +867,8 @@ export type DashboardStats = {
   traffic_hourly: Array<{ label: string; count: number }>;
   traffic_top_paths: Array<{ label: string; count: number }>;
   traffic_methods: Array<{ label: string; count: number }>;
+  traffic_denial_reasons: Array<{ label: string; count: number }>;
+  client_traffic_top: Array<{ client_key_id: number; name: string; total: number }>;
   audit_24h: { total: number; success: number; failure: number };
   audit_top_actions: Array<{ label: string; count: number }>;
   audit_hourly: Array<{ label: string; count: number }>;
@@ -713,6 +893,100 @@ export type DashboardStats = {
 
 export function fetchDashboardStats(): Promise<DashboardStats> {
   return fetchJson<DashboardStats>('/api/dashboard/stats');
+}
+
+export type MiddlewareStatus = {
+  data_plane_prefix: string;
+  client_registry: { total: number; active: number; disabled: number };
+  routes_count: number;
+  hmac_clients_loaded: number;
+  rate_limit_global_enabled: boolean;
+  rate_limit_global_rps: number;
+  integration_platform?: {
+    transform_engine: string;
+    canonical_entities: string[];
+    connectors: string[];
+    dlq_storage: string;
+    dlq_auto_replay_worker: boolean;
+    bridge_enabled: boolean;
+  };
+};
+
+export type TransformProfile = {
+  engine: string;
+  entities: string[];
+  contact?: {
+    canonical: Record<string, string>;
+    example?: {
+      salesforce_in: Record<string, string>;
+      canonical: Record<string, string>;
+      zoho_projects_out: Record<string, string>;
+    };
+  };
+};
+
+export type OpportunityTemplateRule = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  keywords: string[];
+  tasks: string[];
+};
+
+export type OpportunityTemplateConfig = {
+  enabled: boolean;
+  rules: OpportunityTemplateRule[];
+  fallback_tasks: string[];
+  updated_by?: string | null;
+  updated_at?: string | null;
+};
+
+export function fetchOpportunityTemplates(): Promise<OpportunityTemplateConfig> {
+  return fetchJson<OpportunityTemplateConfig>('/api/integrations/opportunity-templates');
+}
+
+export function updateOpportunityTemplates(body: OpportunityTemplateConfig): Promise<OpportunityTemplateConfig> {
+  return fetchJson<OpportunityTemplateConfig>('/api/integrations/opportunity-templates', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export function fetchTransformProfile(): Promise<TransformProfile> {
+  return fetchJson<TransformProfile>('/api/integrations/transform/profile');
+}
+
+export function previewTransform(body: {
+  provider: string;
+  entity: string;
+  payload: Record<string, unknown>;
+}): Promise<{ canonical: Record<string, unknown> }> {
+  return fetchJson('/api/integrations/transform/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export function syncContactSfToZoho(body: {
+  salesforce_contact_id: string;
+  zoho_project_id?: string;
+}): Promise<{
+  status: string;
+  canonical: Record<string, unknown>;
+  salesforce: { id: string; raw?: Record<string, unknown> };
+  zoho: { project_id: string; request?: Record<string, unknown>; response?: Record<string, unknown> };
+}> {
+  return fetchJson('/api/integrations/transform/sync-contact', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export function fetchMiddlewareStatus(): Promise<MiddlewareStatus> {
+  return fetchJson<MiddlewareStatus>('/api/middleware/status');
 }
 
 export async function zohoDisconnect(): Promise<void> {
@@ -774,4 +1048,78 @@ export async function zohoTasks(projectId: string): Promise<{
 
 export async function deleteClientKey(id: number): Promise<void> {
   return fetchOk(`/api/client-keys/${id}`, { method: 'DELETE' });
+}
+
+export async function patchClientKey(
+  id: number,
+  body: { status?: 'active' | 'disabled'; rate_limit_per_min?: number }
+): Promise<void> {
+  return fetchOk(`/api/client-keys/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function bulkPatchClientKeyStatus(
+  ids: number[],
+  status: 'active' | 'disabled',
+): Promise<{ updated: number }> {
+  return fetchJson<{ updated: number }>('/api/client-keys/bulk-status', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids, status }),
+  });
+}
+
+export async function putClientKeyRoutes(id: number, routeIds: number[]): Promise<{ route_ids: number[] }> {
+  return fetchJson<{ route_ids: number[] }>(`/api/client-keys/${id}/routes`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ route_ids: routeIds }),
+  });
+}
+
+export function fetchClientKey(id: number): Promise<ClientKeyMeta> {
+  return fetchJson<ClientKeyMeta>(`/api/client-keys/${id}`);
+}
+
+export function fetchClientKeyTraffic(
+  id: number,
+  hours = 24,
+): Promise<ClientKeyTrafficStats> {
+  return fetchJson<ClientKeyTrafficStats>(`/api/client-keys/${id}/traffic?hours=${hours}`);
+}
+
+export type ClientKeyTrafficSummaryRow = {
+  client_key_id: number;
+  total: number;
+};
+
+export function fetchClientKeysTrafficSummary(): Promise<ClientKeyTrafficSummaryRow[]> {
+  return fetchJson<ClientKeyTrafficSummaryRow[]>('/api/client-keys/traffic-summary');
+}
+
+export function fetchClientKeyRoutes(id: number): Promise<{ route_ids: number[] }> {
+  return fetchJson<{ route_ids: number[] }>(`/api/client-keys/${id}/routes`);
+}
+
+export function fetchRoutesAclSummary(): Promise<RouteAclSummaryRow[]> {
+  return fetchJson<RouteAclSummaryRow[]>('/api/routes/acl-summary');
+}
+
+export function fetchRouteClients(routeId: number): Promise<RouteAclClientRow[]> {
+  return fetchJson<RouteAclClientRow[]>(`/api/routes/${routeId}/clients`);
+}
+
+export type RotateClientKeyResponse = {
+  api_key: string;
+  secret_key: string;
+  auth: string;
+};
+
+export function rotateClientKey(id: number): Promise<RotateClientKeyResponse> {
+  return fetchJson<RotateClientKeyResponse>(`/api/client-keys/${id}/rotate`, {
+    method: 'POST',
+  });
 }

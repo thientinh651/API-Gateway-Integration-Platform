@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { Link } from 'react-router';
+import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { AdminOnly } from '../components/auth/AdminOnly';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
@@ -7,12 +8,16 @@ import { useGatewayRoutes } from '../../hooks/useGatewayRoutes';
 import {
   createGatewayRoute,
   deleteGatewayRoute,
+  fetchRoutesAclSummary,
   updateGatewayRoute,
+  type RouteAclSummaryRow,
 } from '../../lib/api';
 import { toastApiError } from '../../lib/apiClientError';
 import { handleFormApiError } from '../../lib/formValidation';
+import { parseDefaultNumber } from '../../lib/zeroDefaultNumberInput';
 import { RouteFormDialog, type RouteFormState } from './routes/RouteFormDialog';
 import { RoutesTable } from './routes/RoutesTable';
+import { RouteClientsSheet } from './routes/RouteClientsSheet';
 import type { UiRoute } from './routes/routeTypes';
 
 const emptyForm = (): RouteFormState => ({
@@ -28,17 +33,30 @@ const emptyForm = (): RouteFormState => ({
   queueOnFailure: false,
 });
 
-function parseRouteNumbers(form: RouteFormState): { timeout_secs: number; rate_limit_per_min: number } {
-  const timeout_secs = Number.parseInt(form.timeout.trim(), 10);
-  const rate_limit_per_min = Number.parseInt(form.rateLimit.trim(), 10);
+type RouteNumericDefaults = Pick<RouteFormState, 'timeout' | 'rateLimit' | 'retryMax'>;
+
+function routeNumericDefaults(form: RouteFormState): RouteNumericDefaults {
+  return {
+    timeout: form.timeout,
+    rateLimit: form.rateLimit,
+    retryMax: form.retryMax,
+  };
+}
+
+function parseRouteNumbers(
+  form: RouteFormState,
+  defaults: RouteNumericDefaults,
+): { timeout_secs: number; rate_limit_per_min: number } {
+  const timeout_secs = Number.parseInt(parseDefaultNumber(form.timeout, defaults.timeout), 10);
+  const rate_limit_per_min = Number.parseInt(parseDefaultNumber(form.rateLimit, defaults.rateLimit), 10);
   return {
     timeout_secs: Number.isFinite(timeout_secs) ? timeout_secs : NaN,
     rate_limit_per_min: Number.isFinite(rate_limit_per_min) ? rate_limit_per_min : NaN,
   };
 }
 
-function routeBodyFromForm(form: RouteFormState) {
-  const { timeout_secs, rate_limit_per_min } = parseRouteNumbers(form);
+function routeBodyFromForm(form: RouteFormState, defaults: RouteNumericDefaults) {
+  const { timeout_secs, rate_limit_per_min } = parseRouteNumbers(form, defaults);
   return {
     path: form.path.trim(),
     target: form.upstream.trim(),
@@ -46,7 +64,7 @@ function routeBodyFromForm(form: RouteFormState) {
     rate_limit_per_min,
     transform_add_headers: form.transformAddHeaders.trim() || '{}',
     transform_remove_headers: form.transformRemoveHeaders.trim() || '[]',
-    retry_max: Number.parseInt(form.retryMax.trim(), 10) || 0,
+    retry_max: Number.parseInt(parseDefaultNumber(form.retryMax, defaults.retryMax), 10) || 0,
     retry_on_status: form.retryOnStatus.trim() || '502,503,504',
     retry_on_timeout: form.retryOnTimeout ? 1 : 0,
     queue_on_failure: form.queueOnFailure,
@@ -59,19 +77,42 @@ function RoutesAdmin() {
   const allowUpdate = canUpdateRoute(user);
   const allowDelete = canDeleteRoute(user);
   const { routes, loading, error, reload } = useGatewayRoutes(!!user);
+  const [aclSummary, setAclSummary] = useState<RouteAclSummaryRow[]>([]);
+
+  const loadAcl = useCallback(async () => {
+    try {
+      const rows = await fetchRoutesAclSummary();
+      setAclSummary(rows);
+    } catch {
+      setAclSummary([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (user) void loadAcl();
+  }, [user, loadAcl, routes.length]);
   const [isOpen, setIsOpen] = useState(false);
   const [editingRoute, setEditingRoute] = useState<UiRoute | null>(null);
+  const [aclRoute, setAclRoute] = useState<UiRoute | null>(null);
+  const [aclOpen, setAclOpen] = useState(false);
   const [formData, setFormData] = useState<RouteFormState>(emptyForm());
+  const [formNumericDefaults, setFormNumericDefaults] = useState<RouteNumericDefaults>(() =>
+    routeNumericDefaults(emptyForm()),
+  );
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
 
   const resetForm = () => {
-    setFormData(emptyForm());
+    const empty = emptyForm();
+    setFormData(empty);
+    setFormNumericDefaults(routeNumericDefaults(empty));
   };
 
   const handleDialogChange = (open: boolean) => {
     setIsOpen(open);
-    if (!open) {
+    if (open) {
+      setFormNumericDefaults(routeNumericDefaults(formData));
+    } else {
       setEditingRoute(null);
       resetForm();
       setFieldErrors({});
@@ -90,7 +131,7 @@ function RoutesAdmin() {
   const handleCreate = async () => {
     setSaving(true);
     try {
-      await createGatewayRoute(routeBodyFromForm(formData));
+      await createGatewayRoute(routeBodyFromForm(formData, formNumericDefaults));
       await reload();
       setIsOpen(false);
       resetForm();
@@ -107,7 +148,7 @@ function RoutesAdmin() {
     if (!editingRoute) return;
     setSaving(true);
     try {
-      await updateGatewayRoute(Number(editingRoute.id), routeBodyFromForm(formData));
+      await updateGatewayRoute(Number(editingRoute.id), routeBodyFromForm(formData, formNumericDefaults));
       await reload();
       setIsOpen(false);
       setEditingRoute(null);
@@ -133,7 +174,7 @@ function RoutesAdmin() {
 
   const handleEdit = (route: UiRoute) => {
     setEditingRoute(route);
-    setFormData({
+    const fd: RouteFormState = {
       path: route.path,
       upstream: route.upstream,
       timeout: String(route.timeout),
@@ -144,7 +185,9 @@ function RoutesAdmin() {
       retryOnStatus: route.retryOnStatus,
       retryOnTimeout: route.retryOnTimeout,
       queueOnFailure: route.queueOnFailure,
-    });
+    };
+    setFormData(fd);
+    setFormNumericDefaults(routeNumericDefaults(fd));
     setIsOpen(true);
   };
 
@@ -161,8 +204,14 @@ function RoutesAdmin() {
   return (
     <>
       <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
-        <div>
+        <div className="max-w-2xl">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-violet-400 mb-1">
+            Middleware — Routing layer
+          </p>
           <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Quản lý Routes</h1>
+              <Link to="/auth" className="text-primary hover:underline">
+              Client Registry
+            </Link>
         </div>
         {(allowCreate || allowUpdate) && (
           <RouteFormDialog
@@ -189,12 +238,19 @@ function RoutesAdmin() {
 
       <RoutesTable
         routes={routes}
+        aclSummary={aclSummary}
         loading={loading}
         error={error}
         onReload={reload}
         onEdit={allowUpdate ? handleEdit : undefined}
         onDelete={allowDelete ? (id) => void handleDelete(id) : undefined}
+        onViewAcl={(route) => {
+          setAclRoute(route);
+          setAclOpen(true);
+        }}
       />
+
+      <RouteClientsSheet route={aclRoute} open={aclOpen} onOpenChange={setAclOpen} />
     </>
   );
 }

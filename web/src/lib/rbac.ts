@@ -38,7 +38,7 @@ export function rbacAllow(method: HttpMethod, path: string, role?: string): bool
     ) {
       return false;
     }
-    return get && (p === '/routes' || p.startsWith('/routes/') || p === '/dashboard/stats' || p === '/me' || p === '/ping');
+    return get && (p === '/routes' || p.startsWith('/routes/') || p === '/dashboard/stats' || p === '/middleware/status' || p === '/me' || p === '/ping');
   }
 
   // operator — không users/settings/integrations
@@ -57,8 +57,17 @@ export function rbacAllow(method: HttpMethod, path: string, role?: string): bool
     if (p === '/crypto/public-key' && get) return true;
     if (p === '/client-keys' && get) return true;
     if (p === '/client-keys' && m === 'POST') return true;
+    if (p === '/client-keys/bulk-status' && m === 'POST') return true;
+    if (p === '/client-keys/traffic-summary' && m === 'GET') return true;
     if (p === '/client-keys/encrypted' && m === 'POST') return true;
     if (p.startsWith('/client-keys/') && m === 'DELETE') return true;
+    if (p.startsWith('/client-keys/') && m === 'PATCH') return true;
+    if (p.startsWith('/client-keys/') && m === 'GET' && p !== '/client-keys') return true;
+    if (p.startsWith('/client-keys/') && p.endsWith('/routes') && (m === 'PUT' || m === 'GET')) return true;
+    if (p.startsWith('/client-keys/') && p.endsWith('/rotate') && m === 'POST') return true;
+    if (p.startsWith('/client-keys/') && p.endsWith('/traffic') && m === 'GET') return true;
+    if (p === '/routes/acl-summary' && m === 'GET') return true;
+    if (p.startsWith('/routes/') && p.endsWith('/clients') && m === 'GET') return true;
     return false;
   }
   if (get) return true;

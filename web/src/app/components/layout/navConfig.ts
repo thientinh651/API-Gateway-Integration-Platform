@@ -17,8 +17,8 @@ export type NavItem = { path: string; icon: LucideIcon; label: string };
 export const NAV_ITEMS: NavItem[] = [
   { path: '/', icon: LayoutDashboard, label: 'Tổng quan' },
   { path: '/routes', icon: Route, label: 'Quản lý Route' },
-  { path: '/auth', icon: Shield, label: 'Bảo mật & Auth' },
-  { path: '/proxy-try', icon: FlaskConical, label: 'Thử gọi Proxy' },
+  { path: '/auth', icon: Shield, label: 'Client Registry' },
+  { path: '/proxy-try', icon: FlaskConical, label: 'Thử gọi proxy' },
   { path: '/proxy-queue', icon: ListOrdered, label: 'Proxy Queue' },
   { path: '/api-docs', icon: FileCode, label: 'Tài liệu API' },
   { path: '/integrations', icon: Plug, label: 'Tích hợp' },

@@ -6,3 +6,5 @@
 /data/.bench-credentials
 /data/integration-oauth-urls*.txt
 .env
+/exports/db/*.sql
+!exports/db/avaso_gateway_schema_latest.sql

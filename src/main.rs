@@ -1,14 +1,17 @@
 mod admin_auth;
+mod canonical_api;
 mod crypto;
 mod db;
 mod dashboard;
 mod gateway_rsa;
+mod integration_office;
 mod integrations;
 mod metrics;
 mod password_reset;
 mod proxy_ext;
 mod route_match;
 mod session;
+mod transform;
 
 use admin_auth::{session_unavailable_response, write_audit, write_audit_event, write_audit_failure, AdminCtx};
 use integrations::OAuthPending;
@@ -23,7 +26,7 @@ use axum::{
     middleware::{self, Next},
     response::IntoResponse,
     response::Response,
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use dashmap::DashMap;
@@ -367,6 +370,59 @@ fn per_min_to_bucket(per_min: i32) -> (f64, u32) {
     (per_min as f64 / 60.0, per_min)
 }
 
+/// Rate limit: client registry → route → global settings.
+fn resolve_rate_limit(
+    client: &VerifiedClient,
+    route: Option<&RouteRow>,
+    settings: &RuntimeSettings,
+) -> (bool, f64, u32) {
+    if client.rate_limit_per_min > 0 {
+        let (rps, burst) = per_min_to_bucket(client.rate_limit_per_min);
+        return (true, rps, burst);
+    }
+    if let Some(r) = route.filter(|r| r.rate_limit_per_min > 0) {
+        let (rps, burst) = per_min_to_bucket(r.rate_limit_per_min);
+        return (true, rps, burst);
+    }
+    if settings.rate_limit.enabled {
+        (
+            true,
+            settings.rate_limit.rps as f64,
+            settings.rate_limit.burst,
+        )
+    } else {
+        (false, 0.0, 0)
+    }
+}
+
+fn rate_limit_bucket_key(tenant_id: i64, scope: &str, api_key: &str) -> String {
+    let key_part = if api_key.is_empty() {
+        "anon".to_string()
+    } else {
+        db::sha256_hex(api_key)
+    };
+    format!("{tenant_id}:{scope}:{key_part}")
+}
+
+fn try_consume_rate_limit(
+    state: &AppState,
+    bucket_key: &str,
+    rps: f64,
+    burst: u32,
+) -> Result<(), u64> {
+    let now = Instant::now();
+    let mut entry = state
+        .rl
+        .entry(bucket_key.to_string())
+        .or_insert_with(|| TokenBucket::new(now, burst));
+    let bucket = entry.value_mut();
+    if bucket.take(now, rps, burst) {
+        Ok(())
+    } else {
+        Err(bucket.retry_after_secs(rps))
+    }
+}
+
 fn validate_route_write(path: &str, target: &str, timeout_secs: i32, rate_limit_per_min: i32) -> Option<Response> {
     let mut fields = serde_json::Map::new();
     if path.is_empty() {
@@ -464,9 +520,12 @@ fn header_str(headers: &HeaderMap, name: &str) -> String {
         .to_string()
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct VerifiedClient {
+    key_id: i64,
     tenant_id: i64,
+    rate_limit_per_min: i32,
+    allowed_route_ids: Vec<i64>,
 }
 
 #[derive(Debug)]
@@ -474,6 +533,7 @@ enum ClientAuthFail {
     NoKeysConfigured,
     MissingApiKey,
     UnknownApiKey,
+    KeyDisabled,
     MissingSignature,
     MissingTimestamp,
     BadTimestamp,
@@ -531,6 +591,10 @@ fn verify_client_auth(
         return Err(ClientAuthFail::MissingApiKey);
     }
 
+    if creds.disabled_clients.iter().any(|k| k.api_key == api_key) {
+        return Err(ClientAuthFail::KeyDisabled);
+    }
+
     if let Some(pair) = creds.hmac.iter().find(|k| k.api_key == api_key) {
         let sig = header_str(headers, "x-signature");
         let ts = header_str(headers, "x-timestamp");
@@ -557,22 +621,52 @@ fn verify_client_auth(
         }
         hmac_replay_record(state, &api_key, &sig);
         return Ok(VerifiedClient {
+            key_id: pair.id,
             tenant_id: pair.tenant_id,
+            rate_limit_per_min: pair.rate_limit_per_min,
+            allowed_route_ids: pair.allowed_route_ids.clone(),
         });
     }
 
     let digest = db::sha256_hex(&api_key);
     if let Some(leg) = creds.legacy.iter().find(|k| k.sha256_hex == digest) {
         return Ok(VerifiedClient {
+            key_id: leg.id,
             tenant_id: leg.tenant_id,
+            rate_limit_per_min: leg.rate_limit_per_min,
+            allowed_route_ids: leg.allowed_route_ids.clone(),
         });
     }
 
     Err(ClientAuthFail::UnknownApiKey)
 }
 
-fn tenant_allows_route(client: VerifiedClient, route: &RouteRow) -> bool {
-    client.tenant_id == route.tenant_id
+fn client_allows_route(client: &VerifiedClient, route: &RouteRow) -> bool {
+    if client.tenant_id != route.tenant_id {
+        return false;
+    }
+    if client.allowed_route_ids.is_empty() {
+        return true;
+    }
+    client.allowed_route_ids.contains(&route.id)
+}
+
+fn client_identity_for_log(cfg: &AppConfig, api_key: &str) -> (Option<i64>, Option<i64>) {
+    if api_key.is_empty() {
+        return (None, None);
+    }
+    let creds = &cfg.client_credentials;
+    if let Some(p) = creds.hmac.iter().find(|k| k.api_key == api_key) {
+        return (Some(p.id), Some(p.tenant_id));
+    }
+    if let Some(d) = creds.disabled_clients.iter().find(|k| k.api_key == api_key) {
+        return (Some(d.id), Some(d.tenant_id));
+    }
+    let digest = db::sha256_hex(api_key);
+    if let Some(leg) = creds.legacy.iter().find(|k| k.sha256_hex == digest) {
+        return (Some(leg.id), Some(leg.tenant_id));
+    }
+    (None, None)
 }
 
 fn client_auth_to_response(err: ClientAuthFail) -> (StatusCode, &'static str, &'static str) {
@@ -586,6 +680,11 @@ fn client_auth_to_response(err: ClientAuthFail) -> (StatusCode, &'static str, &'
             StatusCode::UNAUTHORIZED,
             "missing_or_invalid_api_key",
             "Missing or invalid X-API-Key",
+        ),
+        ClientAuthFail::KeyDisabled => (
+            StatusCode::FORBIDDEN,
+            "client_key_disabled",
+            "Client API key is disabled",
         ),
         ClientAuthFail::MissingSignature
         | ClientAuthFail::MissingTimestamp
@@ -628,6 +727,7 @@ fn log_gateway_transaction(
     api_key_header: &str,
     upstream: Option<&str>,
     elapsed_ms: u128,
+    client_key_id: Option<i64>,
 ) {
     let request_id = uuid::Uuid::new_v4().to_string();
     let api_key_masked = mask_api_key_for_log(api_key_header);
@@ -672,6 +772,7 @@ fn log_gateway_transaction(
                 elapsed_ms as i64,
                 client_ip.as_deref(),
                 &api_key_masked,
+                client_key_id,
                 &outcome,
                 &reason,
                 upstream.as_deref(),
@@ -950,6 +1051,40 @@ fn spawn_reload_runtime_config() {
     });
 }
 
+fn spawn_touch_client_key(key_id: i64) {
+    tokio::spawn(async move {
+        if let Some(st) = STATE.get() {
+            if let Err(e) = db::touch_client_key_last_used(&st.pool, key_id).await {
+                tracing::debug!(error = %e, key_id, "touch client last_used failed");
+            }
+        }
+    });
+}
+
+async fn ensure_client_key_manage_access(
+    pool: &PgPool,
+    ctx: &AdminCtx,
+    id: i64,
+) -> Result<(), Response> {
+    if ctx.is_admin() {
+        return Ok(());
+    }
+    match db::fetch_client_key_owner(pool, id, ctx.tenant_id).await {
+        Ok(Some(owner)) if owner == ctx.user_id => Ok(()),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "client key not found" })),
+        )
+            .into_response()),
+        Ok(Some(_)) => Err(admin_auth::forbidden_response()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response()),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -984,6 +1119,15 @@ async fn main() {
     db::backfill_admin_tenants(&pool)
         .await
         .expect("backfill admin tenant_id");
+    if admin_auth::on_prem_single_org() {
+        db::migrate_on_prem_organization(&pool)
+            .await
+            .expect("on-prem organization migration");
+    } else {
+        db::migrate_workspace_isolation(&pool)
+            .await
+            .expect("workspace isolation migration");
+    }
     integrations::ensure_integration_rows(&pool, 1)
         .await
         .expect("ensure integration rows");
@@ -1005,6 +1149,7 @@ async fn main() {
     let proxy_queue = proxy_ext::ProxyQueue::new(pool.clone());
 
     integrations::spawn_integration_sync_worker(pool.clone());
+    proxy_ext::spawn_dlq_replay_worker(pool.clone());
 
     let state = AppState {
         pool,
@@ -1022,15 +1167,29 @@ async fn main() {
     let api_protected = Router::new()
         .route("/proxy", get(proxy_handler))
         .route("/routes", get(api_routes).post(api_create_route))
+        .route("/routes/acl-summary", get(api_routes_acl_summary))
+        .route("/routes/:id/clients", get(api_route_clients))
         .route("/routes/:id", put(api_update_route).delete(api_delete_route))
         .route("/client-keys", get(api_list_client_keys).post(api_create_client_key))
+        .route("/client-keys/bulk-status", post(api_bulk_client_key_status))
+        .route("/client-keys/traffic-summary", get(api_client_keys_traffic_summary))
         .route(
             "/client-keys/encrypted",
             post(api_create_client_key_encrypted),
         )
-        .route("/client-keys/:id", delete(api_delete_client_key))
+        .route("/client-keys/:id", get(api_get_client_key).patch(api_patch_client_key).delete(api_delete_client_key))
+        .route(
+            "/client-keys/:id/routes",
+            get(api_get_client_key_routes).put(api_put_client_key_routes),
+        )
+        .route("/client-keys/:id/rotate", post(api_rotate_client_key))
+        .route("/client-keys/:id/traffic", get(api_get_client_key_traffic))
         .route("/users", get(api_list_users).post(api_create_user))
         .route("/users/:id", put(api_update_user).delete(api_delete_user))
+        .route("/workspace/memberships", get(api_list_workspaces))
+        .route("/workspace/switch", post(api_switch_workspace))
+        .route("/workspace/members", post(api_invite_workspace_member))
+        .route("/workspace/members/:user_id", delete(api_remove_workspace_member))
         .route("/audit-logs", get(api_list_audit_logs))
         .route("/transaction-logs", get(api_list_transaction_logs))
         .route("/proxy-queue", get(api_list_proxy_queue))
@@ -1075,6 +1234,10 @@ async fn main() {
             get(api_list_integration_snapshots),
         )
         .route(
+            "/integrations/snapshots/records",
+            get(api_list_snapshot_records),
+        )
+        .route(
             "/integrations/zoho/disconnect",
             post(api_zoho_disconnect),
         )
@@ -1086,11 +1249,39 @@ async fn main() {
             "/integrations/bridge/run",
             post(api_run_integration_bridge),
         )
+        .route(
+            "/integrations/transform/profile",
+            get(api_get_transform_profile),
+        )
+        .route(
+            "/integrations/transform/preview",
+            post(api_post_transform_preview),
+        )
+        .route(
+            "/integrations/transform/sync-contact",
+            post(api_sync_contact_sf_to_zoho),
+        )
+        .route(
+            "/integrations/opportunity-templates",
+            get(api_get_opportunity_templates).put(api_put_opportunity_templates),
+        )
         .route("/integrations/sync-now", post(api_sync_now))
         .route("/integrations/sync-logs", get(api_list_sync_logs))
+        .route("/integrations/entity-links", get(api_list_entity_links))
+        .route("/integrations/documents", get(api_list_integration_documents))
+        .route(
+            "/integrations/documents/:id/download",
+            get(api_download_integration_document),
+        )
+        .route(
+            "/integrations/office/config",
+            get(api_office_config_get).put(api_office_config_put),
+        )
+        .route("/integrations/office/test", get(api_office_test))
         .route("/integrations/reset-sync", post(api_reset_integration_sync))
         .route("/settings", get(api_get_settings).put(api_update_settings))
         .route("/dashboard/stats", get(api_dashboard_stats))
+        .route("/middleware/status", get(api_middleware_status))
         .route("/reload-config", post(api_reload_config))
         .layer(middleware::from_fn(rbac_middleware))
         .layer(middleware::from_fn(admin_auth_middleware));
@@ -1403,6 +1594,7 @@ async fn establish_admin_session(
     let record = SessionRecord {
         user_id: ctx.user_id,
         username: username.clone(),
+        home_tenant_id: ctx.tenant_id,
         tenant_id: ctx.tenant_id,
         role: ctx.role.clone(),
         last_db_check: 0,
@@ -1680,18 +1872,13 @@ async fn api_register_viewer(headers: HeaderMap, Json(body): Json<RegisterViewer
         }
     };
 
-    let tenant_id = match db::create_personal_tenant(&st.pool, username).await {
-        Ok(tid) => tid,
-        Err(e) => {
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
-                &format!("tenant: {e}"),
-            );
-        }
+    let _ = db::ensure_default_tenant(&st.pool).await;
+    let tenant_id = 1_i64;
+    let role = if admin_auth::on_prem_single_org() {
+        "viewer"
+    } else {
+        "admin"
     };
-
-    let role = "viewer";
     match db::insert_admin_user(
         &st.pool,
         username,
@@ -1703,6 +1890,9 @@ async fn api_register_viewer(headers: HeaderMap, Json(body): Json<RegisterViewer
     .await
     {
         Ok(id) => {
+            if role == "admin" {
+                let _ = integrations::ensure_integration_rows(&st.pool, tenant_id).await;
+            }
             write_audit_event(
                 &st.pool,
                 tenant_id,
@@ -1712,7 +1902,7 @@ async fn api_register_viewer(headers: HeaderMap, Json(body): Json<RegisterViewer
                 "session",
                 "success",
                 ip.as_deref(),
-                Some("viewer_self_register"),
+                Some("admin_self_register"),
             )
             .await;
             match db::fetch_admin_user_by_id(&st.pool, id, tenant_id).await {
@@ -2457,17 +2647,26 @@ async fn admin_me(headers: HeaderMap) -> impl IntoResponse {
     };
     match admin_auth::resolve_session_ctx(&st.session_store, &st.pool, &sid).await {
         Ok(Some(ctx)) => {
-            let email = db::fetch_admin_user_by_id(&st.pool, ctx.user_id, ctx.tenant_id)
+            let email = db::fetch_admin_user_by_id_any(&st.pool, ctx.user_id)
                 .await
                 .ok()
                 .flatten()
                 .and_then(|r| r.email);
+            let mut workspaces = db::list_accessible_workspaces(&st.pool, ctx.user_id, ctx.home_tenant_id)
+                .await
+                .unwrap_or_default();
+            if admin_auth::on_prem_single_org() {
+                workspaces.retain(|w| w.is_home);
+            }
             Json(serde_json::json!({
                 "username": ctx.username,
                 "email": email,
                 "role": ctx.role,
                 "tenant_id": ctx.tenant_id,
-                "user_id": ctx.user_id
+                "home_tenant_id": ctx.home_tenant_id,
+                "user_id": ctx.user_id,
+                "deployment_mode": if admin_auth::on_prem_single_org() { "on_prem" } else { "saas" },
+                "workspaces": workspaces,
             }))
             .into_response()
         }
@@ -2477,6 +2676,277 @@ async fn admin_me(headers: HeaderMap) -> impl IntoResponse {
             "Session expired or invalid",
         ),
         Err(_) => session_unavailable_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct SwitchWorkspaceBody {
+    tenant_id: i64,
+}
+
+async fn api_switch_workspace(
+    headers: HeaderMap,
+    Extension(ctx): Extension<AdminCtx>,
+    Json(body): Json<SwitchWorkspaceBody>,
+) -> impl IntoResponse {
+    if admin_auth::on_prem_single_org() {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "on_prem_mode",
+            "Triển khai on-prem: một tổ chức — không chuyển workspace",
+        );
+    }
+    let Some(sid) = gw_sid_from_headers(&headers) else {
+        return json_error(StatusCode::UNAUTHORIZED, "unauthorized", "Not logged in");
+    };
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "state not initialized",
+        );
+    };
+    if body.tenant_id <= 0 {
+        return json_error(StatusCode::BAD_REQUEST, "invalid_tenant", "tenant_id không hợp lệ");
+    }
+    let Ok(can) = db::user_can_access_workspace(
+        &st.pool,
+        ctx.user_id,
+        ctx.home_tenant_id,
+        body.tenant_id,
+    )
+    .await
+    else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "db error",
+        );
+    };
+    if !can {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Bạn không có quyền vào workspace này",
+        );
+    }
+    let Some(user) = db::fetch_admin_user_by_id_any(&st.pool, ctx.user_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return json_error(StatusCode::UNAUTHORIZED, "unauthorized", "User not found");
+    };
+    let role = db::effective_workspace_role(
+        &st.pool,
+        ctx.user_id,
+        ctx.home_tenant_id,
+        &user.role,
+        body.tenant_id,
+    )
+    .await
+    .unwrap_or_else(|_| user.role.clone());
+    let mut rec = match st.session_store.get(&sid).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return json_error(StatusCode::UNAUTHORIZED, "unauthorized", "Session expired");
+        }
+        Err(_) => return session_unavailable_response(),
+    };
+    rec.tenant_id = body.tenant_id;
+    rec.role = role.clone();
+    if let Err(e) = st.session_store.save(&sid, &rec).await {
+        tracing::warn!(error = %e, "switch workspace save session failed");
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "session_store_unavailable",
+            "Không lưu được phiên",
+        );
+    }
+    Json(serde_json::json!({
+        "status": "ok",
+        "tenant_id": body.tenant_id,
+        "role": role,
+    }))
+    .into_response()
+}
+
+async fn api_list_workspaces(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if admin_auth::on_prem_single_org() {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "on_prem_mode",
+            "Triển khai on-prem: một tổ chức — không có danh sách workspace",
+        );
+    }
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "state not initialized",
+        );
+    };
+    match db::list_accessible_workspaces(&st.pool, ctx.user_id, ctx.home_tenant_id).await {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct InviteMemberBody {
+    username: String,
+    role: String,
+}
+
+async fn api_invite_workspace_member(
+    Extension(ctx): Extension<AdminCtx>,
+    Json(body): Json<InviteMemberBody>,
+) -> impl IntoResponse {
+    if admin_auth::on_prem_single_org() {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "on_prem_mode",
+            "Triển khai on-prem — dùng Thêm User để thêm thành viên tổ chức",
+        );
+    }
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "workspace/members").await;
+    }
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "state not initialized",
+        );
+    };
+    let username = body.username.trim();
+    if username.is_empty() {
+        return json_error(StatusCode::BAD_REQUEST, "validation_failed", "Nhập username");
+    }
+    let Some(role) = normalize_user_role(&body.role) else {
+        return json_error(StatusCode::BAD_REQUEST, "invalid_role", "Role không hợp lệ");
+    };
+    if role == "admin" && ctx.tenant_id != ctx.home_tenant_id {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Chỉ chủ workspace mới mời admin",
+        );
+    }
+    let Some(user) = db::fetch_admin_user_by_username(&st.pool, username).await.ok().flatten()
+    else {
+        return json_error(
+            StatusCode::NOT_FOUND,
+            "user_not_found",
+            "Không tìm thấy user — họ cần tự đăng ký trước",
+        );
+    };
+    if user.id == ctx.user_id {
+        return json_error(StatusCode::BAD_REQUEST, "invalid_target", "Không mời chính mình");
+    }
+    if user.tenant_id.unwrap_or(1) == ctx.tenant_id {
+        return json_error(
+            StatusCode::CONFLICT,
+            "already_member",
+            "User đã thuộc workspace này",
+        );
+    }
+    if db::upsert_tenant_membership(&st.pool, ctx.tenant_id, user.id, &role)
+        .await
+        .is_err()
+    {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "Không thêm membership",
+        );
+    }
+    write_audit(
+        &st.pool,
+        &ctx,
+        "workspace.invite",
+        username,
+        "success",
+        None,
+        Some(&role),
+    )
+    .await;
+    Json(serde_json::json!({
+        "status": "ok",
+        "user_id": user.id,
+        "username": user.username,
+        "role": role,
+        "workspace_tenant_id": ctx.tenant_id,
+    }))
+    .into_response()
+}
+
+async fn api_remove_workspace_member(
+    Extension(ctx): Extension<AdminCtx>,
+    Path(user_id): Path<i64>,
+) -> impl IntoResponse {
+    if admin_auth::on_prem_single_org() {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "on_prem_mode",
+            "Triển khai on-prem — không gỡ collaborator",
+        );
+    }
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "workspace/members").await;
+    }
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "state not initialized",
+        );
+    };
+    if user_id == ctx.user_id {
+        return json_error(StatusCode::BAD_REQUEST, "invalid_target", "Không xóa chính mình");
+    }
+    let Some(target) = db::fetch_admin_user_by_id_any(&st.pool, user_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return json_error(StatusCode::NOT_FOUND, "user_not_found", "User không tồn tại");
+    };
+    if target.tenant_id.unwrap_or(1) == ctx.tenant_id {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Không xóa chủ workspace — dùng Xóa user nếu là tài khoản nội bộ",
+        );
+    }
+    match db::delete_tenant_membership(&st.pool, ctx.tenant_id, user_id).await {
+        Ok(true) => {
+            write_audit(
+                &st.pool,
+                &ctx,
+                "workspace.remove_member",
+                &target.username,
+                "success",
+                None,
+                None,
+            )
+            .await;
+            Json(serde_json::json!({ "status": "ok" })).into_response()
+        }
+        Ok(false) => json_error(
+            StatusCode::NOT_FOUND,
+            "not_a_member",
+            "User không phải thành viên được mời",
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
     }
 }
 
@@ -2561,6 +3031,11 @@ async fn admin_api_ping() -> Json<serde_json::Value> {
         "features": {
             "forgot_password": true,
             "register_viewer": admin_auth::viewer_registration_enabled(),
+            "deployment_mode": if admin_auth::on_prem_single_org() {
+                "on_prem"
+            } else {
+                "saas"
+            },
             "password_reset_dev_log": password_reset::password_reset_dev_log(),
             "dashboard_users_table": true
         }
@@ -3132,6 +3607,30 @@ async fn api_delete_route(
     }
 }
 
+async fn api_client_keys_traffic_summary(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !admin_auth::can_access_client_keys(&ctx.role) {
+        return admin_auth::forbidden_response();
+    }
+    let st = match STATE.get() {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "state not initialized" })),
+            )
+                .into_response();
+        }
+    };
+    match db::client_keys_traffic_summary_24h(&st.pool, ctx.tenant_id).await {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
 async fn api_list_client_keys(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
     if !admin_auth::can_access_client_keys(&ctx.role) {
         return admin_auth::forbidden_response();
@@ -3162,6 +3661,10 @@ struct CreateClientKeyBody {
     name: String,
     #[serde(default = "default_integration_type")]
     integration_type: String,
+    #[serde(default)]
+    rate_limit_per_min: i32,
+    #[serde(default)]
+    route_ids: Vec<i64>,
 }
 
 fn default_integration_type() -> String {
@@ -3230,6 +3733,20 @@ async fn api_create_client_key(
     let api_key = db::random_api_key_id();
     let secret_key = db::random_secret_key();
     let integration_type = normalize_integration_type(&body.integration_type);
+    let rate_limit = body.rate_limit_per_min;
+    if rate_limit < 0 || rate_limit > 1_000_000 {
+        let mut fields = serde_json::Map::new();
+        fields.insert(
+            "rate_limit_per_min".into(),
+            serde_json::Value::String("Rate limit phải từ 0 (mặc định route/global) đến 1.000.000 req/min".into()),
+        );
+        return json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "Dữ liệu key không hợp lệ",
+            fields,
+        );
+    }
     match db::insert_client_key_hmac(
         &st.pool,
         &name,
@@ -3238,10 +3755,14 @@ async fn api_create_client_key(
         ctx.tenant_id,
         &integration_type,
         ctx.user_id,
+        rate_limit,
     )
     .await
     {
         Ok(id) => {
+            if !body.route_ids.is_empty() {
+                let _ = db::set_client_key_routes(&st.pool, id, ctx.tenant_id, &body.route_ids).await;
+            }
             spawn_reload_runtime_config();
             write_audit(
                 &st.pool,
@@ -3398,10 +3919,14 @@ async fn api_create_client_key_encrypted(
         ctx.tenant_id,
         &integration_type,
         ctx.user_id,
+        parsed.rate_limit_per_min,
     )
     .await
     {
         Ok(id) => {
+            if !parsed.route_ids.is_empty() {
+                let _ = db::set_client_key_routes(&st.pool, id, ctx.tenant_id, &parsed.route_ids).await;
+            }
             spawn_reload_runtime_config();
             write_audit(
                 &st.pool,
@@ -3429,6 +3954,507 @@ async fn api_create_client_key_encrypted(
             )
                 .into_response()
         }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_get_client_key(
+    Extension(ctx): Extension<AdminCtx>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    if !admin_auth::can_access_client_keys(&ctx.role) {
+        return admin_auth::forbidden_response();
+    }
+    let st = match STATE.get() {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "state not initialized" })),
+            )
+                .into_response();
+        }
+    };
+    if !ctx.is_admin() {
+        if let Err(res) = ensure_client_key_manage_access(&st.pool, &ctx, id).await {
+            return res;
+        }
+    }
+    match db::fetch_client_key_meta_by_id(&st.pool, id, ctx.tenant_id).await {
+        Ok(Some(row)) => Json(row).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "client key not found" })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_get_client_key_traffic(
+    Extension(ctx): Extension<AdminCtx>,
+    Path(id): Path<i64>,
+    axum::extract::Query(query): axum::extract::Query<ClientKeyTrafficQuery>,
+) -> impl IntoResponse {
+    if !admin_auth::can_access_client_keys(&ctx.role) {
+        return admin_auth::forbidden_response();
+    }
+    let st = match STATE.get() {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "state not initialized" })),
+            )
+                .into_response();
+        }
+    };
+    if !ctx.is_admin() {
+        if let Err(res) = ensure_client_key_manage_access(&st.pool, &ctx, id).await {
+            return res;
+        }
+    }
+    let hours = query.hours.unwrap_or(24);
+    match db::client_key_traffic_stats(&st.pool, ctx.tenant_id, id, hours).await {
+        Ok(stats) => Json(stats).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ClientKeyTrafficQuery {
+    hours: Option<i32>,
+}
+
+async fn api_get_client_key_routes(
+    Extension(ctx): Extension<AdminCtx>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    if !admin_auth::can_access_client_keys(&ctx.role) {
+        return admin_auth::forbidden_response();
+    }
+    let st = match STATE.get() {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "state not initialized" })),
+            )
+                .into_response();
+        }
+    };
+    if !ctx.is_admin() {
+        if let Err(res) = ensure_client_key_manage_access(&st.pool, &ctx, id).await {
+            return res;
+        }
+    }
+    match db::fetch_client_key_routes(&st.pool, id, ctx.tenant_id).await {
+        Ok(Some(ids)) => Json(serde_json::json!({ "route_ids": ids })).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "client key not found" })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_routes_acl_summary(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    let st = match STATE.get() {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "state not initialized" })),
+            )
+                .into_response();
+        }
+    };
+    match db::route_acl_summary(&st.pool, ctx.tenant_id).await {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_route_clients(
+    Extension(ctx): Extension<AdminCtx>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    let st = match STATE.get() {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "state not initialized" })),
+            )
+                .into_response();
+        }
+    };
+    let exists = db::fetch_route_by_id(&st.pool, id).await.ok().flatten();
+    if exists.is_none() || exists.as_ref().map(|r| r.tenant_id) != Some(ctx.tenant_id) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "route not found" })),
+        )
+            .into_response();
+    }
+    match db::list_clients_for_route(&st.pool, id, ctx.tenant_id).await {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_patch_client_key(
+    Extension(ctx): Extension<AdminCtx>,
+    Path(id): Path<i64>,
+    Json(body): Json<PatchClientKeyBody>,
+) -> impl IntoResponse {
+    if !admin_auth::can_manage_client_keys(&ctx.role) {
+        return admin_auth::forbidden_response();
+    }
+    let st = match STATE.get() {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "state not initialized" })),
+            )
+                .into_response();
+        }
+    };
+    if !ctx.is_admin() {
+        match db::fetch_client_key_owner(&st.pool, id, ctx.tenant_id).await {
+            Ok(Some(owner)) if owner == ctx.user_id => {}
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({ "error": "client key not found" })),
+                )
+                    .into_response();
+            }
+            Ok(Some(_)) => return admin_auth::forbidden_response(),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("{e}") })),
+                )
+                    .into_response();
+            }
+        }
+    }
+    let mut fields = serde_json::Map::new();
+    let status = body.status.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if let Some(s) = status {
+        if s != "active" && s != "disabled" {
+            fields.insert(
+                "status".into(),
+                serde_json::Value::String("status phải là active hoặc disabled".into()),
+            );
+        }
+    }
+    if let Some(rl) = body.rate_limit_per_min {
+        if rl < 0 || rl > 1_000_000 {
+            fields.insert(
+                "rate_limit_per_min".into(),
+                serde_json::Value::String("Rate limit phải từ 0 đến 1.000.000 req/min".into()),
+            );
+        }
+    }
+    if status.is_none() && body.rate_limit_per_min.is_none() {
+        fields.insert(
+            "_form".into(),
+            serde_json::Value::String("Gửi status và/hoặc rate_limit_per_min".into()),
+        );
+    }
+    if !fields.is_empty() {
+        return json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "Dữ liệu key không hợp lệ",
+            fields,
+        );
+    }
+    match db::update_client_key_registry(
+        &st.pool,
+        id,
+        ctx.tenant_id,
+        status,
+        body.rate_limit_per_min,
+    )
+    .await
+    {
+        Ok(0) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "client key not found" })),
+        )
+            .into_response(),
+        Ok(_) => {
+            spawn_reload_runtime_config();
+            write_audit(
+                &st.pool,
+                &ctx,
+                "update_client_key",
+                &format!("key:{id}"),
+                "success",
+                None,
+                status,
+            )
+            .await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchClientKeyBody {
+    status: Option<String>,
+    rate_limit_per_min: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PutClientKeyRoutesBody {
+    route_ids: Vec<i64>,
+}
+
+async fn api_put_client_key_routes(
+    Extension(ctx): Extension<AdminCtx>,
+    Path(id): Path<i64>,
+    Json(body): Json<PutClientKeyRoutesBody>,
+) -> impl IntoResponse {
+    if !admin_auth::can_manage_client_keys(&ctx.role) {
+        return admin_auth::forbidden_response();
+    }
+    let st = match STATE.get() {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "state not initialized" })),
+            )
+                .into_response();
+        }
+    };
+    if !ctx.is_admin() {
+        match db::fetch_client_key_owner(&st.pool, id, ctx.tenant_id).await {
+            Ok(Some(owner)) if owner == ctx.user_id => {}
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({ "error": "client key not found" })),
+                )
+                    .into_response();
+            }
+            Ok(Some(_)) => return admin_auth::forbidden_response(),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("{e}") })),
+                )
+                    .into_response();
+            }
+        }
+    }
+    match db::set_client_key_routes(&st.pool, id, ctx.tenant_id, &body.route_ids).await {
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "client key not found" })),
+        )
+            .into_response(),
+        Ok(true) => {
+            spawn_reload_runtime_config();
+            write_audit(
+                &st.pool,
+                &ctx,
+                "update_client_key_routes",
+                &format!("key:{id}"),
+                "success",
+                None,
+                Some(&format!("routes:{}", body.route_ids.len())),
+            )
+            .await;
+            Json(serde_json::json!({ "route_ids": body.route_ids })).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct RotateClientKeyResponse {
+    api_key: String,
+    secret_key: String,
+    auth: &'static str,
+}
+
+#[derive(Debug, Deserialize)]
+struct BulkClientKeyStatusBody {
+    ids: Vec<i64>,
+    status: String,
+}
+
+async fn api_bulk_client_key_status(
+    Extension(ctx): Extension<AdminCtx>,
+    Json(body): Json<BulkClientKeyStatusBody>,
+) -> impl IntoResponse {
+    if !admin_auth::can_manage_client_keys(&ctx.role) {
+        return admin_auth::forbidden_response();
+    }
+    let st = match STATE.get() {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "state not initialized" })),
+            )
+                .into_response();
+        }
+    };
+    let status = body.status.trim().to_ascii_lowercase();
+    if status != "active" && status != "disabled" {
+        return json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "status phải là active hoặc disabled",
+            serde_json::Map::from_iter([(
+                "status".into(),
+                serde_json::Value::String("active | disabled".into()),
+            )]),
+        );
+    }
+    let ids: Vec<i64> = body.ids.into_iter().filter(|id| *id > 0).collect();
+    if ids.is_empty() {
+        return json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "Chọn ít nhất một client",
+            serde_json::Map::from_iter([(
+                "ids".into(),
+                serde_json::Value::String("Danh sách id không được rỗng".into()),
+            )]),
+        );
+    }
+    if ids.len() > 200 {
+        return json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "Tối đa 200 client mỗi lần",
+            serde_json::Map::from_iter([(
+                "ids".into(),
+                serde_json::Value::String("Giảm số lượng client".into()),
+            )]),
+        );
+    }
+    let owner_only = if ctx.is_admin() { None } else { Some(ctx.user_id) };
+    match db::bulk_update_client_key_status(&st.pool, ctx.tenant_id, &ids, &status, owner_only).await
+    {
+        Ok(updated) => {
+            if updated > 0 {
+                spawn_reload_runtime_config();
+            }
+            write_audit(
+                &st.pool,
+                &ctx,
+                "bulk_update_client_key_status",
+                &format!("count:{updated}"),
+                "success",
+                None,
+                Some(&format!("status:{status}")),
+            )
+            .await;
+            Json(serde_json::json!({ "updated": updated })).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_rotate_client_key(
+    Extension(ctx): Extension<AdminCtx>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    if !admin_auth::can_manage_client_keys(&ctx.role) {
+        return admin_auth::forbidden_response();
+    }
+    let st = match STATE.get() {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "state not initialized" })),
+            )
+                .into_response();
+        }
+    };
+    if let Err(res) = ensure_client_key_manage_access(&st.pool, &ctx, id).await {
+        return res;
+    }
+    let secret_key = db::random_secret_key();
+    match db::rotate_client_key_secret(&st.pool, id, ctx.tenant_id, &secret_key).await {
+        Ok(Some(api_key)) => {
+            spawn_reload_runtime_config();
+            write_audit(
+                &st.pool,
+                &ctx,
+                "rotate_client_key",
+                &format!("key:{id}"),
+                "success",
+                None,
+                None,
+            )
+            .await;
+            (
+                StatusCode::OK,
+                Json(RotateClientKeyResponse {
+                    api_key,
+                    secret_key,
+                    auth: "hmac-sha256",
+                }),
+            )
+                .into_response()
+        }
+        Ok(None) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "rotate_not_supported",
+                "message": "Chỉ client HMAC (avaso_pk_*) mới rotate secret"
+            })),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": format!("{e}") })),
@@ -3668,9 +4694,14 @@ async fn api_create_user(
             }
         }
     }
-    // Operator/Viewer/Admin do admin tạo — cùng workspace (tenant) để thấy trong danh sách.
-    // Tenant riêng chỉ khi tự đăng ký (/register).
     let tenant_id = ctx.tenant_id;
+    if tenant_id <= 0 {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "tenant_id không hợp lệ",
+        );
+    }
     let email_ins = email_patch.as_ref().and_then(|o| o.as_deref());
     match db::insert_admin_user(&st.pool, username, &password_hash, &role, tenant_id, email_ins).await {
         Ok(id) => {
@@ -4126,6 +5157,8 @@ struct TransactionLogsQuery {
     status: Option<String>,
     outcome: Option<String>,
     search: Option<String>,
+    reason: Option<String>,
+    client_key_id: Option<i64>,
 }
 
 fn status_filter_range(status: Option<&str>) -> (Option<i64>, Option<i64>) {
@@ -4162,6 +5195,8 @@ async fn api_list_transaction_logs(
         status_max,
         query.outcome.as_deref(),
         query.search.as_deref(),
+        query.reason.as_deref(),
+        query.client_key_id,
     )
     .await
     {
@@ -4334,6 +5369,16 @@ async fn api_list_integration_snapshots(
     integrations::api_list_snapshots(&ctx, query).await
 }
 
+async fn api_list_snapshot_records(
+    Extension(ctx): Extension<AdminCtx>,
+    axum::extract::Query(query): axum::extract::Query<integrations::SnapshotRecordsQuery>,
+) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/snapshots/records").await;
+    }
+    integrations::api_list_snapshot_records(&ctx, query).await
+}
+
 async fn api_get_integration_bridge(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
     if !ctx.is_admin() {
         return audit_admin_denied(&ctx, "integrations/bridge").await;
@@ -4358,6 +5403,50 @@ async fn api_run_integration_bridge(Extension(ctx): Extension<AdminCtx>) -> impl
     integrations::api_run_integration_bridge(&ctx).await
 }
 
+async fn api_get_transform_profile(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/transform/profile").await;
+    }
+    integrations::api_get_transform_profile(&ctx).await
+}
+
+async fn api_post_transform_preview(
+    Extension(ctx): Extension<AdminCtx>,
+    Json(body): Json<integrations::TransformPreviewBody>,
+) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/transform/preview").await;
+    }
+    integrations::api_post_transform_preview(&ctx, body).await
+}
+
+async fn api_sync_contact_sf_to_zoho(
+    Extension(ctx): Extension<AdminCtx>,
+    Json(body): Json<integrations::SyncContactBody>,
+) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/transform/sync-contact").await;
+    }
+    integrations::api_sync_contact_sf_to_zoho(&ctx, body).await
+}
+
+async fn api_get_opportunity_templates(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/opportunity-templates").await;
+    }
+    integrations::api_get_opportunity_templates(&ctx).await
+}
+
+async fn api_put_opportunity_templates(
+    Extension(ctx): Extension<AdminCtx>,
+    Json(body): Json<integrations::OpportunityTemplateConfigWriteBody>,
+) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/opportunity-templates").await;
+    }
+    integrations::api_put_opportunity_templates(&ctx, body).await
+}
+
 async fn api_sync_now(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
     if !ctx.is_admin() {
         return audit_admin_denied(&ctx, "integrations/sync-now").await;
@@ -4372,6 +5461,54 @@ async fn api_list_sync_logs(Extension(ctx): Extension<AdminCtx>) -> impl IntoRes
     integrations::api_list_sync_logs(&ctx).await
 }
 
+async fn api_list_entity_links(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/entity-links").await;
+    }
+    integration_office::api_list_entity_links(&ctx).await
+}
+
+async fn api_list_integration_documents(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/documents").await;
+    }
+    integration_office::api_list_documents(&ctx).await
+}
+
+async fn api_download_integration_document(
+    Extension(ctx): Extension<AdminCtx>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/documents/download").await;
+    }
+    integration_office::api_download_document(&ctx, id).await
+}
+
+async fn api_office_config_get(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/office/config").await;
+    }
+    integration_office::api_office_config_get(&ctx).await
+}
+
+async fn api_office_config_put(
+    Extension(ctx): Extension<AdminCtx>,
+    axum::Json(body): axum::Json<integration_office::ZohoOfficeConfigWriteBody>,
+) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/office/config").await;
+    }
+    integration_office::api_office_config_put(&ctx, body).await
+}
+
+async fn api_office_test(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/office/test").await;
+    }
+    integration_office::api_office_test(&ctx).await
+}
+
 async fn api_reset_integration_sync(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
     if !ctx.is_admin() {
         return audit_admin_denied(&ctx, "integrations/reset-sync").await;
@@ -4381,6 +5518,88 @@ async fn api_reset_integration_sync(Extension(ctx): Extension<AdminCtx>) -> impl
 
 async fn api_dashboard_stats(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
     dashboard::api_dashboard_stats(&ctx).await
+}
+
+#[derive(Debug, serde::Serialize)]
+struct MiddlewareStatusResponse {
+    data_plane_prefix: &'static str,
+    client_registry: dashboard::ClientRegistryStats,
+    routes_count: i64,
+    hmac_clients_loaded: usize,
+    rate_limit_global_enabled: bool,
+    rate_limit_global_rps: f64,
+    integration_platform: IntegrationPlatformStatus,
+}
+
+#[derive(Debug, Serialize)]
+struct IntegrationPlatformStatus {
+    transform_engine: &'static str,
+    canonical_entities: Vec<&'static str>,
+    connectors: Vec<&'static str>,
+    dlq_storage: &'static str,
+    dlq_auto_replay_worker: bool,
+    bridge_enabled: bool,
+}
+
+async fn api_middleware_status(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    let st = match STATE.get() {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "state not initialized" })),
+            )
+                .into_response();
+        }
+    };
+    let routes_count = match db::list_routes_for_tenant(&st.pool, ctx.tenant_id).await {
+        Ok(rows) => rows.len() as i64,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("{e}") })),
+            )
+                .into_response();
+        }
+    };
+    let (active, disabled) = match db::count_client_keys_by_status(&st.pool, ctx.tenant_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("{e}") })),
+            )
+                .into_response();
+        }
+    };
+    let cfg = st.config.read().await;
+    let hmac_clients_loaded = cfg.client_credentials.hmac.len();
+    let bridge_row = db::fetch_integration_bridge(&st.pool, ctx.tenant_id)
+        .await
+        .ok()
+        .flatten();
+    let bridge_enabled = bridge_row.map(|r| r.enabled != 0).unwrap_or(false);
+    let body = MiddlewareStatusResponse {
+        data_plane_prefix: data_plane_prefix(),
+        client_registry: dashboard::ClientRegistryStats {
+            total: active + disabled,
+            active,
+            disabled,
+        },
+        routes_count,
+        hmac_clients_loaded,
+        rate_limit_global_enabled: cfg.settings.rate_limit.enabled,
+        rate_limit_global_rps: f64::from(cfg.settings.rate_limit.rps),
+        integration_platform: IntegrationPlatformStatus {
+            transform_engine: "avaso_transform_v1",
+            canonical_entities: vec!["contact"],
+            connectors: vec!["salesforce", "zoho_projects"],
+            dlq_storage: "postgresql",
+            dlq_auto_replay_worker: true,
+            bridge_enabled,
+        },
+    };
+    Json(body).into_response()
 }
 
 async fn proxy_or_static(req: Request<Body>) -> Response {
@@ -4453,8 +5672,9 @@ async fn handle_data_plane_request(
         Ok(v) => v,
         Err(err) => {
             let (status, reason, msg) = client_auth_to_response(err);
+            let (log_key_id, log_tenant) = client_identity_for_log(&cfg, &key);
             log_gateway_transaction(
-                None,
+                log_tenant,
                 client_ip.as_deref(),
                 "denied",
                 reason,
@@ -4464,11 +5684,89 @@ async fn handle_data_plane_request(
                 &key,
                 None,
                 0,
+                log_key_id,
             );
             return json_error(status, reason, msg);
         }
     };
+    spawn_touch_client_key(verified.key_id);
+    if canonical_api::parse_canonical_path(data_plane_prefix(), &path).is_some() {
+        let (rl_active, rl_rps, rl_burst) =
+            resolve_rate_limit(&verified, None, &cfg.settings);
+        if rl_active {
+            let rl_key = rate_limit_bucket_key(verified.tenant_id, "canonical", &key);
+            if let Err(retry_after) =
+                try_consume_rate_limit(&state, &rl_key, rl_rps, rl_burst)
+            {
+                log_gateway_transaction(
+                    Some(verified.tenant_id),
+                    client_ip.as_deref(),
+                    "denied",
+                    "rate_limit_exceeded",
+                    &method,
+                    &path,
+                    StatusCode::TOO_MANY_REQUESTS.as_u16(),
+                    &key,
+                    Some("canonical_transform"),
+                    0,
+                    Some(verified.key_id),
+                );
+                return rate_limit_response(retry_after);
+            }
+        }
+        let ct = parts
+            .headers
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok());
+        let resp = canonical_api::canonical_data_plane_proxy(
+            verified.tenant_id,
+            &method,
+            &path,
+            uri.query(),
+            &body_bytes,
+            ct,
+            data_plane_prefix(),
+        )
+        .await;
+        log_gateway_transaction(
+            Some(verified.tenant_id),
+            client_ip.as_deref(),
+            "success",
+            "canonical_transform",
+            &method,
+            &path,
+            resp.status().as_u16(),
+            &key,
+            Some("canonical_transform"),
+            0,
+            Some(verified.key_id),
+        );
+        return resp;
+    }
     if integrations::parse_integration_proxy_path(data_plane_prefix(), &path).is_some() {
+        let (rl_active, rl_rps, rl_burst) =
+            resolve_rate_limit(&verified, None, &cfg.settings);
+        if rl_active {
+            let rl_key = rate_limit_bucket_key(verified.tenant_id, "integration", &key);
+            if let Err(retry_after) =
+                try_consume_rate_limit(&state, &rl_key, rl_rps, rl_burst)
+            {
+                log_gateway_transaction(
+                    Some(verified.tenant_id),
+                    client_ip.as_deref(),
+                    "denied",
+                    "rate_limit_exceeded",
+                    &method,
+                    &path,
+                    StatusCode::TOO_MANY_REQUESTS.as_u16(),
+                    &key,
+                    Some("integration_oauth"),
+                    0,
+                    Some(verified.key_id),
+                );
+                return rate_limit_response(retry_after);
+            }
+        }
         let ct = parts
             .headers
             .get(axum::http::header::CONTENT_TYPE)
@@ -4494,29 +5792,31 @@ async fn handle_data_plane_request(
             &key,
             Some("integration_oauth"),
             0,
+            Some(verified.key_id),
         );
         return resp;
     }
     let matched = route_match::find_route(&cfg.routes, &method, &path);
     if let Some(matched) = matched {
         let route = matched.route;
-        if !tenant_allows_route(verified, &route) {
+        if !client_allows_route(&verified, &route) {
             log_gateway_transaction(
                 Some(verified.tenant_id),
                 client_ip.as_deref(),
                 "denied",
-                "tenant_forbidden",
+                "route_forbidden",
                 &method,
                 &path,
                 StatusCode::FORBIDDEN.as_u16(),
                 &key,
                 Some(&route.target),
                 0,
+                Some(verified.key_id),
             );
             return json_error(
                 StatusCode::FORBIDDEN,
                 "forbidden",
-                "API key tenant does not match route tenant",
+                "API key is not authorized for this route",
             );
         }
         let req = Request::from_parts(parts, Body::from(body_bytes));
@@ -4527,6 +5827,19 @@ async fn handle_data_plane_request(
             Err(e) => e,
         };
     }
+    log_gateway_transaction(
+        Some(verified.tenant_id),
+        client_ip.as_deref(),
+        "denied",
+        "not_found",
+        &method,
+        &path,
+        StatusCode::NOT_FOUND.as_u16(),
+        &key,
+        None,
+        0,
+        Some(verified.key_id),
+    );
     json_error(
         StatusCode::NOT_FOUND,
         "not_found",
@@ -4559,7 +5872,7 @@ async fn handle_proxied_route(
         let (status, _, _) = client_auth_to_response(err);
         status_to_json_error(status)
     })?;
-    if !tenant_allows_route(verified, &route) {
+    if !client_allows_route(&verified, &route) {
         return Err(status_to_json_error(StatusCode::FORBIDDEN));
     }
     let req = Request::from_parts(parts, Body::from(body_bytes));
@@ -4623,7 +5936,7 @@ async fn do_proxy(
     route: RouteRow,
     route_params: std::collections::HashMap<String, String>,
     route_suffix: String,
-    _verified: VerifiedClient,
+    verified: VerifiedClient,
 ) -> Result<Response, Response> {
     let started = Instant::now();
     let (parts, body) = req.into_parts();
@@ -4636,34 +5949,19 @@ async fn do_proxy(
         .await
         .map_err(|_| status_to_json_error(StatusCode::BAD_REQUEST))?;
 
-    let (rl_active, rl_rps, rl_burst) = if route.rate_limit_per_min > 0 {
-        let (rps, burst) = per_min_to_bucket(route.rate_limit_per_min);
-        (true, rps, burst)
-    } else if cfg.settings.rate_limit.enabled {
-        (
-            true,
-            cfg.settings.rate_limit.rps as f64,
-            cfg.settings.rate_limit.burst,
-        )
-    } else {
-        (false, 0.0, 0)
-    };
+    let (rl_active, rl_rps, rl_burst) =
+        resolve_rate_limit(&verified, Some(&route), &cfg.settings);
 
     if rl_active {
-        let key_part = if !key.is_empty() {
-            db::sha256_hex(&key)
+        let scope = if verified.rate_limit_per_min > 0 {
+            "client".to_string()
+        } else if route.rate_limit_per_min > 0 {
+            format!("route:{}", route.id)
         } else {
-            "anon".to_string()
+            "global".to_string()
         };
-        let rl_key = format!("{}:{}:{}", route.tenant_id, route.id, key_part);
-        let now = Instant::now();
-        let mut entry = state
-            .rl
-            .entry(rl_key)
-            .or_insert_with(|| TokenBucket::new(now, rl_burst));
-        let bucket = entry.value_mut();
-        if !bucket.take(now, rl_rps, rl_burst) {
-            let retry_after = bucket.retry_after_secs(rl_rps);
+        let rl_key = rate_limit_bucket_key(verified.tenant_id, &scope, &key);
+        if let Err(retry_after) = try_consume_rate_limit(&state, &rl_key, rl_rps, rl_burst) {
             let elapsed_ms = started.elapsed().as_millis();
             log_gateway_transaction(
                 Some(route.tenant_id),
@@ -4676,6 +5974,7 @@ async fn do_proxy(
                 &key,
                 Some(&route.target),
                 elapsed_ms,
+                Some(verified.key_id),
             );
             return Err(rate_limit_response(retry_after));
         }
@@ -4736,6 +6035,7 @@ async fn do_proxy(
         &key,
         Some(&route.target),
         elapsed_ms,
+        Some(verified.key_id),
     );
 
     if let Some(qid) = upstream.queued_id.clone() {
@@ -4825,5 +6125,51 @@ mod path_tests {
             hmac_replay_cache_key("pk", "AbCdEf"),
             hmac_replay_cache_key("pk", "abcdef")
         );
+    }
+
+    fn test_route(id: i64, tenant_id: i64) -> RouteRow {
+        RouteRow {
+            id,
+            path: "/v1/api/test".into(),
+            target: "https://example.com".into(),
+            timeout_secs: 30,
+            rate_limit_per_min: 0,
+            tenant_id,
+            transform_add_headers: "{}".into(),
+            transform_remove_headers: "[]".into(),
+            retry_max: 0,
+            retry_on_status: "502".into(),
+            retry_on_timeout: 1,
+            queue_on_failure: 0,
+            allowed_methods: "*".into(),
+        }
+    }
+
+    #[test]
+    fn client_allows_route_tenant_and_acl() {
+        let full = VerifiedClient {
+            key_id: 1,
+            tenant_id: 10,
+            rate_limit_per_min: 0,
+            allowed_route_ids: vec![],
+        };
+        let restricted = VerifiedClient {
+            key_id: 2,
+            tenant_id: 10,
+            rate_limit_per_min: 100,
+            allowed_route_ids: vec![5],
+        };
+        let route = test_route(5, 10);
+        let other_tenant = test_route(5, 99);
+        assert!(client_allows_route(&full, &route));
+        assert!(client_allows_route(&restricted, &route));
+        assert!(!client_allows_route(&restricted, &test_route(6, 10)));
+        assert!(!client_allows_route(&full, &other_tenant));
+    }
+
+    #[test]
+    fn mask_api_key_for_log_prefix() {
+        assert_eq!(mask_api_key_for_log("avaso_pk_abcdefgh"), "avaso_…");
+        assert_eq!(mask_api_key_for_log(""), "(none)");
     }
 }

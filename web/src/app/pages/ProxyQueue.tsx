@@ -135,7 +135,7 @@ function ProxyQueueAdmin() {
               {!loading && items.length === 0 && (
                 <tr>
                   <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground text-sm max-w-lg mx-auto">
-                    <p className="mb-2">Chưa có bản ghi — DLQ chỉ nhận request <strong className="text-slate-300">đã gọi qua gateway</strong> và lỗi (timeout, 5xx sau retry…).</p>
+                    <p className="mb-2">Chưa có bản ghi — DLQ lưu <strong className="text-slate-300">PostgreSQL</strong>, worker tự replay mỗi ~60s khi bật trong Settings.</p>
                     <p className="text-xs leading-relaxed">
                       Bật <strong className="text-slate-300">Dead-letter queue</strong> trong cài đặt.
                     </p>

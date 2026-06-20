@@ -104,3 +104,9 @@ html[dir='ltr'] {
 .gw-secret-mask {
   -webkit-text-security: disc;
 }
+
+.avaso-error-highlight {
+  outline: 2px solid rgb(248 113 113 / 0.65);
+  outline-offset: 3px;
+  transition: outline-color 0.35s ease;
+}

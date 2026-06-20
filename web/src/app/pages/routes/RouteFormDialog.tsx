@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -11,6 +12,10 @@ import {
 } from '../../components/ui/dialog';
 import { Plus } from 'lucide-react';
 import { Switch } from '../../components/ui/switch';
+import {
+  defaultNumberHandlers,
+  useNumericDefaultsOnOpen,
+} from '../../../lib/zeroDefaultNumberInput';
 import type { UiRoute } from './routeTypes';
 
 export type RouteFormState = {
@@ -55,6 +60,12 @@ export function RouteFormDialog({
   submitDisabled,
   showCreateTrigger = true,
 }: Props) {
+  const numericDefaults = useNumericDefaultsOnOpen(open, {
+    timeout: formData.timeout,
+    rateLimit: formData.rateLimit,
+    retryMax: formData.retryMax,
+  });
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {showCreateTrigger ? (
@@ -132,6 +143,10 @@ export function RouteFormDialog({
                 autoComplete="off"
                 value={formData.timeout}
                 onChange={(e) => setFormData({ ...formData, timeout: e.target.value })}
+                {...defaultNumberHandlers(formData.timeout, (v) =>
+                  setFormData({ ...formData, timeout: v }),
+                  numericDefaults.timeout,
+                )}
                 aria-invalid={Boolean(fieldErrors.timeout_secs)}
                 className={`bg-input border-border text-foreground mt-1 ${fieldErrors.timeout_secs ? 'border-destructive' : ''}`}
               />
@@ -149,11 +164,14 @@ export function RouteFormDialog({
                 autoComplete="off"
                 value={formData.rateLimit}
                 onChange={(e) => setFormData({ ...formData, rateLimit: e.target.value })}
+                {...defaultNumberHandlers(formData.rateLimit, (v) =>
+                  setFormData({ ...formData, rateLimit: v }),
+                  numericDefaults.rateLimit,
+                )}
                 aria-invalid={Boolean(fieldErrors.rate_limit_per_min)}
                 className={`bg-input border-border text-foreground mt-1 ${fieldErrors.rate_limit_per_min ? 'border-destructive' : ''}`}
               />
               <FieldError message={fieldErrors.rate_limit_per_min} />
-              <p className="text-xs text-muted-foreground mt-1">0 = dùng limit toàn cục trong config.yaml</p>
             </div>
           </div>
           <div className="rounded-lg border border-border/60 p-4 space-y-3">
@@ -187,6 +205,10 @@ export function RouteFormDialog({
                 <Input
                   value={formData.retryMax}
                   onChange={(e) => setFormData({ ...formData, retryMax: e.target.value })}
+                  {...defaultNumberHandlers(formData.retryMax, (v) =>
+                    setFormData({ ...formData, retryMax: v }),
+                    numericDefaults.retryMax,
+                  )}
                   className="bg-input border-border text-foreground mt-1"
                 />
                 <FieldError message={fieldErrors.retry_max} />

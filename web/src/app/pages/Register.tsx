@@ -76,6 +76,11 @@ export function Register() {
 
       <TechPanel className="relative z-[1] w-full max-w-md p-6 sm:p-8">
         <h1 className="text-2xl font-bold text-white mb-1">Đăng ký</h1>
+        <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
+          Triển khai on-prem: đăng ký công khai thường <strong className="text-slate-300">tắt</strong> — nhờ
+          Admin cấp tài khoản. Trang này chỉ dùng khi server bật{' '}
+          <code className="text-[10px]">ALLOW_VIEWER_REGISTRATION=1</code>.
+        </p>
         <form onSubmit={onSubmit} className="space-y-4" noValidate>
           <div className="space-y-2">
             <Label htmlFor="reg-user" className="text-foreground">

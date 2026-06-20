@@ -1,0 +1,40 @@
+Tenants(id, name, createdAt)
+DashboardUsers(id, username, passwordHash, role, tenantId, isActive, createdAt, email)
+TenantMemberships(id, tenantId, userId, role, createdAt)
+GatewayRoutes(id, path, target, timeoutSecs, rateLimit, tenantId, transformAddHeaders, transformRemoveHeaders, retryMax, retryOnStatus, retryOnTimeout, queueOnFailure, allowedMethods)
+GatewayClientKeys(id, name, secretSha256Hex, apiKey, secretEncrypted, tenantId, integrationType, ownerUserId, status, rateLimit, createdAt, lastUsedAt)
+GatewayClientKeyRoutes(clientKeyId, routeId)
+GatewaySettings(k, v)
+GatewayTransactionLogs(id, tenantId, requestId, method, path, status, durationMs, clientIp, apiKeyMasked, outcome, reason, upstream, createdAt, clientKeyId)
+AuditLogs(id, tenantId, actor, role, action, resource, result, sourceIp, details, createdAt)
+GatewayProxyQueue(id, tenantId, routeId, method, path, upstreamUrl, headersJson, bodyB64, failureReason, retryAttempts, createdAtUnix, createdAt)
+Integrations(id, tenantId, provider, status, configEncrypted, lastSyncAt, lastError, updatedAt)
+IntegrationProviderConfigs(id, tenantId, provider, configEncrypted, updatedBy, updatedAt)
+OauthPendingStates(state, tenantId, provider, actor, role, pkceVerifier, expiresAt)
+IntegrationSnapshots(id, tenantId, provider, entityType, payloadJson, recordCount, fetchedAt)
+IntegrationBridgeConfig(tenantId, enabled, direction, mappingsJson, updatedAt)
+SyncLogs(id, tenantId, status, message, errorDetail, createdAt)
+IntegrationEntityLinks(id, tenantId, sfEntityType, sfId, zohoEntityType, zohoId, zohoName, lastSyncedAt)
+IntegrationDocuments(id, tenantId, sfEntityType, sfId, zohoProjectId, filename, contentType, storagePath, fileSize, sourceProvider, createdAt)
+
+Tenants, 1-N, hasDashboardUsers, DashboardUsers
+Tenants, 1-N, hasMemberships, TenantMemberships
+Tenants, 1-N, hasRoutes, GatewayRoutes
+Tenants, 1-N, hasClients, GatewayClientKeys
+Tenants, 1-N, hasTxLogs, GatewayTransactionLogs
+Tenants, 1-N, hasAuditLogs, AuditLogs
+Tenants, 1-N, hasDlq, GatewayProxyQueue
+Tenants, 1-N, hasIntegrations, Integrations
+Tenants, 1-N, hasProviderConfigs, IntegrationProviderConfigs
+Tenants, 1-N, hasSnapshots, IntegrationSnapshots
+Tenants, 1-1, hasBridgeConfig, IntegrationBridgeConfig
+Tenants, 1-N, hasSyncLogs, SyncLogs
+Tenants, 1-N, hasEntityLinks, IntegrationEntityLinks
+Tenants, 1-N, hasDocuments, IntegrationDocuments
+DashboardUsers, 1-N, hasMemberships, TenantMemberships
+DashboardUsers, 1-N, ownsClients, GatewayClientKeys
+GatewayRoutes, 1-N, viaAcl, GatewayClientKeyRoutes
+GatewayRoutes, 1-N, hasDlq, GatewayProxyQueue
+GatewayClientKeys, 1-N, viaAcl, GatewayClientKeyRoutes
+GatewayClientKeys, 1-N, hasTxLogs, GatewayTransactionLogs
+GatewayClientKeys, N-N, mapsToRoutes, GatewayRoutes

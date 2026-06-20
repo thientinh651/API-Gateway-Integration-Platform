@@ -31,7 +31,7 @@ import {
   updateAdminUser,
   type AdminUserRow,
 } from '../../lib/api';
-import { canManageUsers, roleLabel } from '../../lib/rbac';
+import { roleLabel } from '../../lib/rbac';
 import { formatDbTimestamp } from '../../lib/formatDbTimestamp';
 import { toastApiError } from '../../lib/apiClientError';
 import {
@@ -121,7 +121,7 @@ function UsersAdmin() {
       setIsOpen(false);
       resetForm();
       setFieldErrors({});
-      toast.success(`Đã tạo user "${created.username}" (${roleLabel(created.role)})`);
+      toast.success(`Đã thêm "${created.username}" (${roleLabel(created.role)})`);
     } catch (e) {
       handleFormApiError(e, setFieldErrors);
     }
@@ -231,24 +231,22 @@ function UsersAdmin() {
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Quản lý Users</h1>
           <p className="text-sm text-muted-foreground mb-4 max-w-2xl">
-            Admin tạo Admin / Operator / Viewer trong workspace. Viewer cũng có thể tự đăng ký tại{' '}
-            <a href="/register" className="text-primary hover:underline">
-              /register
-            </a>{' '}
-            khi server bật <code className="text-xs">ALLOW_VIEWER_REGISTRATION=1</code>.
+            Triển khai <strong className="text-slate-300">on-prem</strong> — một tổ chức, một gateway.
+            Admin thêm thành viên nội bộ (Admin / Operator / Viewer). Không đăng ký công khai; không
+            workspace riêng per user.
           </p>
         </div>
         <Dialog open={isOpen} onOpenChange={handleDialogClose}>
           <DialogTrigger asChild>
             <Button className="bg-primary hover:bg-primary/90">
               <Plus className="w-4 h-4 mr-2" />
-              Thêm User
+              Thêm thành viên
             </Button>
           </DialogTrigger>
           <DialogContent className="bg-card border-border">
             <DialogHeader>
               <DialogTitle className="text-white">
-                {editingUser ? 'Chỉnh sửa User' : 'Tạo User mới'}
+                {editingUser ? 'Chỉnh sửa thành viên' : 'Thêm thành viên tổ chức'}
               </DialogTitle>
             </DialogHeader>
             <div className="space-y-4 mt-4">
@@ -282,9 +280,6 @@ function UsersAdmin() {
                   autoComplete="off"
                 />
                 <FieldError message={fieldErrors.email} />
-                <p className="text-[11px] text-muted-foreground mt-1">
-                  Nên gán email khi tạo user — cần cho quên mật khẩu.
-                </p>
               </div>
               <div>
                 <Label className="text-foreground">
@@ -303,13 +298,6 @@ function UsersAdmin() {
                   autoComplete="new-password"
                 />
                 <FieldError message={fieldErrors.password} />
-                {!editingUser && formData.password.length > 0 && formData.password.length < 6 ? (
-                  <p className="text-[11px] text-amber-400 mt-1">
-                    Mật khẩu cần ít nhất 6 ký tự — nút Tạo sẽ bật khi đủ.
-                  </p>
-                ) : !editingUser ? (
-                  <p className="text-[11px] text-muted-foreground mt-1">Tối thiểu 6 ký tự.</p>
-                ) : null}
               </div>
               <div>
                 <Label className="text-foreground">Role</Label>
@@ -325,7 +313,7 @@ function UsersAdmin() {
                   </SelectTrigger>
                   <SelectContent className="bg-card border-border">
                     <SelectItem value="Admin">Admin — full</SelectItem>
-                    <SelectItem value="Operator">Operator — key, sửa route (không tạo route)</SelectItem>
+                    <SelectItem value="Operator">Operator — key, sửa route</SelectItem>
                     <SelectItem value="Viewer">Viewer — chỉ đọc</SelectItem>
                   </SelectContent>
                 </Select>
@@ -346,7 +334,7 @@ function UsersAdmin() {
       <Card className="rounded-2xl overflow-hidden bg-card/80 backdrop-blur-sm border-border">
         <div className="p-6 border-b border-border">
           <h3 className="font-bold text-white text-sm uppercase tracking-wider">
-            Danh sách Users ({loading ? '…' : users.length})
+            Thành viên tổ chức ({loading ? '…' : users.length})
           </h3>
         </div>
         <div className="overflow-x-auto">

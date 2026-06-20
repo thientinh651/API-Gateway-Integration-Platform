@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Copy, KeyRound, Plus, Shield, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router';
@@ -6,7 +6,9 @@ import {
   createClientKey,
   createClientKeyEncrypted,
   fetchGatewayPublicKey,
+  fetchGatewayRoutes,
 } from '../../../lib/api';
+import type { GatewayRouteRow } from '../../../lib/gatewayRoutes';
 import { buildEncryptedEnvelope } from '../../../lib/rsaEnvelope';
 import { ApiClientError } from '../../../lib/apiClientError';
 import {
@@ -16,7 +18,6 @@ import {
   fieldInputErrorClass,
 } from '../../../lib/formValidation';
 import { FieldError } from '../../components/forms/FieldError';
-import { ClientKeyFlowSteps } from '../../components/auth/ClientKeyFlowSteps';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -44,14 +45,21 @@ import { canWriteClientKeys } from '../../../lib/rbac';
 import {
   CLIENT_KEY_INTEGRATION_TYPES,
 } from './clientKeyIntegrationTypes';
+import { defaultNumberHandlers, parseDefaultNumber } from '../../../lib/zeroDefaultNumberInput';
 
 type CreateMode = 'direct' | 'rsa';
 
 type Props = {
   onKeysChanged: () => void;
+  presetIntegrationType?: string | null;
+  onPresetConsumed?: () => void;
 };
 
-export function CreateApiKeyDialog({ onKeysChanged }: Props) {
+export function CreateApiKeyDialog({
+  onKeysChanged,
+  presetIntegrationType,
+  onPresetConsumed,
+}: Props) {
   const { user } = useAdminAuth();
   const navigate = useNavigate();
   const canCreate = canWriteClientKeys(user);
@@ -64,6 +72,10 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
   const [generatedName, setGeneratedName] = useState('');
   const [name, setName] = useState('');
   const [integrationType, setIntegrationType] = useState<string>('app');
+  const [rateLimitPerMin, setRateLimitPerMin] = useState('0');
+  const [routes, setRoutes] = useState<GatewayRouteRow[]>([]);
+  const [restrictRoutes, setRestrictRoutes] = useState(false);
+  const [selectedRouteIds, setSelectedRouteIds] = useState<number[]>([]);
   const [pending, setPending] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
@@ -75,8 +87,27 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
     setGeneratedName('');
     setName('');
     setIntegrationType('app');
+    setRateLimitPerMin('0');
+    setRestrictRoutes(false);
+    setSelectedRouteIds([]);
     setFieldErrors({});
   };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    void fetchGatewayRoutes()
+      .then(setRoutes)
+      .catch(() => setRoutes([]));
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!presetIntegrationType) return;
+    const allowed = CLIENT_KEY_INTEGRATION_TYPES.some((t) => t.value === presetIntegrationType);
+    if (!allowed) return;
+    setIntegrationType(presetIntegrationType);
+    setIsOpen(true);
+    onPresetConsumed?.();
+  }, [presetIntegrationType, onPresetConsumed]);
 
   const handleOpenChange = (open: boolean) => {
     setIsOpen(open);
@@ -90,9 +121,25 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
     }
     setPending(true);
     setFieldErrors({});
+    const rl = Number.parseInt(parseDefaultNumber(rateLimitPerMin, '0'), 10);
+    if (!Number.isFinite(rl) || rl < 0 || rl > 1_000_000) {
+      failClientValidation(setFieldErrors, {
+        rate_limit_per_min: 'Rate limit từ 0 - 1.000.000 req/phút',
+      });
+      setPending(false);
+      return;
+    }
+    if (restrictRoutes && selectedRouteIds.length === 0) {
+      failClientValidation(setFieldErrors, {
+        route_ids: 'Chọn ít nhất một route hoặc tắt giới hạn ACL',
+      });
+      setPending(false);
+      return;
+    }
     try {
+      const routeIds = restrictRoutes ? selectedRouteIds : [];
       if (mode === 'direct') {
-        const res = await createClientKey(name.trim(), integrationType);
+        const res = await createClientKey(name.trim(), integrationType, rl, routeIds);
         setGeneratedApiKey(res.api_key);
         setGeneratedSecret(res.secret_key);
         setGeneratedName(res.name);
@@ -101,6 +148,8 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
         const envelope = await buildEncryptedEnvelope(public_key_pem, {
           name: name.trim(),
           integration_type: integrationType,
+          rate_limit_per_min: rl,
+          route_ids: routeIds,
         });
         const res = await createClientKeyEncrypted(envelope);
         setGeneratedApiKey(res.api_key);
@@ -146,35 +195,26 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
       <DialogTrigger asChild>
         <Button className="bg-primary hover:bg-primary/90">
           <Plus className="w-4 h-4 mr-2" />
-          Tạo API Key
+          Đăng ký client
         </Button>
       </DialogTrigger>
-      <DialogContent className="bg-card border-border max-w-lg gap-0 p-0 overflow-hidden">
-        <DialogHeader className="px-6 pt-6 pb-4 border-b border-border/80">
+      <DialogContent className="bg-card border-border max-w-lg gap-0 p-0 overflow-hidden flex max-h-[min(90vh,720px)] flex-col">
+        <DialogHeader className="shrink-0 px-6 pt-6 pb-4 border-b border-border/80">
           <DialogTitle className="text-white flex items-center gap-2">
             <KeyRound className="w-5 h-5 text-primary" />
-            {created ? 'Key đã sẵn sàng' : 'Tạo client API Key'}
+            {created ? 'Client đã đăng ký' : 'Đăng ký client mới'}
           </DialogTitle>
-          <p className="text-xs text-muted-foreground text-left pt-1">
-            {created
-              ? 'Copy và lưu Secret ngay — dashboard không hiển thị lại.'
-              : 'Key dùng để app gọi API qua gateway (header X-API-Key + chữ ký HMAC).'}
-          </p>
         </DialogHeader>
 
-        <div className="px-6 py-4">
-          <ClientKeyFlowSteps activeStep={created ? 'copy' : 'create'} compact />
-        </div>
-
         {!created ? (
-          <div className="px-6 pb-6 space-y-4">
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-5 pb-6 space-y-5">
             {fieldErrors._form ? (
               <p className="text-sm text-red-400 border border-red-500/30 rounded-lg bg-red-500/10 px-3 py-2">
                 {fieldErrors._form}
               </p>
             ) : null}
-            <div>
-              <Label className="text-foreground">Tên ứng dụng / đối tác</Label>
+            <div className="space-y-2">
+              <Label className="text-foreground block">Tên ứng dụng / đối tác</Label>
               <Input
                 placeholder="vd: mobile-app-prod, đối-tác-ABC"
                 value={name}
@@ -185,16 +225,16 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
                 aria-invalid={Boolean(fieldErrors.name)}
                 className={fieldInputErrorClass(
                   Boolean(fieldErrors.name),
-                  'mt-1.5 bg-input border-border text-foreground',
+                  'bg-input border-border text-foreground',
                 )}
               />
               <FieldError message={fieldErrors.name} />
             </div>
 
-            <div>
-              <Label className="text-foreground">Mục đích sử dụng</Label>
+            <div className="space-y-2">
+              <Label className="text-foreground block">Loại client</Label>
               <Select value={integrationType} onValueChange={setIntegrationType}>
-                <SelectTrigger className="bg-input border-border text-foreground mt-1.5">
+                <SelectTrigger className="w-full bg-input border-border text-foreground">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -205,6 +245,66 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-foreground block">Rate limit (req/phút)</Label>
+              <Input
+                type="number"
+                min={0}
+                max={1_000_000}
+                value={rateLimitPerMin}
+                onChange={(e) => {
+                  setRateLimitPerMin(e.target.value);
+                  clearOneFieldError(setFieldErrors, 'rate_limit_per_min');
+                }}
+                {...defaultNumberHandlers(rateLimitPerMin, setRateLimitPerMin, '0')}
+                className={fieldInputErrorClass(
+                  Boolean(fieldErrors.rate_limit_per_min),
+                  'bg-input border-border text-foreground',
+                )}
+                placeholder="0 — kế thừa route/global"
+              />
+              <FieldError message={fieldErrors.rate_limit_per_min} />
+            </div>
+
+            <div className="rounded-lg border border-border/60 bg-slate-950/40 p-3 space-y-2">
+              <label className="flex items-center gap-2 text-sm text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={restrictRoutes}
+                  onChange={(e) => setRestrictRoutes(e.target.checked)}
+                />
+                Giới hạn route ngay khi đăng ký (ACL)
+              </label>
+              {restrictRoutes ? (
+                <div className="max-h-32 overflow-y-auto rounded border border-border">
+                  {routes.length === 0 ? (
+                    <p className="p-2 text-xs text-muted-foreground">Chưa có route.</p>
+                  ) : (
+                    routes.map((r) => (
+                      <label
+                        key={r.id}
+                        className="flex items-center gap-2 px-2 py-1.5 text-xs border-b border-border/40 last:border-0"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedRouteIds.includes(r.id)}
+                          onChange={() =>
+                            setSelectedRouteIds((prev) =>
+                              prev.includes(r.id)
+                                ? prev.filter((x) => x !== r.id)
+                                : [...prev, r.id],
+                            )
+                          }
+                        />
+                        <span className="font-mono text-slate-300 truncate">{r.path}</span>
+                      </label>
+                    ))
+                  )}
+                </div>
+              ) : null}
+              <FieldError message={fieldErrors.route_ids} />
             </div>
 
             <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
@@ -235,23 +335,20 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
               className="w-full bg-primary hover:bg-primary/90"
               disabled={pending}
             >
-              {pending ? 'Đang tạo…' : 'Tạo key'}
+              {pending ? 'Đang đăng ký…' : 'Đăng ký client'}
             </Button>
           </div>
         ) : (
-          <div className="px-6 pb-6 space-y-4">
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-5 pb-6 space-y-4">
             <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 flex gap-2">
               <Shield className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
               <p className="text-xs text-amber-200/90 leading-relaxed">
-                <strong className="text-amber-300">Secret chỉ trả về một lần.</strong> Server không lưu
-                để xem lại — copy ngay. Che kiểu password trên trình duyệt không chặn DevTools; bảo mật
-                thật là bạn lưu Secret ra ngoài dashboard.
+                <strong className="text-amber-300">Secret chỉ hiện một lần.</strong> Copy và lưu ngay.
               </p>
             </div>
 
             <CredentialRow
               label="API Key"
-              hint="Public id — header X-API-Key"
               value={generatedApiKey}
               onCopy={() => void copyText(generatedApiKey, 'API Key')}
             />
@@ -270,11 +367,11 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
                 Copy cả hai
               </Button>
               <Button onClick={goTryProxy} className="w-full bg-primary hover:bg-primary/90">
-                <Sparkles className="w-4 h-4 mr-2" />
+
                 Thử gọi proxy ngay
               </Button>
               <Button onClick={() => handleOpenChange(false)} variant="ghost" className="w-full">
-                Đóng — tôi đã lưu Secret
+                Đóng
               </Button>
             </div>
           </div>
@@ -286,21 +383,16 @@ export function CreateApiKeyDialog({ onKeysChanged }: Props) {
 
 function CredentialRow({
   label,
-  hint,
   value,
   onCopy,
 }: {
   label: string;
-  hint: string;
   value: string;
   onCopy: () => void;
 }) {
   return (
     <div className="rounded-lg border border-border bg-slate-950/60 p-3">
-      <div className="flex items-center justify-between gap-2 mb-1">
-        <Label className="text-foreground text-sm">{label}</Label>
-        <span className="text-[10px] text-muted-foreground">{hint}</span>
-      </div>
+      <Label className="text-foreground text-sm mb-2 block">{label}</Label>
       <div className="flex gap-2">
         <Input
           value={value}
@@ -322,18 +414,14 @@ function SecretCredentialRow({ value, onCopy }: { value: string; onCopy: () => v
 
   return (
     <div className="rounded-lg border border-border bg-slate-950/60 p-3">
-      <div className="flex items-center justify-between gap-2 mb-1">
-        <Label className="text-foreground text-sm">Secret Key</Label>
-        <span className="text-[10px] text-muted-foreground">Ký HMAC — không lưu trên server</span>
-      </div>
+      <Label className="text-foreground text-sm mb-2 block">Secret Key</Label>
       {showOnScreen ? (
         <pre className="mb-2 max-h-24 overflow-auto rounded-md border border-border bg-input px-3 py-2 font-mono text-xs text-foreground whitespace-pre-wrap break-all">
           {value}
         </pre>
       ) : (
         <p className="mb-2 rounded-md border border-dashed border-border/80 bg-slate-900/50 px-3 py-2 text-xs text-muted-foreground">
-          Secret đã tạo ({value.length} ký tự). Bấm <strong className="text-slate-300">Copy</strong>{' '}
-          để lấy — mặc định không hiện trên màn hình.
+          Bấm <strong className="text-slate-300">Copy</strong> để lấy Secret.
         </p>
       )}
       <div className="flex flex-wrap gap-2">
@@ -348,14 +436,9 @@ function SecretCredentialRow({ value, onCopy }: { value: string; onCopy: () => v
           className="border-border"
           onClick={() => setShowOnScreen((v) => !v)}
         >
-          {showOnScreen ? 'Ẩn khỏi màn hình' : 'Hiện Secret trên màn hình'}
+          {showOnScreen ? 'Ẩn' : 'Hiện Secret'}
         </Button>
       </div>
-      {showOnScreen ? (
-        <p className="mt-2 text-[10px] text-muted-foreground">
-          Đã hiện plain text — ai có DevTools vẫn đọc được; chỉ dùng khi cần xem trực tiếp.
-        </p>
-      ) : null}
     </div>
   );
 }

@@ -101,7 +101,7 @@ def main() -> None:
             [
                 "Xác thực data plane bằng HMAC-SHA256 (header X-API-Key, X-Timestamp, X-Signature), không dùng JWT.",
                 "Quản lý danh tính: đăng ký Viewer, quên mật khẩu OTP qua email (Brevo API).",
-                "15 phân hệ chức năng lớn — chi tiết trong docs/KIEN_TRUC_THUC_TE.md và docs/MA_TRAN_DONG_AN.md trong repository.",
+                "Integration Platform MVP — chi tiết trong docs/BAO_CAO.md, docs/BAN_VE_HE_THONG.md và docs/MA_TRAN_DONG_AN.md trong repository.",
             ],
         )
         changes += 1
@@ -118,11 +118,11 @@ def main() -> None:
         changes += 1
 
     anchor = para_by_snippet(doc, "Về mặt chức năng:")
-    if anchor and not doc_contains(doc, "triển khai production DigitalOcean và Docker HA"):
+    if anchor and not doc_contains(doc, "Docker Compose Deployment"):
         insert_after(
             anchor,
             [
-                "Đồ án hiện thực 15 phân hệ lớn: API Gateway (proxy, routing động, HMAC, rate limit, pipeline transform/retry/DLQ), transaction log và audit log tách biệt, control plane (dashboard SPA, session Redis, RBAC, quản lý user/key, quên MK OTP), tích hợp OAuth Salesforce và Zoho Projects, triển khai production DigitalOcean và Docker HA.",
+                "Đồ án hiện thực Integration Platform MVP: đồng bộ Opportunity Salesforce → Project/Task Zoho Projects, Docker Compose Deployment production (thientinh.io.vn) và container hóa local.",
             ],
         )
         changes += 1
@@ -168,7 +168,7 @@ def main() -> None:
 
     doc.save(str(DOC_PATH))
     print(f"Patched {DOC_PATH} ({changes} change groups).")
-    print("Xem thêm: docs/LUAN_VAN_SUA_DOI.md")
+    print("Xem thêm: docs/BAO_CAO.md")
 
 
 if __name__ == "__main__":

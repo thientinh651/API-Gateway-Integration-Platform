@@ -18,19 +18,34 @@ pub const ROUTE_SELECT: &str =
 pub struct ClientCredentials {
     pub legacy: Vec<LegacyClientKey>,
     pub hmac: Vec<HmacClientKey>,
+    /// Disabled clients — 403 rõ ràng + giữ id cho transaction log.
+    pub disabled_clients: Vec<DisabledClientKey>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DisabledClientKey {
+    pub id: i64,
+    pub api_key: String,
+    pub tenant_id: i64,
 }
 
 #[derive(Debug, Clone)]
 pub struct LegacyClientKey {
+    pub id: i64,
     pub sha256_hex: String,
     pub tenant_id: i64,
+    pub rate_limit_per_min: i32,
+    pub allowed_route_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone)]
 pub struct HmacClientKey {
+    pub id: i64,
     pub api_key: String,
     pub secret: String,
     pub tenant_id: i64,
+    pub rate_limit_per_min: i32,
+    pub allowed_route_ids: Vec<i64>,
 }
 
 pub fn sha256_hex(s: &str) -> String {
@@ -264,11 +279,28 @@ fn personal_tenant_name(username: &str) -> String {
 
 pub async fn create_personal_tenant(pool: &PgPool, username: &str) -> Result<i64, sqlx::Error> {
     let base = personal_tenant_name(username);
+    if let Some(id) = sqlx::query_scalar("SELECT id FROM tenants WHERE name = $1")
+        .bind(&base)
+        .fetch_optional(pool)
+        .await?
+    {
+        return Ok(id);
+    }
+
     let mut name = base.clone();
     for attempt in 0..5 {
         match create_tenant(pool, &name).await {
             Ok(id) => return Ok(id),
-            Err(sqlx::Error::Database(e)) if e.message().contains("UNIQUE") => {
+            Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("23505") => {
+                if name == base {
+                    if let Some(id) = sqlx::query_scalar("SELECT id FROM tenants WHERE name = $1")
+                        .bind(&base)
+                        .fetch_optional(pool)
+                        .await?
+                    {
+                        return Ok(id);
+                    }
+                }
                 name = format!("{base}-{}", attempt + 2);
             }
             Err(e) => return Err(e),
@@ -278,28 +310,112 @@ pub async fn create_personal_tenant(pool: &PgPool, username: &str) -> Result<i64
 }
 
 pub async fn migrate_personal_admin_tenants(pool: &PgPool) -> Result<(), sqlx::Error> {
-    let rows: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT id, username FROM dashboard_users
-         WHERE LOWER(TRIM(role)) = 'admin' AND COALESCE(tenant_id, 1) = 1
-         ORDER BY id ASC",
+    migrate_workspace_isolation(pool).await
+}
+
+/// On-prem: gộp mọi user về tenant `default` (id 1), xóa membership collaborator.
+pub async fn migrate_on_prem_organization(pool: &PgPool) -> Result<(), sqlx::Error> {
+    let done: Option<String> = sqlx::query_scalar(
+        "SELECT v FROM gateway_settings WHERE k = 'on_prem_org_v1'",
     )
-    .fetch_all(pool)
+    .fetch_optional(pool)
+    .await?;
+    if done.as_deref() == Some("done") {
+        return Ok(());
+    }
+
+    ensure_default_tenant(pool).await?;
+    sqlx::query("UPDATE dashboard_users SET tenant_id = 1 WHERE COALESCE(tenant_id, 1) != 1")
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM tenant_memberships")
+        .execute(pool)
+        .await?;
+
+    for k in ["on_prem_org_v1", "workspace_isolation_v1"] {
+        sqlx::query(
+            "INSERT INTO gateway_settings (k, v) VALUES ($1, 'done')
+             ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v",
+        )
+        .bind(k)
+        .execute(pool)
+        .await?;
+    }
+
+    tracing::info!("on-prem organization migration complete (single tenant)");
+    Ok(())
+}
+
+/// Một admin giữ tenant 1 (dữ liệu hiện tại); mọi user khác → workspace riêng.
+pub async fn migrate_workspace_isolation(pool: &PgPool) -> Result<(), sqlx::Error> {
+    let done: Option<String> = sqlx::query_scalar(
+        "SELECT v FROM gateway_settings WHERE k = 'workspace_isolation_v1'",
+    )
+    .fetch_optional(pool)
+    .await?;
+    if done.as_deref() == Some("done") {
+        return Ok(());
+    }
+
+    let primary_id: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(
+            (SELECT id FROM dashboard_users WHERE COALESCE(tenant_id, 1) = 1
+                AND LOWER(TRIM(role)) = 'admin' ORDER BY id ASC LIMIT 1),
+            (SELECT id FROM dashboard_users WHERE LOWER(TRIM(role)) = 'admin' ORDER BY id ASC LIMIT 1),
+            1
+        )",
+    )
+    .fetch_one(pool)
     .await?;
 
-    for (id, username) in rows.into_iter().skip(1) {
+    sqlx::query("UPDATE dashboard_users SET tenant_id = 1 WHERE id = $1")
+        .bind(primary_id)
+        .execute(pool)
+        .await?;
+
+    let leavers: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id, username FROM dashboard_users
+         WHERE COALESCE(tenant_id, 1) = 1 AND id != $1",
+    )
+    .bind(primary_id)
+    .fetch_all(pool)
+    .await?;
+    let moved = leavers.len();
+
+    for (uid, username) in leavers {
         let tid = create_personal_tenant(pool, &username).await?;
         sqlx::query("UPDATE dashboard_users SET tenant_id = $1 WHERE id = $2")
             .bind(tid)
-            .bind(id)
+            .bind(uid)
             .execute(pool)
             .await?;
+        sqlx::query(
+            "UPDATE gateway_client_keys SET tenant_id = $1 WHERE owner_user_id = $2",
+        )
+        .bind(tid)
+        .bind(uid)
+        .execute(pool)
+        .await?;
         tracing::info!(
-            user_id = id,
+            user_id = uid,
             username = %username,
             tenant_id = tid,
-            "migrated admin to personal tenant"
+            "migrated user to personal workspace"
         );
     }
+
+    sqlx::query(
+        "INSERT INTO gateway_settings (k, v) VALUES ('workspace_isolation_v1', 'done')
+         ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v",
+    )
+    .execute(pool)
+    .await?;
+
+    tracing::info!(
+        primary_admin_id = primary_id,
+        moved_users = moved,
+        "workspace isolation migration complete"
+    );
     Ok(())
 }
 
@@ -321,6 +437,138 @@ pub async fn list_dashboard_users_for_tenant(
          FROM dashboard_users WHERE COALESCE(tenant_id, 1) = $1 ORDER BY username",
     )
     .bind(tenant_id)
+    .fetch_all(pool)
+    .await
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct WorkspaceInfoRow {
+    pub tenant_id: i64,
+    pub name: String,
+    pub role: String,
+    pub is_home: bool,
+}
+
+pub async fn user_can_access_workspace(
+    pool: &PgPool,
+    user_id: i64,
+    home_tenant_id: i64,
+    workspace_tenant_id: i64,
+) -> Result<bool, sqlx::Error> {
+    if workspace_tenant_id == home_tenant_id {
+        return Ok(true);
+    }
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2",
+    )
+    .bind(workspace_tenant_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(n > 0)
+}
+
+pub async fn effective_workspace_role(
+    pool: &PgPool,
+    user_id: i64,
+    home_tenant_id: i64,
+    home_role: &str,
+    workspace_tenant_id: i64,
+) -> Result<String, sqlx::Error> {
+    if workspace_tenant_id == home_tenant_id {
+        return Ok(home_role.trim().to_ascii_lowercase());
+    }
+    let role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2 LIMIT 1",
+    )
+    .bind(workspace_tenant_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(role
+        .unwrap_or_else(|| "viewer".into())
+        .trim()
+        .to_ascii_lowercase())
+}
+
+pub async fn list_accessible_workspaces(
+    pool: &PgPool,
+    user_id: i64,
+    home_tenant_id: i64,
+) -> Result<Vec<WorkspaceInfoRow>, sqlx::Error> {
+    sqlx::query_as::<_, WorkspaceInfoRow>(
+        "SELECT t.id AS tenant_id, t.name, LOWER(TRIM(u.role)) AS role, TRUE AS is_home
+         FROM tenants t
+         JOIN dashboard_users u ON u.id = $1 AND COALESCE(u.tenant_id, 1) = t.id
+         UNION
+         SELECT t.id AS tenant_id, t.name, LOWER(TRIM(m.role)) AS role, FALSE AS is_home
+         FROM tenant_memberships m
+         JOIN tenants t ON t.id = m.tenant_id
+         WHERE m.user_id = $1 AND m.tenant_id != $2
+         ORDER BY is_home DESC, name ASC",
+    )
+    .bind(user_id)
+    .bind(home_tenant_id)
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn upsert_tenant_membership(
+    pool: &PgPool,
+    tenant_id: i64,
+    user_id: i64,
+    role: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO tenant_memberships (tenant_id, user_id, role)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = EXCLUDED.role",
+    )
+    .bind(tenant_id)
+    .bind(user_id)
+    .bind(role)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn delete_tenant_membership(
+    pool: &PgPool,
+    tenant_id: i64,
+    user_id: i64,
+) -> Result<bool, sqlx::Error> {
+    let r = sqlx::query("DELETE FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2")
+        .bind(tenant_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected() > 0)
+}
+
+/// Thành viên workspace: chủ (home tenant) + khách được mời (membership).
+pub async fn list_workspace_users(
+    pool: &PgPool,
+    workspace_tenant_id: i64,
+) -> Result<Vec<AdminUserPublic>, sqlx::Error> {
+    sqlx::query_as::<_, AdminUserPublic>(
+        "SELECT u.id, u.username,
+                COALESCE(m.role, u.role) AS role,
+                COALESCE(u.tenant_id, 1) AS tenant_id,
+                CASE WHEN u.is_active = 0 THEN 0 ELSE 1 END AS is_active,
+                u.created_at::text AS created_at,
+                u.email
+         FROM dashboard_users u
+         LEFT JOIN tenant_memberships m ON m.user_id = u.id AND m.tenant_id = $1
+         WHERE COALESCE(u.tenant_id, 1) = $1
+         UNION
+         SELECT u.id, u.username, m.role, COALESCE(u.tenant_id, 1), CASE WHEN u.is_active = 0 THEN 0 ELSE 1 END,
+                u.created_at::text, u.email
+         FROM tenant_memberships m
+         JOIN dashboard_users u ON u.id = m.user_id
+         WHERE m.tenant_id = $1 AND COALESCE(u.tenant_id, 1) != $1
+         ORDER BY username",
+    )
+    .bind(workspace_tenant_id)
     .fetch_all(pool)
     .await
 }
@@ -688,6 +936,7 @@ pub struct TransactionLogRow {
     pub duration_ms: i64,
     pub client_ip: Option<String>,
     pub api_key_masked: Option<String>,
+    pub client_key_id: Option<i64>,
     pub outcome: String,
     pub reason: String,
     pub upstream: Option<String>,
@@ -704,14 +953,15 @@ pub async fn insert_transaction_log(
     duration_ms: i64,
     client_ip: Option<&str>,
     api_key_masked: &str,
+    client_key_id: Option<i64>,
     outcome: &str,
     reason: &str,
     upstream: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO gateway_transaction_logs
-         (tenant_id, request_id, method, path, status, duration_ms, client_ip, api_key_masked, outcome, reason, upstream)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+         (tenant_id, request_id, method, path, status, duration_ms, client_ip, api_key_masked, client_key_id, outcome, reason, upstream)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(tenant_id)
     .bind(request_id)
@@ -721,6 +971,7 @@ pub async fn insert_transaction_log(
     .bind(duration_ms)
     .bind(client_ip)
     .bind(api_key_masked)
+    .bind(client_key_id)
     .bind(outcome)
     .bind(reason)
     .bind(upstream)
@@ -738,12 +989,14 @@ pub async fn list_transaction_logs(
     status_max: Option<i64>,
     outcome: Option<&str>,
     search: Option<&str>,
+    reason: Option<&str>,
+    client_key_id: Option<i64>,
 ) -> Result<Vec<TransactionLogRow>, sqlx::Error> {
     let lim = limit.clamp(1, 500);
     let mut n: i32 = 2;
     let mut sql = String::from(
-        "SELECT id, tenant_id, request_id, method, path, status, duration_ms, client_ip, api_key_masked, outcome, reason, upstream, created_at::text AS created_at
-         FROM gateway_transaction_logs WHERE (tenant_id = $1 OR tenant_id IS NULL)",
+        "SELECT id, tenant_id, request_id, method, path, status, duration_ms, client_ip, api_key_masked, client_key_id, outcome, reason, upstream, created_at::text AS created_at
+         FROM gateway_transaction_logs WHERE tenant_id = $1",
     );
     if method.filter(|m| !m.is_empty() && *m != "all").is_some() {
         sql.push_str(&format!(" AND method = ${n}"));
@@ -766,11 +1019,20 @@ pub async fn list_transaction_logs(
     }
     if search.filter(|s| !s.trim().is_empty()).is_some() {
         sql.push_str(&format!(
-            " AND (path LIKE ${n} OR request_id LIKE ${n2} OR COALESCE(client_ip,'') LIKE ${n3})",
+            " AND (path LIKE ${n} OR request_id LIKE ${n2} OR COALESCE(client_ip,'') LIKE ${n3} OR COALESCE(api_key_masked,'') LIKE ${n4})",
             n2 = n + 1,
-            n3 = n + 2
+            n3 = n + 2,
+            n4 = n + 3
         ));
-        n += 3;
+        n += 4;
+    }
+    if reason.filter(|r| !r.is_empty() && *r != "all").is_some() {
+        sql.push_str(&format!(" AND reason = ${n}"));
+        n += 1;
+    }
+    if client_key_id.is_some() {
+        sql.push_str(&format!(" AND client_key_id = ${n}"));
+        n += 1;
     }
     sql.push_str(&format!(" ORDER BY id DESC LIMIT ${n}"));
 
@@ -786,9 +1048,180 @@ pub async fn list_transaction_logs(
     }
     if let Some(s) = search.filter(|s| !s.trim().is_empty()) {
         let pat = format!("%{}%", s.trim());
-        q = q.bind(pat.clone()).bind(pat.clone()).bind(pat);
+        q = q.bind(pat.clone()).bind(pat.clone()).bind(pat.clone()).bind(pat);
+    }
+    if let Some(r) = reason.filter(|r| !r.is_empty() && *r != "all") {
+        q = q.bind(r);
+    }
+    if let Some(cid) = client_key_id {
+        q = q.bind(cid);
     }
     q.bind(lim).fetch_all(pool).await
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ClientKeyTrafficStats {
+    pub hours: i32,
+    pub total: i64,
+    pub success: i64,
+    pub denied: i64,
+    pub upstream_error: i64,
+    pub avg_duration_ms: f64,
+    pub top_paths: Vec<(String, i64)>,
+}
+
+pub async fn client_key_traffic_stats(
+    pool: &PgPool,
+    tenant_id: i64,
+    client_key_id: i64,
+    hours: i32,
+) -> Result<ClientKeyTrafficStats, sqlx::Error> {
+    let hours = hours.clamp(1, 168);
+    let exists: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM gateway_client_keys WHERE id = $1 AND tenant_id = $2",
+    )
+    .bind(client_key_id)
+    .bind(tenant_id)
+    .fetch_optional(pool)
+    .await?;
+    if exists.is_none() {
+        return Ok(ClientKeyTrafficStats {
+            hours,
+            total: 0,
+            success: 0,
+            denied: 0,
+            upstream_error: 0,
+            avg_duration_ms: 0.0,
+            top_paths: vec![],
+        });
+    }
+
+    let interval = format!("{hours} hours");
+    let total: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM gateway_transaction_logs
+         WHERE tenant_id = $1 AND client_key_id = $2 AND created_at >= NOW() - INTERVAL '{}'",
+        interval
+    ))
+    .bind(tenant_id)
+    .bind(client_key_id)
+    .fetch_one(pool)
+    .await?;
+
+    let success: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM gateway_transaction_logs
+         WHERE tenant_id = $1 AND client_key_id = $2 AND created_at >= NOW() - INTERVAL '{}'
+           AND outcome = 'success'",
+        interval
+    ))
+    .bind(tenant_id)
+    .bind(client_key_id)
+    .fetch_one(pool)
+    .await?;
+
+    let denied: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM gateway_transaction_logs
+         WHERE tenant_id = $1 AND client_key_id = $2 AND created_at >= NOW() - INTERVAL '{}'
+           AND outcome = 'denied'",
+        interval
+    ))
+    .bind(tenant_id)
+    .bind(client_key_id)
+    .fetch_one(pool)
+    .await?;
+
+    let upstream_error: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM gateway_transaction_logs
+         WHERE tenant_id = $1 AND client_key_id = $2 AND created_at >= NOW() - INTERVAL '{}'
+           AND outcome = 'upstream_error'",
+        interval
+    ))
+    .bind(tenant_id)
+    .bind(client_key_id)
+    .fetch_one(pool)
+    .await?;
+
+    let avg_duration_ms: Option<f64> = sqlx::query_scalar(&format!(
+        "SELECT AVG(duration_ms)::float8 FROM gateway_transaction_logs
+         WHERE tenant_id = $1 AND client_key_id = $2 AND created_at >= NOW() - INTERVAL '{}'",
+        interval
+    ))
+    .bind(tenant_id)
+    .bind(client_key_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let top_paths: Vec<(String, i64)> = sqlx::query_as(&format!(
+        "SELECT path, COUNT(*) AS cnt FROM gateway_transaction_logs
+         WHERE tenant_id = $1 AND client_key_id = $2 AND created_at >= NOW() - INTERVAL '{}'
+         GROUP BY path ORDER BY cnt DESC LIMIT 5",
+        interval
+    ))
+    .bind(tenant_id)
+    .bind(client_key_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(ClientKeyTrafficStats {
+        hours,
+        total,
+        success,
+        denied,
+        upstream_error,
+        avg_duration_ms: avg_duration_ms.unwrap_or(0.0),
+        top_paths,
+    })
+}
+
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct ClientKeyTrafficSummaryRow {
+    pub client_key_id: i64,
+    pub total: i64,
+}
+
+pub async fn client_keys_traffic_summary_24h(
+    pool: &PgPool,
+    tenant_id: i64,
+) -> Result<Vec<ClientKeyTrafficSummaryRow>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT client_key_id, COUNT(*)::bigint AS total
+         FROM gateway_transaction_logs
+         WHERE tenant_id = $1 AND client_key_id IS NOT NULL
+           AND created_at >= NOW() - INTERVAL '24 hours'
+         GROUP BY client_key_id
+         ORDER BY total DESC",
+    )
+    .bind(tenant_id)
+    .fetch_all(pool)
+    .await
+}
+
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct ClientTrafficTopRow {
+    pub client_key_id: i64,
+    pub name: String,
+    pub total: i64,
+}
+
+pub async fn client_traffic_top_24h(
+    pool: &PgPool,
+    tenant_id: i64,
+    limit: i64,
+) -> Result<Vec<ClientTrafficTopRow>, sqlx::Error> {
+    let lim = limit.clamp(1, 20);
+    sqlx::query_as(
+        "SELECT k.id AS client_key_id, k.name, COUNT(*)::bigint AS total
+         FROM gateway_transaction_logs t
+         INNER JOIN gateway_client_keys k ON k.id = t.client_key_id
+         WHERE t.tenant_id = $1 AND t.client_key_id IS NOT NULL
+           AND t.created_at >= NOW() - INTERVAL '24 hours'
+         GROUP BY k.id, k.name
+         ORDER BY total DESC
+         LIMIT $2",
+    )
+    .bind(tenant_id)
+    .bind(lim)
+    .fetch_all(pool)
+    .await
 }
 
 pub async fn list_audit_logs_filtered(
@@ -886,6 +1319,25 @@ pub struct ClientKeyMeta {
     pub auth_mode: String,
     pub integration_type: String,
     pub tenant_id: i64,
+    pub status: String,
+    pub rate_limit_per_min: i32,
+    #[serde(default)]
+    pub allowed_route_ids: Vec<i64>,
+    pub last_used_at: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RouteAclSummaryRow {
+    pub route_id: i64,
+    pub client_count: i64,
+    pub client_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RouteAclClientRow {
+    pub id: i64,
+    pub name: String,
+    pub status: String,
 }
 
 pub async fn list_client_keys(
@@ -904,12 +1356,20 @@ pub async fn list_client_keys_scoped(
 ) -> Result<Vec<ClientKeyMeta>, sqlx::Error> {
     if admin_sees_all || owner_user_id.is_none() {
         sqlx::query_as::<_, ClientKeyMeta>(
-            "SELECT id, name, api_key,
-                    CASE WHEN secret_encrypted IS NOT NULL AND secret_encrypted != '' THEN 'hmac'
+            "SELECT k.id, k.name, k.api_key,
+                    CASE WHEN k.secret_encrypted IS NOT NULL AND k.secret_encrypted != '' THEN 'hmac'
                          ELSE 'legacy' END AS auth_mode,
-                    COALESCE(integration_type, 'app') AS integration_type,
-                    tenant_id
-             FROM gateway_client_keys WHERE tenant_id = $1 ORDER BY id",
+                    COALESCE(k.integration_type, 'app') AS integration_type,
+                    k.tenant_id,
+                    COALESCE(k.status, 'active') AS status,
+                    COALESCE(k.rate_limit_per_min, 0) AS rate_limit_per_min,
+                    COALESCE(
+                        (SELECT array_agg(r.route_id ORDER BY r.route_id)
+                         FROM gateway_client_key_routes r WHERE r.client_key_id = k.id),
+                        ARRAY[]::BIGINT[]
+                    ) AS allowed_route_ids,
+                    k.last_used_at::text AS last_used_at
+             FROM gateway_client_keys k WHERE k.tenant_id = $1 ORDER BY k.id",
         )
         .bind(tenant_id)
         .fetch_all(pool)
@@ -917,12 +1377,20 @@ pub async fn list_client_keys_scoped(
     } else {
         let uid = owner_user_id.unwrap_or(0);
         sqlx::query_as::<_, ClientKeyMeta>(
-            "SELECT id, name, api_key,
-                    CASE WHEN secret_encrypted IS NOT NULL AND secret_encrypted != '' THEN 'hmac'
+            "SELECT k.id, k.name, k.api_key,
+                    CASE WHEN k.secret_encrypted IS NOT NULL AND k.secret_encrypted != '' THEN 'hmac'
                          ELSE 'legacy' END AS auth_mode,
-                    COALESCE(integration_type, 'app') AS integration_type,
-                    tenant_id
-             FROM gateway_client_keys WHERE tenant_id = $1 AND owner_user_id = $2 ORDER BY id",
+                    COALESCE(k.integration_type, 'app') AS integration_type,
+                    k.tenant_id,
+                    COALESCE(k.status, 'active') AS status,
+                    COALESCE(k.rate_limit_per_min, 0) AS rate_limit_per_min,
+                    COALESCE(
+                        (SELECT array_agg(r.route_id ORDER BY r.route_id)
+                         FROM gateway_client_key_routes r WHERE r.client_key_id = k.id),
+                        ARRAY[]::BIGINT[]
+                    ) AS allowed_route_ids,
+                    k.last_used_at::text AS last_used_at
+             FROM gateway_client_keys k WHERE k.tenant_id = $1 AND k.owner_user_id = $2 ORDER BY k.id",
         )
         .bind(tenant_id)
         .bind(uid)
@@ -946,33 +1414,238 @@ pub async fn fetch_client_key_owner(
 }
 
 pub async fn load_client_credentials(pool: &PgPool) -> Result<ClientCredentials, sqlx::Error> {
-    let rows: Vec<(Option<String>, Option<String>, Option<String>, i64)> = sqlx::query_as(
-        "SELECT api_key, secret_encrypted, secret_sha256_hex, tenant_id FROM gateway_client_keys ORDER BY id",
+    let rows: Vec<(
+        i64,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+        String,
+        i32,
+    )> = sqlx::query_as(
+        "SELECT id, api_key, secret_encrypted, secret_sha256_hex, tenant_id,
+                COALESCE(status, 'active'), COALESCE(rate_limit_per_min, 0)
+         FROM gateway_client_keys ORDER BY id",
     )
     .fetch_all(pool)
     .await?;
 
+    let allowlists = load_all_client_key_route_allowlists(pool).await?;
+
     let mut creds = ClientCredentials::default();
-    for (api_key, secret_enc, legacy_hash, tenant_id) in rows {
+    for (id, api_key, secret_enc, legacy_hash, tenant_id, status, rate_limit_per_min) in rows {
+        let allowed_route_ids = allowlists.get(&id).cloned().unwrap_or_default();
+        if status != "active" {
+            if let Some(k) = api_key.filter(|s| !s.is_empty()) {
+                creds.disabled_clients.push(DisabledClientKey {
+                    id,
+                    api_key: k,
+                    tenant_id,
+                });
+            }
+            continue;
+        }
         if let Some(enc) = secret_enc.filter(|s| !s.is_empty()) {
-            if let Some(id) = api_key.filter(|s| !s.is_empty()) {
+            if let Some(key_id) = api_key.filter(|s| !s.is_empty()) {
                 match crypto::decrypt_secret(&enc) {
                     Ok(secret) => creds.hmac.push(HmacClientKey {
-                        api_key: id,
+                        id,
+                        api_key: key_id,
                         secret,
                         tenant_id,
+                        rate_limit_per_min,
+                        allowed_route_ids,
                     }),
-                    Err(e) => tracing::error!(api_key = %id, error = %e, "skip hmac key: decrypt failed"),
+                    Err(e) => tracing::error!(api_key = %key_id, error = %e, "skip hmac key: decrypt failed"),
                 }
             }
         } else if let Some(h) = legacy_hash.filter(|s| !s.is_empty()) {
             creds.legacy.push(LegacyClientKey {
+                id,
                 sha256_hex: h,
                 tenant_id,
+                rate_limit_per_min,
+                allowed_route_ids,
             });
         }
     }
     Ok(creds)
+}
+
+async fn load_all_client_key_route_allowlists(
+    pool: &PgPool,
+) -> Result<std::collections::HashMap<i64, Vec<i64>>, sqlx::Error> {
+    let rows: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT client_key_id, route_id FROM gateway_client_key_routes ORDER BY client_key_id, route_id",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut map: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
+    for (cid, rid) in rows {
+        map.entry(cid).or_default().push(rid);
+    }
+    Ok(map)
+}
+
+pub async fn fetch_client_key_routes(
+    pool: &PgPool,
+    client_key_id: i64,
+    tenant_id: i64,
+) -> Result<Option<Vec<i64>>, sqlx::Error> {
+    let exists: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM gateway_client_keys WHERE id = $1 AND tenant_id = $2 LIMIT 1",
+    )
+    .bind(client_key_id)
+    .bind(tenant_id)
+    .fetch_optional(pool)
+    .await?;
+    if exists.is_none() {
+        return Ok(None);
+    }
+    let rows: Vec<i64> = sqlx::query_scalar(
+        "SELECT route_id FROM gateway_client_key_routes WHERE client_key_id = $1 ORDER BY route_id",
+    )
+    .bind(client_key_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(Some(rows))
+}
+
+pub async fn set_client_key_routes(
+    pool: &PgPool,
+    client_key_id: i64,
+    tenant_id: i64,
+    route_ids: &[i64],
+) -> Result<bool, sqlx::Error> {
+    let exists: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM gateway_client_keys WHERE id = $1 AND tenant_id = $2 LIMIT 1",
+    )
+    .bind(client_key_id)
+    .bind(tenant_id)
+    .fetch_optional(pool)
+    .await?;
+    if exists.is_none() {
+        return Ok(false);
+    }
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM gateway_client_key_routes WHERE client_key_id = $1")
+        .bind(client_key_id)
+        .execute(&mut *tx)
+        .await?;
+    for rid in route_ids {
+        let ok: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM gateway_routes WHERE id = $1 AND tenant_id = $2 LIMIT 1",
+        )
+        .bind(rid)
+        .bind(tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if ok.is_some() {
+            sqlx::query(
+                "INSERT INTO gateway_client_key_routes (client_key_id, route_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            )
+            .bind(client_key_id)
+            .bind(rid)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// Rotate HMAC secret; returns public api_key when updated.
+pub async fn rotate_client_key_secret(
+    pool: &PgPool,
+    id: i64,
+    tenant_id: i64,
+    new_secret: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let enc = crypto::encrypt_secret(new_secret).map_err(|e| {
+        sqlx::Error::Configuration(format!("encrypt secret: {e}").into())
+    })?;
+    sqlx::query_scalar(
+        "UPDATE gateway_client_keys SET secret_encrypted = $3
+         WHERE id = $1 AND tenant_id = $2
+           AND api_key IS NOT NULL
+           AND secret_encrypted IS NOT NULL AND secret_encrypted != ''
+         RETURNING api_key",
+    )
+    .bind(id)
+    .bind(tenant_id)
+    .bind(&enc)
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn update_client_key_registry(
+    pool: &PgPool,
+    id: i64,
+    tenant_id: i64,
+    status: Option<&str>,
+    rate_limit_per_min: Option<i32>,
+) -> Result<u64, sqlx::Error> {
+    match (status, rate_limit_per_min) {
+        (Some(s), Some(rl)) => {
+            let r = sqlx::query(
+                "UPDATE gateway_client_keys SET status = $3, rate_limit_per_min = $4 WHERE id = $1 AND tenant_id = $2",
+            )
+            .bind(id)
+            .bind(tenant_id)
+            .bind(s)
+            .bind(rl)
+            .execute(pool)
+            .await?;
+            Ok(r.rows_affected())
+        }
+        (Some(s), None) => {
+            let r = sqlx::query(
+                "UPDATE gateway_client_keys SET status = $3 WHERE id = $1 AND tenant_id = $2",
+            )
+            .bind(id)
+            .bind(tenant_id)
+            .bind(s)
+            .execute(pool)
+            .await?;
+            Ok(r.rows_affected())
+        }
+        (None, Some(rl)) => {
+            let r = sqlx::query(
+                "UPDATE gateway_client_keys SET rate_limit_per_min = $3 WHERE id = $1 AND tenant_id = $2",
+            )
+            .bind(id)
+            .bind(tenant_id)
+            .bind(rl)
+            .execute(pool)
+            .await?;
+            Ok(r.rows_affected())
+        }
+        (None, None) => Ok(0),
+    }
+}
+
+pub async fn bulk_update_client_key_status(
+    pool: &PgPool,
+    tenant_id: i64,
+    ids: &[i64],
+    status: &str,
+    owner_user_id: Option<i64>,
+) -> Result<u64, sqlx::Error> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let r = sqlx::query(
+        "UPDATE gateway_client_keys SET status = $3
+         WHERE tenant_id = $1 AND id = ANY($2)
+           AND ($4::bigint IS NULL OR owner_user_id = $4)",
+    )
+    .bind(tenant_id)
+    .bind(ids)
+    .bind(status)
+    .bind(owner_user_id)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
 }
 
 pub async fn insert_route(
@@ -1118,14 +1791,15 @@ pub async fn insert_client_key_hmac(
     tenant_id: i64,
     integration_type: &str,
     owner_user_id: i64,
+    rate_limit_per_min: i32,
 ) -> Result<i64, sqlx::Error> {
     let enc = crypto::encrypt_secret(secret_key).map_err(|e| {
         sqlx::Error::Configuration(format!("encrypt secret: {e}").into())
     })?;
     let sha_placeholder = format!("hmac:{}", sha256_hex(api_key));
     sqlx::query_scalar(
-        "INSERT INTO gateway_client_keys (name, api_key, secret_encrypted, secret_sha256_hex, tenant_id, integration_type, owner_user_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+        "INSERT INTO gateway_client_keys (name, api_key, secret_encrypted, secret_sha256_hex, tenant_id, integration_type, owner_user_id, status, rate_limit_per_min)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8) RETURNING id",
     )
     .bind(name)
     .bind(api_key)
@@ -1134,6 +1808,7 @@ pub async fn insert_client_key_hmac(
     .bind(tenant_id)
     .bind(integration_type)
     .bind(owner_user_id)
+    .bind(rate_limit_per_min)
     .fetch_one(pool)
     .await
 }
@@ -1172,6 +1847,7 @@ impl From<IntegrationRow> for IntegrationPublic {
         let label = match r.provider.as_str() {
             "salesforce" => "Salesforce",
             "zoho_projects" => "Zoho Projects",
+            "zoho_office" => "Zoho Office Integrator",
             other => other,
         }
         .to_string();
@@ -1187,6 +1863,22 @@ impl From<IntegrationRow> for IntegrationPublic {
             is_demo: false,
         }
     }
+}
+
+pub async fn ensure_integration_row(
+    pool: &PgPool,
+    tenant_id: i64,
+    provider: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO integrations (tenant_id, provider, status) VALUES ($1, $2, 'disconnected')
+         ON CONFLICT (tenant_id, provider) DO NOTHING",
+    )
+    .bind(tenant_id)
+    .bind(provider)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub async fn delete_integration_entity_links(
@@ -1574,6 +2266,129 @@ pub async fn purge_expired_oauth_pending(pool: &PgPool) -> Result<(), sqlx::Erro
     Ok(())
 }
 
+pub async fn fetch_client_key_meta_by_id(
+    pool: &PgPool,
+    id: i64,
+    tenant_id: i64,
+) -> Result<Option<ClientKeyMeta>, sqlx::Error> {
+    sqlx::query_as::<_, ClientKeyMeta>(
+        "SELECT k.id, k.name, k.api_key,
+                CASE WHEN k.secret_encrypted IS NOT NULL AND k.secret_encrypted != '' THEN 'hmac'
+                     ELSE 'legacy' END AS auth_mode,
+                COALESCE(k.integration_type, 'app') AS integration_type,
+                k.tenant_id,
+                COALESCE(k.status, 'active') AS status,
+                COALESCE(k.rate_limit_per_min, 0) AS rate_limit_per_min,
+                COALESCE(
+                    (SELECT array_agg(r.route_id ORDER BY r.route_id)
+                     FROM gateway_client_key_routes r WHERE r.client_key_id = k.id),
+                    ARRAY[]::BIGINT[]
+                ) AS allowed_route_ids,
+                k.last_used_at::text AS last_used_at
+         FROM gateway_client_keys k WHERE k.id = $1 AND k.tenant_id = $2 LIMIT 1",
+    )
+    .bind(id)
+    .bind(tenant_id)
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn touch_client_key_last_used(pool: &PgPool, key_id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE gateway_client_keys SET last_used_at = NOW() WHERE id = $1")
+        .bind(key_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn count_client_keys_by_status(
+    pool: &PgPool,
+    tenant_id: i64,
+) -> Result<(i64, i64), sqlx::Error> {
+    let active: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM gateway_client_keys WHERE tenant_id = $1 AND COALESCE(status, 'active') = 'active'",
+    )
+    .bind(tenant_id)
+    .fetch_one(pool)
+    .await?;
+    let disabled: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM gateway_client_keys WHERE tenant_id = $1 AND status = 'disabled'",
+    )
+    .bind(tenant_id)
+    .fetch_one(pool)
+    .await?;
+    Ok((active, disabled))
+}
+
+pub async fn route_acl_summary(
+    pool: &PgPool,
+    tenant_id: i64,
+) -> Result<Vec<RouteAclSummaryRow>, sqlx::Error> {
+    let rows: Vec<(i64, i64, Option<Vec<String>>)> = sqlx::query_as(
+        "SELECT r.route_id, COUNT(*)::bigint,
+                array_agg(k.name ORDER BY k.name) AS names
+         FROM gateway_client_key_routes r
+         INNER JOIN gateway_client_keys k ON k.id = r.client_key_id
+         WHERE k.tenant_id = $1
+         GROUP BY r.route_id
+         ORDER BY r.route_id",
+    )
+    .bind(tenant_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(route_id, client_count, names)| RouteAclSummaryRow {
+            route_id,
+            client_count,
+            client_names: names.unwrap_or_default(),
+        })
+        .collect())
+}
+
+pub async fn list_clients_for_route(
+    pool: &PgPool,
+    route_id: i64,
+    tenant_id: i64,
+) -> Result<Vec<RouteAclClientRow>, sqlx::Error> {
+    sqlx::query_as::<_, (i64, String, String)>(
+        "SELECT k.id, k.name, COALESCE(k.status, 'active')
+         FROM gateway_client_key_routes r
+         INNER JOIN gateway_client_keys k ON k.id = r.client_key_id
+         WHERE r.route_id = $1 AND k.tenant_id = $2
+         ORDER BY k.name",
+    )
+    .bind(route_id)
+    .bind(tenant_id)
+    .fetch_all(pool)
+    .await
+    .map(|rows| {
+        rows.into_iter()
+            .map(|(id, name, status)| RouteAclClientRow { id, name, status })
+            .collect()
+    })
+}
+
+pub async fn traffic_denial_reasons_24h(
+    pool: &PgPool,
+    tenant_id: i64,
+    limit: i64,
+) -> Result<Vec<(String, i64)>, sqlx::Error> {
+    sqlx::query_as(&format!(
+        "SELECT COALESCE(NULLIF(reason, ''), 'unknown') AS reason, COUNT(*) AS cnt
+         FROM gateway_transaction_logs
+         WHERE {} AND outcome = 'denied'
+         GROUP BY reason
+         ORDER BY cnt DESC
+         LIMIT $2",
+        tx_log_tenant_filter()
+    ))
+    .bind(tenant_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
 pub async fn count_client_keys_for_tenant(pool: &PgPool, tenant_id: i64) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT COUNT(*) FROM gateway_client_keys WHERE tenant_id = $1")
         .bind(tenant_id)
@@ -1667,7 +2482,7 @@ pub async fn audit_hourly_24h(pool: &PgPool, tenant_id: i64) -> Result<Vec<(Stri
 }
 
 fn tx_log_tenant_filter() -> &'static str {
-    "(tenant_id = $1 OR tenant_id IS NULL) AND created_at >= NOW() - INTERVAL '1 day'"
+    "tenant_id = $1 AND created_at >= NOW() - INTERVAL '1 day'"
 }
 
 pub async fn traffic_outcome_counts_24h(
@@ -1938,6 +2753,171 @@ pub async fn list_tenant_ids(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
     sqlx::query_scalar("SELECT id FROM tenants ORDER BY id")
         .fetch_all(pool)
         .await
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct EntityLinkPublic {
+    pub sf_entity_type: String,
+    pub sf_id: String,
+    pub zoho_id: String,
+    pub zoho_name: Option<String>,
+    pub last_synced_at: String,
+    pub document_id: Option<i64>,
+    pub document_filename: Option<String>,
+}
+
+pub async fn list_entity_links_public(
+    pool: &PgPool,
+    tenant_id: i64,
+) -> Result<Vec<EntityLinkPublic>, sqlx::Error> {
+    sqlx::query_as::<_, EntityLinkPublic>(
+        "SELECT el.sf_entity_type, el.sf_id, el.zoho_id, el.zoho_name,
+                el.last_synced_at::text AS last_synced_at,
+                d.id AS document_id, d.filename AS document_filename
+         FROM integration_entity_links el
+         LEFT JOIN integration_documents d
+           ON d.tenant_id = el.tenant_id
+          AND d.sf_entity_type = el.sf_entity_type
+          AND d.sf_id = el.sf_id
+         WHERE el.tenant_id = $1
+         ORDER BY el.last_synced_at DESC",
+    )
+    .bind(tenant_id)
+    .fetch_all(pool)
+    .await
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct IntegrationDocumentRow {
+    pub id: i64,
+    pub sf_entity_type: String,
+    pub sf_id: String,
+    pub zoho_project_id: Option<String>,
+    pub filename: String,
+    pub content_type: String,
+    pub file_size: i64,
+    pub source_provider: String,
+    pub created_at: String,
+}
+
+pub async fn list_integration_documents(
+    pool: &PgPool,
+    tenant_id: i64,
+    limit: i64,
+) -> Result<Vec<IntegrationDocumentRow>, sqlx::Error> {
+    sqlx::query_as::<_, IntegrationDocumentRow>(
+        "SELECT id, sf_entity_type, sf_id, zoho_project_id, filename, content_type,
+                file_size, source_provider, created_at::text AS created_at
+         FROM integration_documents
+         WHERE tenant_id = $1
+         ORDER BY id DESC
+         LIMIT $2",
+    )
+    .bind(tenant_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct IntegrationDocumentFile {
+    pub id: i64,
+    pub filename: String,
+    pub content_type: String,
+    pub storage_path: String,
+}
+
+pub async fn fetch_integration_document_file(
+    pool: &PgPool,
+    tenant_id: i64,
+    document_id: i64,
+) -> Result<Option<IntegrationDocumentFile>, sqlx::Error> {
+    sqlx::query_as::<_, IntegrationDocumentFile>(
+        "SELECT id, filename, content_type, storage_path
+         FROM integration_documents
+         WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(tenant_id)
+    .bind(document_id)
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn fetch_integration_document_by_sf(
+    pool: &PgPool,
+    tenant_id: i64,
+    sf_entity_type: &str,
+    sf_id: &str,
+) -> Result<Option<IntegrationDocumentRow>, sqlx::Error> {
+    sqlx::query_as::<_, IntegrationDocumentRow>(
+        "SELECT id, sf_entity_type, sf_id, zoho_project_id, filename, content_type,
+                file_size, source_provider, created_at::text AS created_at
+         FROM integration_documents
+         WHERE tenant_id = $1 AND sf_entity_type = $2 AND sf_id = $3
+         LIMIT 1",
+    )
+    .bind(tenant_id)
+    .bind(sf_entity_type)
+    .bind(sf_id)
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn upsert_integration_document(
+    pool: &PgPool,
+    tenant_id: i64,
+    sf_entity_type: &str,
+    sf_id: &str,
+    zoho_project_id: Option<&str>,
+    filename: &str,
+    content_type: &str,
+    storage_path: &str,
+    file_size: i64,
+    source_provider: &str,
+) -> Result<i64, sqlx::Error> {
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO integration_documents
+           (tenant_id, sf_entity_type, sf_id, zoho_project_id, filename, content_type,
+            storage_path, file_size, source_provider)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (tenant_id, sf_entity_type, sf_id, source_provider) DO UPDATE SET
+           zoho_project_id = excluded.zoho_project_id,
+           filename = excluded.filename,
+           content_type = excluded.content_type,
+           storage_path = excluded.storage_path,
+           file_size = excluded.file_size,
+           created_at = NOW()
+         RETURNING id",
+    )
+    .bind(tenant_id)
+    .bind(sf_entity_type)
+    .bind(sf_id)
+    .bind(zoho_project_id)
+    .bind(filename)
+    .bind(content_type)
+    .bind(storage_path)
+    .bind(file_size)
+    .bind(source_provider)
+    .fetch_one(pool)
+    .await?;
+    Ok(id)
+}
+
+pub async fn delete_integration_documents(
+    pool: &PgPool,
+    tenant_id: i64,
+) -> Result<Vec<String>, sqlx::Error> {
+    let paths: Vec<String> = sqlx::query_scalar(
+        "SELECT storage_path FROM integration_documents WHERE tenant_id = $1",
+    )
+    .bind(tenant_id)
+    .fetch_all(pool)
+    .await?;
+    sqlx::query("DELETE FROM integration_documents WHERE tenant_id = $1")
+        .bind(tenant_id)
+        .execute(pool)
+        .await?;
+    Ok(paths)
 }
 
 #[cfg(test)]

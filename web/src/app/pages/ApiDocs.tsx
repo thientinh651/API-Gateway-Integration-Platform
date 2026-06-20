@@ -6,6 +6,7 @@ import { Code, Globe, Server, AlertTriangle, Terminal } from 'lucide-react';
 import { cn } from '../components/ui/utils';
 import { TechPageHeader } from '../components/tech/TechPageHeader';
 import { ApiEndpointCard } from '../components/tech/ApiEndpointCard';
+import { MiddlewarePipelineBanner } from '../components/auth/MiddlewarePipelineBanner';
 
 type ApiDocTab = 'data-plane' | 'admin-api' | 'errors' | 'examples';
 
@@ -21,10 +22,10 @@ const TAB_CONFIG: Record<
   }
 > = {
   'data-plane': {
-    label: 'Ứng dụng gọi qua gateway',
-    short: 'Proxy',
+    label: 'Data plane (middleware)',
+    short: 'Middleware',
     description:
-      'App hoặc dịch vụ bên ngoài gửi request qua gateway tới server đích. Cần khóa API client + chữ ký HMAC (tab ví dụ bên dưới).',
+      'Nền tảng tích hợp trung gian — connector, routing, transform canonical schema, queue, logging. HMAC bảo vệ data plane.',
     icon: Globe,
     frameClass: 'border-blue-500/40 bg-blue-500/[0.06] shadow-[inset_0_1px_0_rgba(59,130,246,0.15)]',
     headerClass: 'from-blue-500/15 to-transparent border-blue-500/30',
@@ -125,9 +126,23 @@ export function ApiDocs() {
       response: '200 — JSON stub hoặc 404 nếu disabled',
     },
     {
+      method: 'GET',
+      path: '/v1/api/canonical/contacts',
+      description: 'Danh sách contact — canonical JSON (query target=sf|zoho)',
+      auth: 'HMAC',
+      response: '{"entity":"contact","format":"canonical","data":[...]}',
+    },
+    {
+      method: 'POST',
+      path: '/v1/api/canonical/contacts',
+      description: 'Tạo contact — body canonical, target=sf|zoho',
+      auth: 'HMAC',
+      response: 'Canonical record sau transform',
+    },
+    {
       method: '*',
       path: '/v1/api/*',
-      description: 'Proxy theo route đã cấu hình + đường tích hợp Salesforce/Zoho',
+      description: 'Proxy route + đường tích hợp SF/Zoho (pass-through)',
       auth: 'HMAC: X-API-Key, X-Timestamp, X-Signature',
       response: 'Response từ upstream hoặc integration backend',
     },
@@ -153,20 +168,30 @@ export function ApiDocs() {
     { method: 'POST', path: '/api/routes', description: 'Tạo route', auth: 'Admin', body: '{"path":"/v1/api/foo","target":"https://...","timeout_secs":30}' },
     { method: 'PUT', path: '/api/routes/{id}', description: 'Cập nhật route', auth: 'Operator+', body: 'RouteWriteBody' },
     { method: 'DELETE', path: '/api/routes/{id}', description: 'Xóa route', auth: 'Admin', body: null },
-    { method: 'GET', path: '/api/client-keys', description: 'Danh sách API key (metadata)', auth: 'Viewer+', body: null },
-    { method: 'POST', path: '/api/client-keys', description: 'Tạo client key HMAC', auth: 'Operator+', body: '{"name":"app-name"}' },
-    { method: 'POST', path: '/api/client-keys/encrypted', description: 'Tạo key qua RSA envelope', auth: 'Operator+', body: 'CryptoEnvelope JSON' },
-    { method: 'DELETE', path: '/api/client-keys/{id}', description: 'Revoke key', auth: 'Operator+', body: null },
+    { method: 'GET', path: '/api/client-keys', description: 'Client Registry — danh sách client', auth: 'Operator+', body: null },
+    { method: 'POST', path: '/api/client-keys', description: 'Đăng ký client HMAC', auth: 'Operator+', body: '{"name":"erp","integration_type":"app","rate_limit_per_min":100}' },
+    { method: 'PATCH', path: '/api/client-keys/{id}', description: 'Cập nhật status / rate limit', auth: 'Operator+', body: '{"status":"disabled","rate_limit_per_min":200}' },
+    { method: 'POST', path: '/api/client-keys/bulk-status', description: 'Bật/tắt nhiều client', auth: 'Operator+', body: '{"ids":[1,2],"status":"disabled"}' },
+    { method: 'PUT', path: '/api/client-keys/{id}/routes', description: 'ACL route cho client', auth: 'Operator+', body: '{"route_ids":[1,2]}' },
+    { method: 'GET', path: '/api/client-keys/traffic-summary', description: 'Tổng request 24h theo client (batch)', auth: 'Operator+', body: null },
+    { method: 'GET', path: '/api/client-keys/{id}/traffic', description: 'Thống kê traffic 24h theo client', auth: 'Operator+', body: '?hours=24' },
+    { method: 'POST', path: '/api/client-keys/{id}/rotate', description: 'Rotate secret HMAC (API Key giữ nguyên)', auth: 'Operator+', body: null },
+    { method: 'POST', path: '/api/client-keys/encrypted', description: 'Đăng ký qua RSA envelope', auth: 'Operator+', body: 'CryptoEnvelope JSON' },
+    { method: 'DELETE', path: '/api/client-keys/{id}', description: 'Xóa client khỏi registry', auth: 'Operator+', body: null },
     { method: 'GET', path: '/api/users', description: 'Danh sách admin users', auth: 'Admin', body: null },
     { method: 'POST', path: '/api/users', description: 'Tạo user', auth: 'Admin', body: '{"username":"...","password":"***","role":"operator"}' },
     { method: 'PUT', path: '/api/users/{id}', description: 'Cập nhật user', auth: 'Admin', body: null },
     { method: 'DELETE', path: '/api/users/{id}', description: 'Xóa user', auth: 'Admin', body: null },
     { method: 'GET', path: '/api/audit-logs', description: 'Audit log admin', auth: 'Viewer+', body: '?limit=&result=&search=' },
-    { method: 'GET', path: '/api/transaction-logs', description: 'Transaction log gateway', auth: 'Viewer+', body: '?limit=&method=&status=&search=' },
-    { method: 'GET', path: '/api/proxy-queue', description: 'DLQ in-memory', auth: 'Viewer+', body: null },
-    { method: 'POST', path: '/api/proxy-queue/{id}/retry', description: 'Retry queued request', auth: 'Operator+', body: null },
+    { method: 'GET', path: '/api/transaction-logs', description: 'Transaction log gateway', auth: 'Viewer+', body: '?limit=&method=&status=&outcome=&reason=&client_key_id=&search=' },
+    { method: 'GET', path: '/api/proxy-queue', description: 'DLQ PostgreSQL (persistent)', auth: 'Viewer+', body: null },
+    { method: 'POST', path: '/api/proxy-queue/{id}/retry', description: 'Retry queued request (manual)', auth: 'Operator+', body: null },
+    { method: 'GET', path: '/api/integrations/transform/profile', description: 'Transformation mapping profile', auth: 'Admin', body: null },
+    { method: 'POST', path: '/api/integrations/transform/preview', description: 'Preview provider → canonical', auth: 'Admin', body: '{"provider":"salesforce","entity":"contact","payload":{...}}' },
+    { method: 'POST', path: '/api/integrations/transform/sync-contact', description: 'SF Contact → canonical → Zoho task', auth: 'Admin', body: '{"salesforce_contact_id":"003..."}' },
     { method: 'GET', path: '/api/settings', description: 'Runtime settings', auth: 'Viewer+', body: null },
     { method: 'PUT', path: '/api/settings', description: 'Cập nhật settings', auth: 'Admin', body: 'GatewaySettingsWriteBody' },
+    { method: 'GET', path: '/api/middleware/status', description: 'Trạng thái runtime middleware (clients, routes, RL)', auth: 'Viewer+', body: null },
     { method: 'GET', path: '/api/dashboard/stats', description: 'Thống kê Overview', auth: 'Viewer+ (session)', body: null },
     { method: 'GET', path: '/api/proxy', description: 'Demo upstream JSONPlaceholder (không phải gateway logic)', auth: 'Viewer+', body: null },
     { method: 'GET', path: '/api/integrations', description: 'Trạng thái SF/Zoho', auth: 'Admin', body: null },
@@ -179,13 +204,22 @@ export function ApiDocs() {
   ];
 
   const errorCodes = [
-    { code: '401', description: 'Unauthorized — thiếu/sai session, admin key, hoặc HMAC client' },
-    { code: '403', description: 'Forbidden — RBAC hoặc tenant route mismatch' },
-    { code: '404', description: 'Not Found — route/upstream không tồn tại' },
-    { code: '429', description: 'Too Many Requests — rate limit' },
-    { code: '502', description: 'Bad Gateway — upstream lỗi' },
+    { code: '401', description: 'Authentication — thiếu/sai X-API-Key, HMAC, timestamp hoặc replay' },
+    { code: '403', description: 'Authorization — client disabled, ACL route, hoặc RBAC admin' },
+    { code: '404', description: 'Routing — không có route khớp path' },
+    { code: '429', description: 'Rate limiting — vượt quota client / route / global' },
+    { code: '502', description: 'Upstream — middleware đã cho qua nhưng backend lỗi' },
     { code: '504', description: 'Gateway Timeout' },
     { code: '500', description: 'Internal Server Error' },
+  ];
+
+  const middlewareErrorFields = [
+    { field: 'missing_or_invalid_api_key', description: 'Không tìm thấy API Key trong Client Registry' },
+    { field: 'invalid_signature', description: 'X-Signature không khớp payload HMAC' },
+    { field: 'replay_detected', description: 'Cùng chữ ký lặp trong cửa sổ ~5 phút' },
+    { field: 'client_key_disabled', description: 'Client status = disabled' },
+    { field: 'route_forbidden', description: 'Path không nằm trong ACL của client' },
+    { field: 'rate_limit_exceeded', description: 'Token bucket hết — xem Retry-After' },
   ];
 
   const getMethodColor = (method: string) => {
@@ -206,7 +240,7 @@ export function ApiDocs() {
         title="Tài liệu API"
         description={
           <>
-           Document API
+            Middleware Integration Platform — data plane HMAC và admin control plane.
           </>
         }
       />
@@ -237,8 +271,9 @@ export function ApiDocs() {
           })}
         </TabsList>
 
-        <TabsContent value="data-plane" className="mt-0 focus-visible:outline-none">
-          <DocSectionFrame tab="data-plane" title="Endpoint cho ứng dụng (proxy)">
+        <TabsContent value="data-plane" className="mt-0 focus-visible:outline-none space-y-4">
+          <MiddlewarePipelineBanner compact />
+          <DocSectionFrame tab="data-plane" title="Endpoint data plane">
             <div className="space-y-4">
               {dataPlaneEndpoints.map((endpoint, index) => (
                 <ApiEndpointCard
@@ -293,8 +328,8 @@ export function ApiDocs() {
           </DocSectionFrame>
         </TabsContent>
 
-        <TabsContent value="errors" className="mt-0 focus-visible:outline-none">
-          <DocSectionFrame tab="errors" title="HTTP Error Codes">
+        <TabsContent value="errors" className="mt-0 focus-visible:outline-none space-y-4">
+          <DocSectionFrame tab="errors" title="HTTP status">
             <div className="space-y-3">
               {errorCodes.map((error) => (
                 <div key={error.code} className="flex items-start gap-4 p-3 rounded-lg bg-background/50 border border-border">
@@ -306,11 +341,39 @@ export function ApiDocs() {
               ))}
             </div>
           </DocSectionFrame>
+          <DocSectionFrame tab="errors" title="JSON error (data plane)">
+            <div className="space-y-3">
+              {middlewareErrorFields.map((row) => (
+                <div key={row.field} className="flex items-start gap-4 p-3 rounded-lg bg-background/50 border border-border">
+                  <Badge variant="outline" className="font-mono text-[10px] text-amber-400 border-amber-500/30 shrink-0">
+                    {row.field}
+                  </Badge>
+                  <p className="text-sm text-slate-300">{row.description}</p>
+                </div>
+              ))}
+            </div>
+          </DocSectionFrame>
         </TabsContent>
 
         <TabsContent value="examples" className="mt-0 focus-visible:outline-none">
           <DocSectionFrame tab="examples" title="Ví dụ curl">
             <div className="grid gap-6">
+            <div className="rounded-xl border border-border bg-background/40 p-4 sm:p-5">
+              <h4 className="text-base font-bold text-white mb-3 flex items-center gap-2">
+                <Code className="w-5 h-5 text-sky-400" />
+                Client Registry + ACL
+              </h4>
+              <div className="bg-[#050810] rounded-lg p-4 font-mono-tech text-xs overflow-x-auto border border-border/80 shadow-inner">
+                <pre className="text-slate-300">{`curl -X POST https://thientinh.io.vn/api/client-keys \\
+  -b cookies.txt -H "Content-Type: application/json" \\
+  -d '{"name":"erp","rate_limit_per_min":100}'
+
+curl -X PUT https://thientinh.io.vn/api/client-keys/1/routes \\
+  -b cookies.txt -H "Content-Type: application/json" \\
+  -d '{"route_ids":[1]}'`}</pre>
+              </div>
+            </div>
+
             <div className="rounded-xl border border-border bg-background/40 p-4 sm:p-5">
               <h4 className="text-base font-bold text-white mb-3 flex items-center gap-2">
                 <Code className="w-5 h-5 text-emerald-400" />

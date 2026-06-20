@@ -50,14 +50,31 @@ pub struct Traffic24h {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ClientRegistryStats {
+    pub total: i64,
+    pub active: i64,
+    pub disabled: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClientTrafficTopPublic {
+    pub client_key_id: i64,
+    pub name: String,
+    pub total: i64,
+}
+
+#[derive(Debug, Serialize)]
 pub struct DashboardStats {
     pub routes_count: i64,
     pub client_keys_count: i64,
+    pub client_registry: ClientRegistryStats,
     pub traffic_24h: Traffic24h,
     pub traffic_status_buckets: Vec<LabelCount>,
     pub traffic_hourly: Vec<LabelCount>,
     pub traffic_top_paths: Vec<LabelCount>,
     pub traffic_methods: Vec<LabelCount>,
+    pub traffic_denial_reasons: Vec<LabelCount>,
+    pub client_traffic_top: Vec<ClientTrafficTopPublic>,
     pub audit_24h: Audit24h,
     pub audit_top_actions: Vec<LabelCount>,
     pub audit_hourly: Vec<LabelCount>,
@@ -107,6 +124,22 @@ pub async fn build_dashboard_stats(
 ) -> Result<DashboardStats, sqlx::Error> {
     let routes = db::list_routes_for_tenant(pool, tenant_id).await?;
     let client_keys_count = db::count_client_keys_for_tenant(pool, tenant_id).await?;
+    let (client_active, client_disabled) = db::count_client_keys_by_status(pool, tenant_id).await?;
+    let denial_rows = db::traffic_denial_reasons_24h(pool, tenant_id, 8).await?;
+    let traffic_denial_reasons: Vec<LabelCount> = denial_rows
+        .into_iter()
+        .map(|(label, count)| LabelCount { label, count })
+        .collect();
+    let client_traffic_top: Vec<ClientTrafficTopPublic> =
+        db::client_traffic_top_24h(pool, tenant_id, 8)
+            .await?
+            .into_iter()
+            .map(|r| ClientTrafficTopPublic {
+                client_key_id: r.client_key_id,
+                name: r.name,
+                total: r.total,
+            })
+            .collect();
     let audit_24h = db::audit_counts_24h(pool, tenant_id).await?;
     let traffic_counts = db::traffic_outcome_counts_24h(pool, tenant_id).await?;
     let traffic_status_rows = db::traffic_status_buckets_24h(pool, tenant_id).await?;
@@ -236,6 +269,11 @@ pub async fn build_dashboard_stats(
     Ok(DashboardStats {
         routes_count: routes.len() as i64,
         client_keys_count,
+        client_registry: ClientRegistryStats {
+            total: client_keys_count,
+            active: client_active,
+            disabled: client_disabled,
+        },
         traffic_24h: Traffic24h {
             total: traffic_counts.0,
             success: traffic_counts.1,
@@ -248,6 +286,8 @@ pub async fn build_dashboard_stats(
         traffic_hourly,
         traffic_top_paths,
         traffic_methods,
+        traffic_denial_reasons,
+        client_traffic_top,
         audit_24h: Audit24h {
             total: audit_24h.0,
             success: audit_24h.1,

@@ -46,6 +46,10 @@ pub struct EncryptedCreateKeyPlain {
     pub integration_type: String,
     /// Partner may send their own secret inside encrypted envelope (optional).
     pub secret_key: Option<String>,
+    #[serde(default)]
+    pub rate_limit_per_min: i32,
+    #[serde(default)]
+    pub route_ids: Vec<i64>,
 }
 
 fn default_integration_type_plain() -> String {

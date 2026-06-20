@@ -1,54 +1,100 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Link, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
+import { FlaskConical, Plus, RefreshCw } from 'lucide-react';
 import { AdminOnly } from '../components/auth/AdminOnly';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import { canDeleteClientKeys, canWriteClientKeys } from '../../lib/rbac';
 import {
   ApiClientError,
+  bulkPatchClientKeyStatus,
   deleteClientKey,
   fetchClientKeys,
+  fetchClientKeysTrafficSummary,
+  fetchGatewayRoutes,
   type ClientKeyMeta,
 } from '../../lib/api';
-import { ClientKeyFlowSteps } from '../components/auth/ClientKeyFlowSteps';
-import { ApiKeySummaryCards } from './auth/ApiKeySummaryCards';
-import { ApiKeysDataTable } from './auth/ApiKeysDataTable';
+import type { GatewayRouteRow } from '../../lib/gatewayRoutes';
+import { ClientRegistrySummary } from './auth/ClientRegistrySummary';
+import { ClientRegistryTable } from './auth/ClientRegistryTable';
+import { ClientKeyConfigSheet } from './auth/ClientKeyConfigSheet';
 import { CreateApiKeyDialog } from './auth/CreateApiKeyDialog';
-import type { ApiKeyRow } from './auth/apiKeyTypes';
-import { integrationTypeLabel } from './auth/clientKeyIntegrationTypes';
+import { MiddlewareStatusCard } from './auth/MiddlewareStatusCard';
+import type { ClientRegistryRow } from './auth/clientRegistryTypes';
+import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../components/ui/select';
 
-function metaToRow(m: ClientKeyMeta): ApiKeyRow {
-  const typeLabel =
-    m.integration_type && m.integration_type !== 'app'
-      ? ` · ${integrationTypeLabel(m.integration_type)}`
-      : '';
+type StatusFilter = 'all' | 'active' | 'disabled';
+
+function metaToRow(m: ClientKeyMeta): ClientRegistryRow {
   return {
     id: String(m.id),
-    name: `${m.name}${typeLabel}`,
-    key: m.api_key ?? '(legacy — secret không hiển thị lại)',
-    isActive: true,
-    createdAt: m.auth_mode,
-    rateLimitPerMinute: 0,
+    name: m.name,
+    apiKey: m.api_key ?? '(legacy)',
+    authMode: m.auth_mode,
+    integrationType: m.integration_type,
+    isActive: m.status === 'active',
+    rateLimitPerMinute: m.rate_limit_per_min,
+    allowedRouteIds: m.allowed_route_ids ?? [],
+    lastUsedAt: m.last_used_at ?? null,
   };
 }
 
 function AuthAdmin() {
   const { user } = useAdminAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
   const allowCreateKeys = canWriteClientKeys(user);
   const allowDeleteKeys = canDeleteClientKeys(user);
-  const [apiKeys, setApiKeys] = useState<ApiKeyRow[]>([]);
+  const [clients, setClients] = useState<ClientRegistryRow[]>([]);
+  const [routes, setRoutes] = useState<GatewayRouteRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [configClient, setConfigClient] = useState<ClientRegistryRow | null>(null);
+  const [configOpen, setConfigOpen] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => {
+    const s = searchParams.get('status');
+    if (s === 'active' || s === 'disabled') return s;
+    return 'all';
+  });
+  const [searchTerm, setSearchTerm] = useState('');
+  const [createPreset, setCreatePreset] = useState<string | null>(null);
+  const [traffic24h, setTraffic24h] = useState<Map<string, number>>(new Map());
+
+  const filteredClients = clients.filter((c) => {
+    if (statusFilter === 'active' && !c.isActive) return false;
+    if (statusFilter === 'disabled' && c.isActive) return false;
+    const q = searchTerm.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      c.name.toLowerCase().includes(q) ||
+      c.apiKey.toLowerCase().includes(q) ||
+      c.integrationType.toLowerCase().includes(q)
+    );
+  });
 
   const reload = useCallback(async () => {
     if (!user) return;
     setLoadError(null);
     try {
-      const list = await fetchClientKeys();
-      setApiKeys(list.map(metaToRow));
+      const [list, routeRows, trafficRows] = await Promise.all([
+        fetchClientKeys(),
+        fetchGatewayRoutes().catch(() => [] as GatewayRouteRow[]),
+        fetchClientKeysTrafficSummary().catch(() => []),
+      ]);
+      setClients(list.map(metaToRow));
+      setRoutes(routeRows);
+      setTraffic24h(new Map(trafficRows.map((r) => [String(r.client_key_id), r.total])));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setLoadError(msg);
       const status = e instanceof ApiClientError ? e.status : 0;
-      if (status !== 401) toast.error('Không tải danh sách API key');
+      if (status !== 401) toast.error('Không tải Client Registry');
     }
   }, [user]);
 
@@ -56,11 +102,62 @@ function AuthAdmin() {
     void reload();
   }, [reload]);
 
+  useEffect(() => {
+    const openId = searchParams.get('open');
+    if (!openId || clients.length === 0) return;
+    const row = clients.find((c) => c.id === openId);
+    if (!row) return;
+    setConfigClient(row);
+    setConfigOpen(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete('open');
+    setSearchParams(next, { replace: true });
+  }, [clients, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    const create = searchParams.get('create');
+    if (!create) return;
+    const allowed = ['app', 'partner', 'salesforce', 'zoho', 'test'];
+    if (!allowed.includes(create)) return;
+    setCreatePreset(create);
+    const next = new URLSearchParams(searchParams);
+    next.delete('create');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  useEffect(() => {
+    const current = searchParams.get('status');
+    const desired = statusFilter === 'all' ? null : statusFilter;
+    if (current === desired) return;
+    const next = new URLSearchParams(searchParams);
+    if (desired) next.set('status', desired);
+    else next.delete('status');
+    setSearchParams(next, { replace: true });
+  }, [statusFilter, searchParams, setSearchParams]);
+
   const handleDelete = async (id: string) => {
     try {
       await deleteClientKey(Number(id));
       await reload();
-      toast.success('Đã xóa API key');
+      toast.success('Đã xóa client');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const openConfig = (client: ClientRegistryRow) => {
+    setConfigClient(client);
+    setConfigOpen(true);
+  };
+
+  const handleBulkStatus = async (ids: string[], status: 'active' | 'disabled') => {
+    try {
+      const res = await bulkPatchClientKeyStatus(
+        ids.map((id) => Number(id)),
+        status,
+      );
+      await reload();
+      toast.success(`Đã cập nhật ${res.updated} client → ${status}`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     }
@@ -70,13 +167,34 @@ function AuthAdmin() {
     <>
       <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4">
         <div className="min-w-0">
-          <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Bảo mật & API Key</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold text-white">Client Registry</h1>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 shrink-0">
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-border"
+            onClick={() => void reload()}
+          >
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Làm mới
+          </Button>
+          <Button asChild variant="outline" size="sm" className="border-border">
+            <Link to="/proxy-try">
+              <FlaskConical className="w-4 h-4 mr-2" />
+              Thử
+            </Link>
+          </Button>
           {allowCreateKeys ? (
-            <CreateApiKeyDialog onKeysChanged={() => void reload()} />
+            <CreateApiKeyDialog
+              onKeysChanged={() => void reload()}
+              presetIntegrationType={createPreset}
+              onPresetConsumed={() => setCreatePreset(null)}
+            />
           ) : (
-            <p className="text-xs text-muted-foreground self-center">Viewer: không tạo API key.</p>
+            <p className="text-xs text-muted-foreground self-center flex items-center gap-1">
+              <Plus className="w-3 h-3" /> Viewer: không đăng ký client
+            </p>
           )}
         </div>
       </div>
@@ -87,15 +205,48 @@ function AuthAdmin() {
         </div>
       ) : null}
 
-      <div className="mb-6">
-        <ClientKeyFlowSteps activeStep={apiKeys.length > 0 ? 'copy' : 'create'} />
+      <MiddlewareStatusCard />
+      <ClientRegistrySummary clients={clients} />
+      <div className="mb-4 flex flex-wrap gap-3">
+        <div className="relative flex-1 min-w-[200px] max-w-md">
+          <Input
+            placeholder="Tìm tên, API key, loại client…"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="bg-input border-border text-sm"
+          />
+        </div>
+        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
+          <SelectTrigger className="w-[140px] bg-input border-border">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="bg-card border-border">
+            <SelectItem value="all">Mọi trạng thái</SelectItem>
+            <SelectItem value="active">Active</SelectItem>
+            <SelectItem value="disabled">Disabled</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <div id="section-client-registry" className="scroll-mt-24 min-w-0">
+      <ClientRegistryTable
+        clients={filteredClients}
+        routes={routes}
+        traffic24h={traffic24h}
+        onConfigure={openConfig}
+        onDelete={(id) => void handleDelete(id)}
+        onBulkStatus={allowCreateKeys ? handleBulkStatus : undefined}
+        canDelete={allowDeleteKeys}
+        canManage={allowCreateKeys}
+      />
       </div>
 
-      <ApiKeySummaryCards apiKeys={apiKeys} />
-      <ApiKeysDataTable
-        apiKeys={apiKeys}
-        onDelete={(id) => void handleDelete(id)}
-        canDelete={allowDeleteKeys}
+      <ClientKeyConfigSheet
+        client={configClient}
+        routes={routes}
+        open={configOpen}
+        onOpenChange={setConfigOpen}
+        onSaved={() => void reload()}
+        canManage={allowCreateKeys}
       />
     </>
   );
@@ -104,8 +255,8 @@ function AuthAdmin() {
 export function Auth() {
   return (
     <AdminOnly
-      title="Bảo mật & API keys"
-      description="Đăng nhập để tạo và quản lý client API key trên gateway."
+      title="Client Registry"
+      description="Đăng ký và quản lý client gọi API."
     >
       <AuthAdmin />
     </AdminOnly>

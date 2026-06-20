@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router';
 import { toast } from 'sonner';
 import {
   Bar,
@@ -44,6 +45,7 @@ import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import { canManageIntegrations } from '../../lib/rbac';
 import type { GatewayRouteRow } from '../../lib/gatewayRoutes';
 import { formatDbTimestamp } from '../../lib/formatDbTimestamp';
+import { reasonLabel } from '../../lib/middlewareLabels';
 import { OverviewGuest } from './OverviewGuest';
 import { TechPageHeader } from '../components/tech/TechPageHeader';
 
@@ -194,6 +196,21 @@ function OverviewAdmin() {
     [stats]
   );
 
+  const denialReasonData = useMemo(
+    () =>
+      (stats?.traffic_denial_reasons ?? []).map((r) => ({
+        code: r.label,
+        label: reasonLabel(r.label),
+        count: r.count,
+      })),
+    [stats],
+  );
+
+  const clientTrafficTop = useMemo(
+    () => stats?.client_traffic_top ?? [],
+    [stats],
+  );
+
   const integrationPieData = useMemo(() => {
     const map = new Map<string, number>();
     for (const row of stats?.integrations ?? []) {
@@ -292,12 +309,17 @@ function OverviewAdmin() {
           </div>
           <p className="text-2xl font-bold text-white">{loading ? '…' : String(stats?.routes_count ?? routes.length)}</p>
         </NavCard>
-        <NavCard to="/auth" className="p-4 bg-card/80 border-border" ariaLabel="API keys — bảo mật">
+        <NavCard to="/auth" className="p-4 bg-card/80 border-border" ariaLabel="Client Registry">
           <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
             <Key className="w-3.5 h-3.5" />
-            API keys
+            Client Registry
           </div>
           <p className="text-2xl font-bold text-white">{loading ? '…' : String(stats?.client_keys_count ?? 0)}</p>
+          {stats?.client_registry ? (
+            <p className="text-xs text-muted-foreground mt-1">
+              {stats.client_registry.active} active · {stats.client_registry.disabled} tắt
+            </p>
+          ) : null}
         </NavCard>
         <NavCard to="/logs?kind=admin" className="p-4 bg-card/80 border-border" ariaLabel="Audit admin 24h">
           <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
@@ -319,7 +341,11 @@ function OverviewAdmin() {
           </p>
           {httpStatusPieData.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              Chưa có kết nối — dùng menu Thử gọi Proxy hoặc client thật qua gateway.
+              Chưa có kết nối — dùng{' '}
+              <Link to="/proxy-try" className="text-primary hover:underline">
+                Thử gọi proxy
+              </Link>{' '}
+              hoặc client thật qua gateway.
             </p>
           ) : (
             <ChartContainer config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
@@ -377,6 +403,65 @@ function OverviewAdmin() {
                 </Pie>
               </PieChart>
             </ChartContainer>
+          )}
+        </NavCard>
+
+        <NavCard to="/logs?kind=traffic&result=failure" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Middleware denial reasons">
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
+            Từ chối middleware (24h)
+          </h3>
+          <p className="text-xs text-muted-foreground mb-4">
+            Lý do outcome=denied — auth, ACL, rate limit.
+          </p>
+          {denialReasonData.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Không có từ chối trong 24h.</p>
+          ) : (
+            <ul className="space-y-2 text-xs">
+              {denialReasonData.map((r) => (
+                <li key={r.code} className="flex justify-between gap-2 text-slate-300">
+                  <Link
+                    to={`/logs?kind=traffic&reason=${encodeURIComponent(r.code)}`}
+                    className="truncate hover:text-primary hover:underline"
+                  >
+                    {r.label}
+                  </Link>
+                  <span className="font-mono text-amber-400 shrink-0">{r.count}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </NavCard>
+
+        <NavCard to="/auth" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Top clients traffic">
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
+            Top client (24h)
+          </h3>
+          <p className="text-xs text-muted-foreground mb-4">
+            Request theo Client Registry — cần log có client_key_id.
+          </p>
+          {clientTrafficTop.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Chưa có traffic —{' '}
+              <Link to="/proxy-try" className="text-primary hover:underline">
+                thử gọi proxy
+              </Link>
+              .
+            </p>
+          ) : (
+            <ul className="space-y-2 text-xs">
+              {clientTrafficTop.map((c) => (
+                <li key={c.client_key_id} className="flex justify-between gap-2 text-slate-300">
+                  <Link
+                    to={`/logs?kind=traffic&client_key_id=${c.client_key_id}`}
+                    className="truncate hover:text-primary hover:underline"
+                    title={c.name}
+                  >
+                    {c.name}
+                  </Link>
+                  <span className="font-mono text-cyan-400 shrink-0">{c.total}</span>
+                </li>
+              ))}
+            </ul>
           )}
         </NavCard>
 

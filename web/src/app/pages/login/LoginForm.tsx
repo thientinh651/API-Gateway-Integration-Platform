@@ -164,10 +164,7 @@ export function LoginForm() {
         {busy ? 'Đang đăng nhập…' : 'Đăng nhập'}
       </Button>
       <p className="text-center text-xs text-muted-foreground pt-1">
-        Chưa có tài khoản Viewer?{' '}
-        <Link to="/register" className="text-primary hover:underline">
-          Đăng ký
-        </Link>
+        Chưa có tài khoản? Liên hệ Admin tổ chức để được cấp quyền.
       </p>
     </form>
   );

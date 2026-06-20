@@ -91,7 +91,7 @@
         </mxCell>
 
         <!-- LEGEND -->
-        <mxCell id="legend" value="15 chức năng lớn | Rust/Axum/Tokio | WSO2-inspired simplified&#xa;File: docs/diagrams/BAO_VE_KIEN_TRUC.drawio | docs/KIEN_TRUC_THUC_TE.md" style="text;html=1;strokeColor=#666666;fillColor=#f5f5f5;align=left;verticalAlign=top;spacingLeft=8;fontSize=11" vertex="1" parent="1">
+        <mxCell id="legend" value="Integration Platform MVP | Rust/Axum/Tokio | SF → Zoho deal sync&#xa;File: docs/diagrams/BAO_VE_KIEN_TRUC.drawio | docs/BAN_VE_HE_THONG.md" style="text;html=1;strokeColor=#666666;fillColor=#f5f5f5;align=left;verticalAlign=top;spacingLeft=8;fontSize=11" vertex="1" parent="1">
           <mxGeometry x="40" y="660" width="1240" height="50" as="geometry"/>
         </mxCell>
 
