@@ -20,7 +20,9 @@
 **Script Database:** [docs/schema_full_postgresql.sql](docs/schema_full_postgresql.sql)
 
 
-**Bảng ERD Database:** [docs/diagrams/Avaso%20Gateway.png](docs/diagrams/Avaso%20Gateway.png)
+**Bảng ERD Database:**
+
+![Bảng ERD Database](docs/diagrams/Avaso%20Gateway.png)
 
 ### Công nghệ
 
