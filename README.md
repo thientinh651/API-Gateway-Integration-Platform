@@ -1,9 +1,3 @@
-<<<<<<< HEAD
-# AVASO Gateway - Bo sung thong tin
-- Thong tin sinh vien
-- Xuất DB ra script
-- API Gateway đơn node — Rust (Axum) + PostgreSQL + Redis + React admin UI. Production demo: [thientinh.io.vn](https://thientinh.io.vn).
-=======
 # AVASO Gateway
 
 ## Thông tin sinh viên
@@ -34,7 +28,6 @@
 | Triển khai | systemd, Docker Compose |
 
 ---
->>>>>>> ee9dcc9 (update)
 
 ## Tính năng chính
 
@@ -134,19 +127,8 @@ Nginx reverse proxy tới `127.0.0.1:3000` — xem [`deploy/nginx/thientinh.io.v
 |-------|--------|
 | `migrations/` | Migration thực tế gateway áp dụng khi start |
 | [`docs/schema_full_postgresql.sql`](docs/schema_full_postgresql.sql) | DDL đầy đủ (tham chiếu tài liệu) |
+``
 
-Tạo lại file DDL tham chiếu:
-
-```bash
-python3 scripts/generate_schema_sql.py
-```
-
-### Xuất DB ra script SQL (nộp giảng viên)
-
-Giảng viên cần **DDL dictionary** — 18 bảng khớp Excel, dạng `CREATE TABLE ...` dễ đọc (không phải output `pg_dump`).
-
-```bash
-# Khuyến nghị nộp đồ án — không cần PostgreSQL đang chạy
 ./scripts/export-db.sh
 # hoặc
 ./scripts/export-db.sh schema
