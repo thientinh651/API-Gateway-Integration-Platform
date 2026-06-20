@@ -8,3 +8,6 @@
 .env
 /exports/db/*.sql
 !exports/db/avaso_gateway_schema_latest.sql
+.venv*/
+__pycache__/
+*.pyc
