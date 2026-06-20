@@ -1,7 +1,7 @@
 # AVASO Gateway - Bo sung thong tin
-Thong tin sinh vien
-Xuất DB ra script
-API Gateway đơn node — Rust (Axum) + PostgreSQL + Redis + React admin UI. Production demo: [thientinh.io.vn](https://thientinh.io.vn).
+- Thong tin sinh vien
+- Xuất DB ra script
+- API Gateway đơn node — Rust (Axum) + PostgreSQL + Redis + React admin UI. Production demo: [thientinh.io.vn](https://thientinh.io.vn).
 
 ## Tính năng chính
 
