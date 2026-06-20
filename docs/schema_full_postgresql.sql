@@ -1,6 +1,3 @@
--- AVASO Gateway — PostgreSQL Schema (18 bảng, khớp Excel dictionary)
-
-
 CREATE TABLE tenants (
     id BIGSERIAL PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
