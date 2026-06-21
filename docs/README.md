@@ -11,6 +11,8 @@ Production: https://thientinh.io.vn
 | **[`BAO_CAO.md`](BAO_CAO.md)** | **Bắt đầu ở đây** — outline 5 chương khớp mục lục Word |
 | [`BAN_VE_HE_THONG.md`](BAN_VE_HE_THONG.md) | Bản vẽ kỹ thuật đầy đủ (SSOT implementation) |
 | [`DEMO_BAO_VE.md`](DEMO_BAO_VE.md) | Kịch bản demo 15 phút |
+| **[`ROUTING_JWT_CORE.md`](ROUTING_JWT_CORE.md)** | **Trọng tâm bảo vệ** — Routing + JWT + Benchmark |
+| [`OAUTH2_IDENTITY.md`](OAUTH2_IDENTITY.md) | Token endpoint, Bearer flow |
 | [`MA_TRAN_DONG_AN.md`](MA_TRAN_DONG_AN.md) | Ma trận FR ↔ code |
 
 ---
@@ -41,7 +43,7 @@ Production: https://thientinh.io.vn
 | File | Nội dung |
 |------|----------|
 | [`DATABASE_SCHEMA.md`](DATABASE_SCHEMA.md) | Bảng PostgreSQL |
-| [`HMAC_MIDDLEWARE_FLOW.md`](HMAC_MIDDLEWARE_FLOW.md) | Luồng HMAC |
+| [`OAUTH2_IDENTITY.md`](OAUTH2_IDENTITY.md) | OAuth2 token + JWT data plane |
 | [`MO_HINH_BAO_MAT.md`](MO_HINH_BAO_MAT.md) | Bảo mật |
 | [`RBAC_LVTN.md`](RBAC_LVTN.md) | Phân quyền |
 | [`HUONG_DAN_TEST_CHI_TIET.md`](HUONG_DAN_TEST_CHI_TIET.md) | Test case |
@@ -55,7 +57,7 @@ Production: https://thientinh.io.vn
 | File | Mục đích |
 |------|----------|
 | [`diagrams/BAO_VE_KIEN_TRUC.drawio`](diagrams/BAO_VE_KIEN_TRUC.drawio) | Kiến trúc Word/slide |
-| [`diagrams/LUONG_DATA_PLANE.drawio`](diagrams/LUONG_DATA_PLANE.drawio) | Sequence HMAC |
+| [`diagrams/LUONG_DATA_PLANE.drawio`](diagrams/LUONG_DATA_PLANE.drawio) | Sequence JWT data plane |
 | [`diagrams/README.md`](diagrams/README.md) | Export PNG |
 
 ```bash

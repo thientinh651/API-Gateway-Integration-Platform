@@ -78,6 +78,14 @@ Dev không SMTP: `PASSWORD_RESET_DEV_LOG=1` trong `/etc/avaso-gateway/env` → O
 
 ## 8. Cập nhật sau khi sửa code Rust
 
+Hoặc một lệnh:
+
+```bash
+./scripts/deploy-production.sh
+```
+
+Thủ công:
+
 ```bash
 cd /root/avaso-gateway
 cargo build --release

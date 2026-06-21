@@ -16,7 +16,7 @@ const STAGES = [
     id: 'auth',
     icon: ShieldCheck,
     title: 'Auth',
-    detail: 'Client Registry + HMAC',
+    detail: 'Client Registry + JWT Bearer',
     color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/25',
   },
   {

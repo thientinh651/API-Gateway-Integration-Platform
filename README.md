@@ -41,7 +41,7 @@
 
 | Lớp | Mô tả |
 |-----|--------|
-| **Data plane** | Reverse proxy theo route; prefix `/v1/api/*`; xác thực HMAC-SHA256 + chống replay; rate limit token bucket |
+| **Data plane** | Reverse proxy theo route; prefix `/v1/api/*`; OAuth2 JWT Bearer; rate limit token bucket |
 | **Admin plane** | REST `/api/*` — session cookie hoặc `X-API-Key` admin; RBAC admin / operator / viewer |
 | **Bảo mật** | Argon2id mật khẩu; AES-256-GCM mã hóa client key; audit log; transaction log |
 | **Tích hợp** | Salesforce + Zoho Projects OAuth; proxy data-plane; đồng bộ snapshot |
@@ -55,7 +55,8 @@
 ```
 Client ──► Nginx (TLS) ──► avaso-gateway :3000 (localhost)
                               ├── /health, /metrics
-                              ├── /v1/api/*     → HMAC auth → proxy upstream
+                              ├── /v1/api/*     → JWT Bearer → proxy upstream
+                              ├── /oauth/token  → phát access token
                               ├── /api/*        → admin API (session / admin key)
                               └── /*            → static web/dist/ (SPA)
 ```
@@ -64,7 +65,7 @@ Client ──► Nginx (TLS) ──► avaso-gateway :3000 (localhost)
 |------------|---------|---------|
 | Route, user, key, integration, log | **PostgreSQL** | Seed lần đầu từ `config.yaml` |
 | Session admin | **Redis** | Key `gw:session:{id}`, TTL 24h; dùng chung giữa nhiều instance |
-| HMAC replay cache, proxy queue | **In-memory** | Mất khi restart process |
+| Proxy queue | **In-memory** | Mất khi restart process |
 
 Migration SQL tự chạy khi gateway khởi động (`migrations/`).
 
@@ -178,10 +179,11 @@ psql "postgres://avaso:avaso@127.0.0.1:5432/avaso_gateway_review" \
 ## Kiểm thử
 
 ```bash
-cargo test                    # unit tests (crypto, RBAC, HMAC, rate limit)
-cd web && npm run build
-./scripts/smoke-test.sh       # health + login (cần gateway đang chạy)
-python3 scripts/test_hmac_replay.py  # HMAC replay (cần client key)
+cargo test                    # unit tests (crypto, RBAC, JWT, rate limit)
+cd web && npm test && npm run build
+./scripts/smoke-test.sh       # health + login + JWT data plane (optional)
+python3 scripts/test_jwt_auth.py  # JWT data plane (cần OAuth client)
+./scripts/deploy-production.sh  # build release + web/dist + restart systemd
 ```
 
 CI: GitHub Actions — [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
@@ -225,13 +227,12 @@ Tất cả dưới prefix **`/api`**:
 
 Tài liệu đầy đủ: UI **Tài liệu API** hoặc [`docs/TEAM_RUNBOOK.md`](docs/TEAM_RUNBOOK.md).
 
-### Data plane auth (HMAC)
+### Data plane auth (OAuth2 JWT)
 
-Header: `X-API-Key`, `X-Timestamp`, `X-Signature`.
+1. Lấy token: `POST /oauth/token` (`grant_type=client_credentials` hoặc `password`)
+2. Gọi API: `Authorization: Bearer <access_token>`
 
-Payload ký: `{api_key}\n{timestamp}\n{METHOD}\n{path_with_query}\n{body}`.
-
-Luồng chi tiết: [`docs/HMAC_MIDDLEWARE_FLOW.md`](docs/HMAC_MIDDLEWARE_FLOW.md).
+Demo web shop / script: dùng `client_id` + `client_secret` → JWT → gọi `/v1/api/*`.
 
 ---
 
@@ -264,6 +265,8 @@ avaso-gateway/
 | [`docs/BAO_CAO.md`](docs/BAO_CAO.md) | Outline báo cáo luận văn |
 | [`docs/BAN_VE_HE_THONG.md`](docs/BAN_VE_HE_THONG.md) | Bản vẽ kỹ thuật (SSOT) |
 | [`docs/DEMO_BAO_VE.md`](docs/DEMO_BAO_VE.md) | Kịch bản demo bảo vệ |
+| [`docs/ROUTING_JWT_CORE.md`](docs/ROUTING_JWT_CORE.md) | **Trọng tâm bảo vệ** — routing + JWT + benchmark |
+| [`docs/OAUTH2_IDENTITY.md`](docs/OAUTH2_IDENTITY.md) | OAuth2 token endpoint |
 | [`docs/MA_TRAN_DONG_AN.md`](docs/MA_TRAN_DONG_AN.md) | Ma trận FR ↔ code |
 | [`docs/MO_HINH_BAO_MAT.md`](docs/MO_HINH_BAO_MAT.md) | Mô hình bảo mật |
 | [`docs/BENCHMARK.md`](docs/BENCHMARK.md) | Benchmark NFR |

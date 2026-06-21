@@ -28,6 +28,7 @@ export default function App() {
         <AppToaster
           dir="ltr"
           position="top-right"
+          offset={{ top: '1.5rem', right: '2.5rem' }}
           richColors
           closeButton
           toastOptions={{ duration: 8000, closeButton: true }}
@@ -66,7 +67,7 @@ export default function App() {
               path="proxy-try"
               element={
                 <NavAccessGuard path="/proxy-try">
-                  <AdminOnly title="Thử gọi Proxy" description="Đăng nhập để thử HMAC data-plane.">
+                  <AdminOnly title="Thử gọi Proxy" description="Đăng nhập để thử JWT data-plane.">
                     <ProxyTry />
                   </AdminOnly>
                 </NavAccessGuard>

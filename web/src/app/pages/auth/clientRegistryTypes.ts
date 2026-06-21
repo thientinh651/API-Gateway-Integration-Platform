@@ -11,14 +11,15 @@ export interface ClientRegistryRow {
 }
 
 export function authModeLabel(mode: string): string {
-  if (mode === 'hmac') return 'HMAC-SHA256';
-  if (mode === 'legacy') return 'Legacy (API key only)';
+  if (mode === 'oauth_client') return 'OAuth2 client';
+  if (mode === 'hmac') return 'OAuth2 client';
+  if (mode === 'legacy') return 'Legacy (deprecated)';
   return mode;
 }
 
 /** Nhãn ngắn cho bảng — tránh tràn cột. */
 export function authModeLabelShort(mode: string): string {
-  if (mode === 'hmac') return 'HMAC';
+  if (mode === 'oauth_client' || mode === 'hmac') return 'OAuth2';
   if (mode === 'legacy') return 'Legacy';
   return mode;
 }

@@ -3,10 +3,14 @@
 # Cần: API_KEY, SECRET_KEY (+ OAuth SF/Zoho connected trên Dashboard)
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=scripts/lib/jwt_token.sh
+source "$ROOT/scripts/lib/jwt_token.sh"
+
 BASE="${GATEWAY_BASE:-https://thientinh.io.vn}"
 BASE="${BASE%/}"
-API_KEY="${API_KEY:-}"
-SECRET_KEY="${SECRET_KEY:-}"
+API_KEY="${API_KEY:-$(jwt_client_id)}"
+SECRET_KEY="${SECRET_KEY:-$(jwt_client_secret)}"
 
 if [[ -z "$API_KEY" || -z "$SECRET_KEY" ]]; then
   echo "Usage: API_KEY=avaso_pk_... SECRET_KEY=avaso_sk_... $0" >&2
@@ -14,20 +18,7 @@ if [[ -z "$API_KEY" || -z "$SECRET_KEY" ]]; then
   exit 1
 fi
 
-sign_request() {
-  local method="$1"
-  local path="$2"
-  local body="${3:-}"
-  python3 - "$API_KEY" "$SECRET_KEY" "$method" "$path" "$body" <<'PY'
-import hashlib, hmac, os, sys, time
-api, secret, method, path, body = sys.argv[1:6]
-ts = str(int(time.time()))
-payload = f"{api}\n{ts}\n{method.upper()}\n{path}\n{body}"
-sig = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
-print(ts)
-print(sig)
-PY
-}
+TOKEN="$(fetch_jwt_token)"
 
 call_proxy() {
   local label="$1"
@@ -37,22 +28,15 @@ call_proxy() {
   echo ""
   echo "==> $label"
   echo "    $method $path"
-  mapfile -t signed < <(sign_request "$method" "$path" "$body")
-  local ts="${signed[0]}"
-  local sig="${signed[1]}"
   local code
   if [[ "$method" == "GET" ]]; then
     code=$(curl -sS -o /tmp/proxy_body.json -w '%{http_code}' \
       "$BASE$path" \
-      -H "X-API-Key: $API_KEY" \
-      -H "X-Timestamp: $ts" \
-      -H "X-Signature: $sig")
+      -H "Authorization: Bearer $TOKEN")
   else
     code=$(curl -sS -o /tmp/proxy_body.json -w '%{http_code}' \
       -X "$method" "$BASE$path" \
-      -H "X-API-Key: $API_KEY" \
-      -H "X-Timestamp: $ts" \
-      -H "X-Signature: $sig" \
+      -H "Authorization: Bearer $TOKEN" \
       -H "Content-Type: application/json" \
       -d "$body")
   fi
@@ -72,6 +56,6 @@ if [[ "$fail" -eq 0 ]]; then
   echo "OK — integration proxy SF + Zoho"
 else
   echo ""
-  echo "FAIL — kiểm tra Client Key, HMAC, OAuth Integrations" >&2
+  echo "FAIL — kiểm tra OAuth client JWT, OAuth Integrations" >&2
   exit 1
 fi

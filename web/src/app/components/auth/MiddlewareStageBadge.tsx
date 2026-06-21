@@ -19,11 +19,12 @@ type Props = {
   status: number;
   reason?: string | null;
   outcome?: string | null;
+  bodyJson?: unknown;
   className?: string;
 };
 
-export function MiddlewareStageBadge({ status, reason, outcome, className }: Props) {
-  const stage = inferMiddlewareStage(status, reason, outcome);
+export function MiddlewareStageBadge({ status, reason, outcome, bodyJson, className }: Props) {
+  const stage = inferMiddlewareStage(status, reason, outcome, bodyJson);
   return (
     <Badge
       variant="outline"

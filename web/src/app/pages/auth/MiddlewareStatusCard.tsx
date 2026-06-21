@@ -28,8 +28,8 @@ export function MiddlewareStatusCard() {
         <div className="flex items-start gap-2">
           <Shield className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
           <div>
-            <p className="text-slate-400">HMAC loaded</p>
-            <p className="text-white font-mono">{status.hmac_clients_loaded}</p>
+            <p className="text-slate-400">OAuth clients</p>
+            <p className="text-white font-mono">{status.oauth_clients_loaded}</p>
             <p className="text-[10px] text-muted-foreground mt-0.5">
               {status.client_registry.active} active · {status.client_registry.disabled} tắt
             </p>

@@ -873,8 +873,7 @@ pub async fn sf_request_raw_with_refresh(
         suffix
     );
     if let Some(q) = query.filter(|s| !s.is_empty()) {
-        url.push('?');
-        url.push_str(q);
+        url = crate::route_match::append_query_to_upstream_url(&url, q);
     }
     let req_method = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|_| format!("unsupported method {method}"))?;
@@ -940,8 +939,7 @@ pub async fn zoho_request_raw_with_refresh(
     let base = zoho_projects_api_base(&zoho.accounts_url);
     let mut url = format!("{base}{suffix}");
     if let Some(q) = query.filter(|s| !s.is_empty()) {
-        url.push('?');
-        url.push_str(q);
+        url = crate::route_match::append_query_to_upstream_url(&url, q);
     }
     let req_method = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|_| format!("unsupported method {method}"))?;

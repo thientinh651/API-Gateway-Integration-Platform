@@ -67,7 +67,7 @@ function ResultPanel({
   mode,
 }: {
   result: ProxyTryResult | null;
-  mode: 'no_key' | 'with_key' | null;
+  mode: 'no_token' | 'with_token' | null;
 }) {
   if (!result || !mode) {
     return (
@@ -91,6 +91,7 @@ function ResultPanel({
           status={result.status}
           reason={gwErr?.error}
           outcome={result.ok ? 'success' : 'denied'}
+          bodyJson={result.bodyJson}
         />
         <span className="text-xs text-muted-foreground font-mono min-w-0 break-all">
           {result.method} {result.requestUrl}
@@ -122,7 +123,7 @@ export function ProxyTry() {
   const [secretKey, setSecretKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ProxyTryResult | null>(null);
-  const [lastMode, setLastMode] = useState<'no_key' | 'with_key' | null>(null);
+  const [lastMode, setLastMode] = useState<'no_token' | 'with_token' | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [registryClients, setRegistryClients] = useState<ClientKeyMeta[]>([]);
   const [pickedClientId, setPickedClientId] = useState('');
@@ -165,13 +166,13 @@ export function ProxyTry() {
     }
   };
 
-  const run = async (mode: 'no_key' | 'with_key') => {
+  const run = async (mode: 'no_token' | 'with_token') => {
     const nextErrors: Record<string, string> = {};
-    if (mode === 'with_key' && !apiKey.trim()) {
-      nextErrors.api_key = 'Nhập API Key từ Client Registry';
+    if (mode === 'with_token' && !apiKey.trim()) {
+      nextErrors.api_key = 'Nhập client_id từ Client Registry';
     }
-    if (mode === 'with_key' && apiKey.startsWith('avaso_pk_') && !secretKey.trim()) {
-      nextErrors.secret_key = 'Nhập Secret để ký HMAC';
+    if (mode === 'with_token' && !secretKey.trim()) {
+      nextErrors.secret_key = 'Nhập client_secret để lấy JWT';
     }
     if (Object.keys(nextErrors).length > 0) {
       failClientValidation(setFieldErrors, nextErrors);
@@ -183,17 +184,17 @@ export function ProxyTry() {
       const res = await tryDataPlaneRequest({
         path,
         method,
-        apiKey: mode === 'with_key' ? apiKey : undefined,
-        secretKey: mode === 'with_key' ? secretKey : undefined,
+        clientId: mode === 'with_token' ? apiKey : undefined,
+        clientSecret: mode === 'with_token' ? secretKey : undefined,
       });
       setResult(res);
       setLastMode(mode);
       if (looksLikeSpaShell(res)) {
         toast.warning(`Path sai — cần ${DATA_PLANE_PREFIX}/...`);
-      } else if (mode === 'with_key' && res.ok) {
+      } else if (mode === 'with_token' && res.ok) {
         toast.success('Request qua middleware thành công');
-      } else if (mode === 'no_key' && res.status === 401) {
-        toast.message('Authentication từ chối khi thiếu credential');
+      } else if (mode === 'no_token' && res.status === 401) {
+        toast.message('Authentication từ chối khi thiếu Bearer token');
       } else if (res.status === 403) {
         toast.warning('Authorization — kiểm tra ACL / trạng thái client');
       } else if (res.status === 429) {
@@ -264,7 +265,7 @@ export function ProxyTry() {
             <CardHeader className="pb-3">
               <CardTitle className="text-white text-base flex items-center gap-2">
                 <KeyRound className="w-4 h-4 text-emerald-400" />
-                Client credential (HMAC)
+                OAuth2 client (JWT)
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -332,17 +333,17 @@ export function ProxyTry() {
                     type="button"
                     disabled={busy}
                     className="w-full bg-primary hover:bg-primary/90 h-10"
-                    onClick={() => void run('with_key')}
+                    onClick={() => void run('with_token')}
                   >
                     <Send className="w-4 h-4 mr-2" />
-                    {busy ? 'Đang gửi qua middleware…' : 'Gửi có HMAC'}
+                    {busy ? 'Đang gửi qua middleware…' : 'Gửi có Bearer JWT'}
                   </Button>
                   <Button
                     type="button"
                     variant="ghost"
                     disabled={busy}
                     className="w-full text-muted-foreground hover:text-amber-400 h-9 text-xs"
-                    onClick={() => void run('no_key')}
+                    onClick={() => void run('no_token')}
                   >
                     <ShieldAlert className="w-3.5 h-3.5 mr-2" />
                     Gửi không credential 

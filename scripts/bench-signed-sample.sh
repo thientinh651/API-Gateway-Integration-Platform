@@ -1,43 +1,31 @@
 #!/usr/bin/env bash
-# Mẫu benchmark data-plane HMAC (replay-safe, unique query).
+# Mẫu benchmark data-plane JWT (unique query per request).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# shellcheck disable=SC1091
-[[ -f "$ROOT/data/.bench-credentials" ]] && set -a && source "$ROOT/data/.bench-credentials" && set +a
-: "${BENCH_API_KEY:?}"
-: "${BENCH_SECRET_KEY:?}"
+# shellcheck source=scripts/lib/jwt_token.sh
+source "$ROOT/scripts/lib/jwt_token.sh"
 
 BASE="${BENCH_BASE_URL:-http://127.0.0.1:3000}"
-PATH_BASE="${BENCH_HMAC_PATH:-/v1/api/get}"
-N="${BENCH_REQUESTS:-30}"
+PATH_BASE="${BENCH_JWT_PATH:-/v1/api/get}"
+REQUESTS="${BENCH_SAMPLE_REQUESTS:-20}"
 
-ok=0 fail=0 sum_ms=0
+TOKEN="$(fetch_jwt_token)"
+echo "JWT sample: $REQUESTS requests → $BASE$PATH_BASE"
 
-for ((i = 1; i <= N; i++)); do
-  path="${PATH_BASE}?sample=${i}"
-  ts="$(date +%s)"
-  payload="${BENCH_API_KEY}
-${ts}
-GET
-${path}
-"
-  sig="$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$BENCH_SECRET_KEY" | awk '{print $2}')"
-  line=$(curl -sS -o /dev/null -w '%{http_code} %{time_total}' --max-time 20 \
-    -H "X-API-Key: $BENCH_API_KEY" \
-    -H "X-Timestamp: $ts" \
-    -H "X-Signature: $sig" \
-    "${BASE}${path}" 2>/dev/null || echo "000 0")
-  code="${line%% *}"
-  t="${line#* }"
-  ms=$(awk -v t="$t" 'BEGIN{printf "%.0f", t*1000}')
-  if [[ "$code" =~ ^2 ]] || [[ "$code" == "429" ]] || [[ "$code" =~ ^50[234]$ ]]; then ok=$((ok + 1)); else fail=$((fail + 1)); fi
-  sum_ms=$((sum_ms + ms))
-  echo "req=$i http=$code latency_ms=$ms"
+ok=0
+fail=0
+for i in $(seq 1 "$REQUESTS"); do
+  code=$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer ${TOKEN}" \
+    "${BASE}${PATH_BASE}?n=${i}")
+  if [[ "$code" =~ ^2 ]]; then
+    ok=$((ok + 1))
+  else
+    fail=$((fail + 1))
+    echo "HTTP $code on request $i" >&2
+  fi
 done
 
-avg=$((sum_ms / (ok + fail + 1)))
-echo "---"
-echo "signed_sample_ok=$ok"
-echo "signed_sample_fail=$fail"
-echo "signed_sample_avg_ms=$avg"
+echo "OK=$ok FAIL=$fail"
+[[ "$fail" -eq 0 ]]

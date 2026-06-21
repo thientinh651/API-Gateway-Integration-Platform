@@ -19,8 +19,8 @@ export function ClientRegistrySummary({ clients }: { clients: ClientRegistryRow[
       iconClass: 'text-primary bg-primary/10',
     },
     {
-      label: 'Credential HMAC',
-      value: clients.filter((c) => c.authMode === 'hmac').length,
+      label: 'OAuth2 clients',
+      value: clients.filter((c) => c.authMode === 'oauth_client' || c.authMode === 'hmac').length,
       hint: 'API Key + Secret — ký mỗi request',
       icon: KeyRound,
       iconClass: 'text-emerald-400 bg-emerald-500/10',

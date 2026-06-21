@@ -899,7 +899,7 @@ export type MiddlewareStatus = {
   data_plane_prefix: string;
   client_registry: { total: number; active: number; disabled: number };
   routes_count: number;
-  hmac_clients_loaded: number;
+  oauth_clients_loaded: number;
   rate_limit_global_enabled: boolean;
   rate_limit_global_rps: number;
   integration_platform?: {

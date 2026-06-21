@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tạo/lấy client key HMAC cho benchmark + soak (lưu local, không commit).
+# Tạo/lấy OAuth client cho benchmark + soak (lưu local, không commit).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -14,6 +14,13 @@ if [[ -f "$CRED_FILE" ]]; then
   if [[ -n "${BENCH_API_KEY:-}" && -n "${BENCH_SECRET_KEY:-}" ]]; then
     echo "Using existing credentials: $CRED_FILE"
     export BENCH_API_KEY BENCH_SECRET_KEY
+    if [[ -z "${BENCH_ACCESS_TOKEN:-}" ]]; then
+      token=$(curl -sS -X POST "$BASE/api/oauth/token" \
+        -H 'Content-Type: application/x-www-form-urlencoded' \
+        -d "grant_type=client_credentials&client_id=${BENCH_API_KEY}&client_secret=${BENCH_SECRET_KEY}" \
+        | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))")
+      [[ -n "$token" ]] && export BENCH_ACCESS_TOKEN="$token"
+    fi
     exit 0
   fi
 fi
@@ -50,4 +57,13 @@ EOF
 chmod 600 "$CRED_FILE"
 export BENCH_API_KEY="$api_key"
 export BENCH_SECRET_KEY="$secret_key"
+
+token=$(curl -sS -X POST "$BASE/api/oauth/token" \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -d "grant_type=client_credentials&client_id=${api_key}&client_secret=${secret_key}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))")
+if [[ -n "$token" ]]; then
+  echo "BENCH_ACCESS_TOKEN=$token" >>"$CRED_FILE"
+  export BENCH_ACCESS_TOKEN="$token"
+fi
 echo "Saved: $CRED_FILE"

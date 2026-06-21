@@ -18,8 +18,10 @@ export const MIDDLEWARE_STAGE_VI: Record<MiddlewareStage, string> = {
 };
 
 export const TRANSACTION_REASON_VI: Record<string, string> = {
-  missing_or_invalid_api_key: 'Sai hoặc thiếu API Key / HMAC',
-  invalid_signature: 'Chữ ký HMAC không hợp lệ',
+  missing_token: 'Thiếu Bearer token',
+  invalid_token: 'Access token không hợp lệ',
+  token_expired: 'Access token hết hạn',
+  missing_or_invalid_api_key: 'OAuth client không hợp lệ',
   replay_detected: 'Replay — chữ ký trùng trong cửa sổ thời gian',
   client_key_disabled: 'Client bị tắt trong registry',
   route_forbidden: 'Client không có quyền route này (ACL)',
@@ -39,19 +41,29 @@ export function reasonLabel(reason: string | null | undefined): string {
   return TRANSACTION_REASON_VI[reason] ?? reason;
 }
 
+/** Body JSON từ upstream provider (OpenWeather `cod`, httpbin, …) — không phải lỗi gateway `{ error }`. */
+export function isUpstreamProviderBody(bodyJson: unknown): boolean {
+  if (!bodyJson || typeof bodyJson !== 'object') return false;
+  const row = bodyJson as Record<string, unknown>;
+  if (typeof row.error === 'string') return false;
+  return 'cod' in row || 'args' in row || 'url' in row;
+}
+
 export function inferMiddlewareStage(
   status: number,
   reason?: string | null,
   outcome?: string | null,
+  bodyJson?: unknown,
 ): MiddlewareStage {
   const r = (reason ?? '').toLowerCase();
   if (outcome === 'success' || r === 'forwarded' || r === 'integration_proxy') return 'success';
+  if (isUpstreamProviderBody(bodyJson)) return 'upstream';
   if (
     r.includes('api_key') ||
     r.includes('signature') ||
     r.includes('replay') ||
     r === 'invalid_signature' ||
-    status === 401
+    (status === 401 && !isUpstreamProviderBody(bodyJson))
   ) {
     return 'authentication';
   }

@@ -33,14 +33,14 @@ if [[ -f "$ROOT/data/.bench-credentials" ]]; then
   # shellcheck disable=SC1091
   source "$ROOT/data/.bench-credentials"
   set +a
-  echo "==> wrk data-plane HMAC (30s)" | tee "$OUT/benchmark-wrk-dataplane.log"
+  echo "==> wrk data-plane JWT (30s)" | tee "$OUT/benchmark-wrk-dataplane.log"
   export BENCH_URL="http://127.0.0.1:3000/v1/api/get"
-  export BENCH_API_KEY BENCH_SECRET_KEY
+  export BENCH_API_KEY BENCH_SECRET_KEY BENCH_ACCESS_TOKEN
   export BENCH_REQUESTS=30
   export BENCH_CONCURRENCY=10
   export BENCH_DURATION=15s
   ./scripts/benchmark-gateway.sh 2>&1 | tee -a "$OUT/benchmark-wrk-dataplane.log" || true
-  BENCH_REQUESTS=30 ./scripts/bench-signed-sample.sh 2>&1 | tee "$OUT/benchmark-signed-sample.log" || true
+  python3 ./scripts/test_jwt_auth.py 2>&1 | tee "$OUT/jwt-auth-smoke.log" || true
 fi
 
 curl -sS -b /tmp/ev_cookie -c /tmp/ev_cookie -X POST http://127.0.0.1:3000/api/login \

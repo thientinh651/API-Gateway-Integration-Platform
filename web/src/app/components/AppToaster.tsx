@@ -77,6 +77,8 @@ export function AppToaster(props: ToasterProps) {
       className="avaso-toaster"
       gap={12}
       visibleToasts={4}
+      offset={{ top: '1.5rem', right: '2.5rem' }}
+      mobileOffset={{ top: '1rem', right: '1.25rem', left: '1.25rem' }}
       toastOptions={{ duration: 6000, closeButton: true, ...(props.toastOptions ?? {}) }}
       {...props}
     />

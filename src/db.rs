@@ -13,11 +13,10 @@ use crate::{crypto, RouteRow, YamlBootstrap};
 pub const ROUTE_SELECT: &str =
     "id, path, target, timeout_secs, rate_limit_per_min, tenant_id, transform_add_headers, transform_remove_headers, retry_max, retry_on_status, retry_on_timeout, queue_on_failure, allowed_methods";
 
-/// Runtime credentials for data-plane auth.
+/// Runtime credentials for data-plane OAuth2 client_credentials.
 #[derive(Debug, Clone, Default)]
 pub struct ClientCredentials {
-    pub legacy: Vec<LegacyClientKey>,
-    pub hmac: Vec<HmacClientKey>,
+    pub oauth_clients: Vec<OAuthClientKey>,
     /// Disabled clients — 403 rõ ràng + giữ id cho transaction log.
     pub disabled_clients: Vec<DisabledClientKey>,
 }
@@ -25,23 +24,14 @@ pub struct ClientCredentials {
 #[derive(Debug, Clone)]
 pub struct DisabledClientKey {
     pub id: i64,
-    pub api_key: String,
+    pub client_id: String,
     pub tenant_id: i64,
 }
 
 #[derive(Debug, Clone)]
-pub struct LegacyClientKey {
+pub struct OAuthClientKey {
     pub id: i64,
-    pub sha256_hex: String,
-    pub tenant_id: i64,
-    pub rate_limit_per_min: i32,
-    pub allowed_route_ids: Vec<i64>,
-}
-
-#[derive(Debug, Clone)]
-pub struct HmacClientKey {
-    pub id: i64,
-    pub api_key: String,
+    pub client_id: String,
     pub secret: String,
     pub tenant_id: i64,
     pub rate_limit_per_min: i32,
@@ -204,13 +194,29 @@ pub async fn bootstrap_from_yaml_if_empty(
 
     if n_keys == 0 {
         for plain in &yaml.api_keys {
-            let h = sha256_hex(plain);
-            sqlx::query(
-                "INSERT INTO gateway_client_keys (name, secret_sha256_hex) VALUES ('imported', $1)",
+            let name = if plain.trim().is_empty() {
+                "bootstrap".into()
+            } else {
+                plain.trim().to_string()
+            };
+            let client_id = random_api_key_id();
+            let secret = random_secret_key();
+            let _ = insert_oauth_client(
+                pool,
+                &name,
+                &client_id,
+                &secret,
+                1,
+                "app",
+                0,
+                0,
             )
-            .bind(&h)
-            .execute(pool)
             .await?;
+            tracing::info!(
+                client_id = %client_id,
+                name = %name,
+                "Bootstrap OAuth client from config.yaml — save client_secret from dashboard"
+            );
         }
     }
 
@@ -1357,7 +1363,7 @@ pub async fn list_client_keys_scoped(
     if admin_sees_all || owner_user_id.is_none() {
         sqlx::query_as::<_, ClientKeyMeta>(
             "SELECT k.id, k.name, k.api_key,
-                    CASE WHEN k.secret_encrypted IS NOT NULL AND k.secret_encrypted != '' THEN 'hmac'
+                    CASE WHEN k.secret_encrypted IS NOT NULL AND k.secret_encrypted != '' THEN 'oauth_client'
                          ELSE 'legacy' END AS auth_mode,
                     COALESCE(k.integration_type, 'app') AS integration_type,
                     k.tenant_id,
@@ -1378,7 +1384,7 @@ pub async fn list_client_keys_scoped(
         let uid = owner_user_id.unwrap_or(0);
         sqlx::query_as::<_, ClientKeyMeta>(
             "SELECT k.id, k.name, k.api_key,
-                    CASE WHEN k.secret_encrypted IS NOT NULL AND k.secret_encrypted != '' THEN 'hmac'
+                    CASE WHEN k.secret_encrypted IS NOT NULL AND k.secret_encrypted != '' THEN 'oauth_client'
                          ELSE 'legacy' END AS auth_mode,
                     COALESCE(k.integration_type, 'app') AS integration_type,
                     k.tenant_id,
@@ -1433,40 +1439,32 @@ pub async fn load_client_credentials(pool: &PgPool) -> Result<ClientCredentials,
     let allowlists = load_all_client_key_route_allowlists(pool).await?;
 
     let mut creds = ClientCredentials::default();
-    for (id, api_key, secret_enc, legacy_hash, tenant_id, status, rate_limit_per_min) in rows {
+    for (id, api_key, secret_enc, _legacy_hash, tenant_id, status, rate_limit_per_min) in rows {
         let allowed_route_ids = allowlists.get(&id).cloned().unwrap_or_default();
         if status != "active" {
             if let Some(k) = api_key.filter(|s| !s.is_empty()) {
                 creds.disabled_clients.push(DisabledClientKey {
                     id,
-                    api_key: k,
+                    client_id: k,
                     tenant_id,
                 });
             }
             continue;
         }
         if let Some(enc) = secret_enc.filter(|s| !s.is_empty()) {
-            if let Some(key_id) = api_key.filter(|s| !s.is_empty()) {
+            if let Some(client_id) = api_key.filter(|s| !s.is_empty()) {
                 match crypto::decrypt_secret(&enc) {
-                    Ok(secret) => creds.hmac.push(HmacClientKey {
+                    Ok(secret) => creds.oauth_clients.push(OAuthClientKey {
                         id,
-                        api_key: key_id,
+                        client_id,
                         secret,
                         tenant_id,
                         rate_limit_per_min,
                         allowed_route_ids,
                     }),
-                    Err(e) => tracing::error!(api_key = %key_id, error = %e, "skip hmac key: decrypt failed"),
+                    Err(e) => tracing::error!(client_id = %client_id, error = %e, "skip oauth client: decrypt failed"),
                 }
             }
-        } else if let Some(h) = legacy_hash.filter(|s| !s.is_empty()) {
-            creds.legacy.push(LegacyClientKey {
-                id,
-                sha256_hex: h,
-                tenant_id,
-                rate_limit_per_min,
-                allowed_route_ids,
-            });
         }
     }
     Ok(creds)
@@ -1554,7 +1552,7 @@ pub async fn set_client_key_routes(
     Ok(true)
 }
 
-/// Rotate HMAC secret; returns public api_key when updated.
+/// Rotate OAuth client_secret; returns public client_id when updated.
 pub async fn rotate_client_key_secret(
     pool: &PgPool,
     id: i64,
@@ -1754,11 +1752,6 @@ fn random_token(prefix: &str, len: usize) -> String {
     format!("{prefix}{tail}")
 }
 
-/// Legacy single-token key (SHA-256 at rest, no HMAC).
-pub fn random_client_api_key() -> String {
-    random_token("avaso_", 36)
-}
-
 pub fn random_api_key_id() -> String {
     random_token("avaso_pk_", 24)
 }
@@ -1767,23 +1760,8 @@ pub fn random_secret_key() -> String {
     random_token("avaso_sk_", 40)
 }
 
-pub async fn insert_client_key_legacy(
-    pool: &PgPool,
-    name: &str,
-    plain: &str,
-) -> Result<i64, sqlx::Error> {
-    let h = sha256_hex(plain);
-    sqlx::query_scalar(
-        "INSERT INTO gateway_client_keys (name, secret_sha256_hex) VALUES ($1, $2) RETURNING id",
-    )
-    .bind(name)
-    .bind(&h)
-    .fetch_one(pool)
-    .await
-}
-
-/// API_KEY (public) + SECRET_KEY (encrypted) for HMAC-SHA256.
-pub async fn insert_client_key_hmac(
+/// OAuth2 client_id (public) + client_secret (encrypted at rest).
+pub async fn insert_oauth_client(
     pool: &PgPool,
     name: &str,
     api_key: &str,
@@ -1796,7 +1774,7 @@ pub async fn insert_client_key_hmac(
     let enc = crypto::encrypt_secret(secret_key).map_err(|e| {
         sqlx::Error::Configuration(format!("encrypt secret: {e}").into())
     })?;
-    let sha_placeholder = format!("hmac:{}", sha256_hex(api_key));
+    let sha_placeholder = format!("oauth:{}", sha256_hex(api_key));
     sqlx::query_scalar(
         "INSERT INTO gateway_client_keys (name, api_key, secret_encrypted, secret_sha256_hex, tenant_id, integration_type, owner_user_id, status, rate_limit_per_min)
          VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8) RETURNING id",
@@ -2273,7 +2251,7 @@ pub async fn fetch_client_key_meta_by_id(
 ) -> Result<Option<ClientKeyMeta>, sqlx::Error> {
     sqlx::query_as::<_, ClientKeyMeta>(
         "SELECT k.id, k.name, k.api_key,
-                CASE WHEN k.secret_encrypted IS NOT NULL AND k.secret_encrypted != '' THEN 'hmac'
+                CASE WHEN k.secret_encrypted IS NOT NULL AND k.secret_encrypted != '' THEN 'oauth_client'
                      ELSE 'legacy' END AS auth_mode,
                 COALESCE(k.integration_type, 'app') AS integration_type,
                 k.tenant_id,

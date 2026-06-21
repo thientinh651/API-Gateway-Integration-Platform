@@ -219,7 +219,7 @@ pub async fn public_key_response(pool: &PgPool) -> Result<GatewayPublicKeyRespon
         rsa_padding: "OAEP-SHA256",
         aes: "AES-256-GCM",
         public_key_pem: public_pem,
-        usage: "Client encrypts sensitive payload; gateway decrypts with private key (WSO2-style). Data-plane traffic still uses HTTPS + HMAC.",
+        usage: "Client encrypts sensitive payload; gateway decrypts with private key. Data-plane uses OAuth2 Bearer JWT.",
     })
 }
 

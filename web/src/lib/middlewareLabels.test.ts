@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { inferMiddlewareStage, reasonLabel } from './middlewareLabels';
+import { inferMiddlewareStage, isUpstreamProviderBody, reasonLabel } from './middlewareLabels';
 
 describe('reasonLabel', () => {
   it('maps known middleware reasons', () => {
@@ -12,9 +12,25 @@ describe('reasonLabel', () => {
   });
 });
 
+describe('isUpstreamProviderBody', () => {
+  it('detects OpenWeather style body', () => {
+    expect(isUpstreamProviderBody({ cod: 401, message: 'Invalid API key' })).toBe(true);
+  });
+
+  it('ignores gateway error envelope', () => {
+    expect(isUpstreamProviderBody({ error: 'invalid_token', message: 'bad' })).toBe(false);
+  });
+});
+
 describe('inferMiddlewareStage', () => {
   it('classifies auth failures', () => {
-    expect(inferMiddlewareStage(401, 'invalid_signature')).toBe('authentication');
+    expect(inferMiddlewareStage(401, 'invalid_token')).toBe('authentication');
+  });
+
+  it('classifies upstream 401 passthrough', () => {
+    expect(
+      inferMiddlewareStage(401, undefined, 'denied', { cod: 401, message: 'Invalid API key' }),
+    ).toBe('upstream');
   });
 
   it('classifies ACL denials', () => {

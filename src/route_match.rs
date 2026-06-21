@@ -96,6 +96,24 @@ pub fn find_route(routes: &[RouteRow], method: &str, path: &str) -> Option<Match
         .max_by_key(|m| specificity(&m.route.path))
 }
 
+/// Ghép query client vào upstream URL (dùng `&` nếu target đã có `?`).
+pub fn append_query_to_upstream_url(base: &str, query: &str) -> String {
+    let q = query.trim();
+    if q.is_empty() {
+        return base.to_string();
+    }
+    if base.contains('?') {
+        let sep = if base.ends_with('?') || base.ends_with('&') {
+            ""
+        } else {
+            "&"
+        };
+        format!("{base}{sep}{q}")
+    } else {
+        format!("{base}?{q}")
+    }
+}
+
 pub fn build_upstream_url(
     target: &str,
     params: &HashMap<String, String>,
@@ -160,6 +178,28 @@ mod tests {
         assert_eq!(
             build_upstream_url(&m.route.target, &m.params, &m.suffix),
             "http://up/orders/42"
+        );
+    }
+
+    #[test]
+    fn append_query_plain_target() {
+        assert_eq!(
+            append_query_to_upstream_url(
+                "https://api.openweathermap.org/data/2.5/weather",
+                "q=Hanoi&appid=KEY"
+            ),
+            "https://api.openweathermap.org/data/2.5/weather?q=Hanoi&appid=KEY"
+        );
+    }
+
+    #[test]
+    fn append_query_target_already_has_params() {
+        assert_eq!(
+            append_query_to_upstream_url(
+                "https://api.example/weather?appid=KEY",
+                "q=Hanoi&units=metric"
+            ),
+            "https://api.example/weather?appid=KEY&q=Hanoi&units=metric"
         );
     }
 

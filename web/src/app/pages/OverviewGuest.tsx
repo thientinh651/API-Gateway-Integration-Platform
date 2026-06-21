@@ -6,7 +6,6 @@ import {
   Cpu,
   FileCode,
   GitBranch,
-  Layers,
   Lock,
   Network,
   Server,
@@ -29,46 +28,46 @@ type HealthPayload = {
 const TERMINAL_LINES = [
   '$ curl -s https://gateway/health | jq .status',
   '"ok"',
-  '$ curl -H "X-API-Key: …" -H "X-Signature: …" /v1/api/crm/leads',
-  'HTTP/1.1 200 · upstream 142ms',
-  '$ avaso-gateway · tokio workers: async I/O',
+  '$ curl -H "Authorization: Bearer eyJ..." /v1/api/products',
+  'HTTP/1.1 200 · route match · upstream 8ms',
+  '$ wrk -t4 -c100 -d30s /v1/api/get  # benchmark JWT',
 ];
 
-const STACK = ['Rust', 'Tokio', 'Axum', 'SQLite', 'HMAC-SHA256', 'RBAC'];
+const STACK = ['Rust', 'Tokio', 'Axum', 'PostgreSQL', 'OAuth2 JWT', 'RBAC'];
 
 const FLOW = [
-  { label: 'ERP / Mobile / AI', icon: Network, tone: 'from-blue-500/20 to-blue-500/5 border-blue-500/30' },
-  { label: 'Integration Platform', icon: Layers, tone: 'from-primary/25 to-primary/5 border-primary/40' },
-  { label: 'Transform + Route', icon: GitBranch, tone: 'from-cyan-500/20 to-cyan-500/5 border-cyan-500/30' },
-  { label: 'Salesforce · Zoho · API', icon: Server, tone: 'from-emerald-500/20 to-emerald-500/5 border-emerald-500/30' },
+  { label: 'Web shop / Client', icon: Network, tone: 'from-blue-500/20 to-blue-500/5 border-blue-500/30' },
+  { label: 'Gateway · JWT validate', icon: Shield, tone: 'from-primary/25 to-primary/5 border-primary/40' },
+  { label: 'Routing engine', icon: GitBranch, tone: 'from-cyan-500/20 to-cyan-500/5 border-cyan-500/30' },
+  { label: 'Upstream API', icon: Server, tone: 'from-emerald-500/20 to-emerald-500/5 border-emerald-500/30' },
 ];
 
 const CAPABILITIES = [
   {
     icon: GitBranch,
-    title: 'Đa tích hợp + Transform',
-    text: 'Canonical schema — SF firstName → name → Zoho task. Một cổng thay kết nối điểm-điểm.',
-    tag: 'Integration',
-    to: '/login',
-  },
-  {
-    icon: Zap,
-    title: 'Connector + Queue',
-    text: 'OAuth SF/Zoho, retry, DLQ PostgreSQL + worker tự replay. Transaction log mọi giao dịch.',
-    tag: 'Reliability',
-    to: '/login',
+    title: 'Routing Engine',
+    text: 'Longest prefix match, param route {id}, ACL per client, forward upstream qua Axum/Tokio.',
+    tag: 'Core',
+    to: '/api-docs',
   },
   {
     icon: Shield,
-    title: 'Bảo vệ luồng tích hợp',
-    text: 'HMAC, ACL route, rate limit — lớp bảo vệ cho integration, không phải mục tiêu chính.',
+    title: 'JWT Identity',
+    text: 'POST /oauth/token → Bearer validation trên mọi request /v1/api/* — RFC 6749 + JWT.',
     tag: 'Security',
+    to: '/api-docs',
+  },
+  {
+    icon: Zap,
+    title: 'Benchmark hiệu năng',
+    text: 'wrk/hey so sánh /health vs /v1/api + JWT — chứng minh overhead thấp nhờ Rust async.',
+    tag: 'NFR',
     to: '/api-docs',
   },
   {
     icon: Lock,
     title: 'Admin control plane',
-    text: 'Session + RBAC. Cấu hình connector, bridge, transform trên dashboard.',
+    text: 'Session + RBAC. Cấu hình route, OAuth client, logs trên dashboard.',
     tag: 'Governance',
     to: '/login',
   },
@@ -218,8 +217,8 @@ export function OverviewGuest() {
           </h1>
 
           <p className="text-base sm:text-lg text-muted-foreground max-w-2xl mb-8 leading-relaxed">
-            Điều phối traffic, bảo mật HMAC, đồng bộ Salesforce & Zoho — một lớp middleware cho sản phẩm
-            và pipeline AI. Đăng nhập để vận hành route, key và observability thời gian thực.
+            Điều phối traffic qua routing engine, xác thực OAuth2 JWT, benchmark hiệu năng Rust/Tokio.
+            Đăng nhập để cấu hình route, OAuth client và xem transaction log.
           </p>
 
           <div className="flex flex-wrap gap-2 mb-10">
@@ -264,7 +263,7 @@ export function OverviewGuest() {
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {[
             { icon: Cpu, label: 'Runtime', value: 'Tokio async', sub: 'Không GC pause' },
-            { icon: Shield, label: 'Auth', value: 'HMAC + RBAC', sub: 'Admin / data plane' },
+            { icon: Shield, label: 'Auth', value: 'JWT + RBAC', sub: 'OAuth2 / admin' },
             { icon: Network, label: 'Protocol', value: 'HTTP/1.1', sub: 'Proxy + transform' },
             {
               icon: Server,
@@ -316,9 +315,8 @@ export function OverviewGuest() {
               ))}
             </div>
             <p className="text-xs text-muted-foreground mt-4 leading-relaxed">
-              Một request đi qua rate limit → optional transform → upstream. Lỗi 5xx/timeout có thể vào DLQ
-              (demo in-memory). Tích hợp CRM qua OAuth riêng, data-plane qua{' '}
-              <code className="text-primary">/v1/api/sf|zoho</code>.
+              Một request: JWT validate → rate limit → route match → proxy upstream → response qua gateway.
+              Demo SF/Zoho là upstream tùy chọn — trọng tâm là routing + identity.
             </p>
           </div>
           <TerminalMock />

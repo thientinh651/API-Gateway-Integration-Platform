@@ -1,3 +1,5 @@
+import { fetchOAuthTokenClientCredentials } from './oauthToken';
+
 export const DATA_PLANE_PREFIX = '/v1/api';
 
 export type ProxyTryResult = {
@@ -7,7 +9,7 @@ export type ProxyTryResult = {
   elapsedMs: number;
   bodyText: string;
   bodyJson: unknown | null;
-  sentApiKey: boolean;
+  sentToken: boolean;
   requestUrl: string;
   method: string;
 };
@@ -31,23 +33,25 @@ function tryParseJson(text: string): unknown | null {
 export async function tryDataPlaneRequest(options: {
   path: string;
   method: string;
-  apiKey?: string;
-  secretKey?: string;
+  clientId?: string;
+  clientSecret?: string;
+  accessToken?: string;
 }): Promise<ProxyTryResult> {
   const method = (options.method || 'GET').toUpperCase();
   const requestUrl = normalizePath(options.path);
-  const key = options.apiKey?.trim() ?? '';
-  const secret = options.secretKey?.trim() ?? '';
   const headers: HeadersInit = {};
-  if (key) {
-    headers['X-API-Key'] = key;
-    if (secret.startsWith('avaso_sk_')) {
-      const { buildSigningPayload, hmacSha256Hex, unixTimestampSecs } = await import('./hmacSign');
-      const ts = unixTimestampSecs();
-      const payload = buildSigningPayload(key, ts, method, requestUrl, '');
-      headers['X-Timestamp'] = ts;
-      headers['X-Signature'] = await hmacSha256Hex(secret, payload);
-    }
+
+  let token = options.accessToken?.trim() ?? '';
+  const clientId = options.clientId?.trim() ?? '';
+  const clientSecret = options.clientSecret?.trim() ?? '';
+
+  if (!token && clientId && clientSecret) {
+    const t = await fetchOAuthTokenClientCredentials(clientId, clientSecret);
+    token = t.access_token;
+  }
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
   }
 
   const started = performance.now();
@@ -66,7 +70,7 @@ export async function tryDataPlaneRequest(options: {
     elapsedMs,
     bodyText,
     bodyJson: tryParseJson(bodyText),
-    sentApiKey: Boolean(key),
+    sentToken: Boolean(token),
     requestUrl,
     method,
   };
@@ -90,19 +94,20 @@ function integrationFailureHint(bodyJson: unknown): string | null {
   if (row.error !== 'integration_proxy_failed') return null;
   const msg = String(row.message ?? '').toLowerCase();
   if (msg.includes('missing access_token') || msg.includes('invalid_code') || msg.includes('invalid_grant')) {
-    return 'API Key/HMAC đã qua gateway — lỗi OAuth Zoho/Salesforce (token hết hạn hoặc chưa kết nối). Vào Tích hợp → kết nối lại rồi thử path /sf/... hoặc /zoho/...';
+    return 'JWT đã qua gateway — lỗi OAuth Zoho/Salesforce (token hết hạn hoặc chưa kết nối). Vào Tích hợp → kết nối lại.';
   }
-  return 'Gateway chấp nhận key nhưng proxy tích hợp upstream thất bại — kiểm tra Tích hợp và route.';
+  return 'Gateway chấp nhận token nhưng proxy tích hợp upstream thất bại — kiểm tra Tích hợp và route.';
 }
 
 import {
   parseGatewayErrorBody,
   reasonLabel,
   inferMiddlewareStage,
+  isUpstreamProviderBody,
   MIDDLEWARE_STAGE_VI,
 } from './middlewareLabels';
 
-export function describeProxyExpectation(result: ProxyTryResult, mode: 'no_key' | 'with_key'): string {
+export function describeProxyExpectation(result: ProxyTryResult, mode: 'no_token' | 'with_token'): string {
   const gwErr = parseGatewayErrorBody(result.bodyJson);
   const errCode = gwErr?.error ?? '';
 
@@ -110,9 +115,9 @@ export function describeProxyExpectation(result: ProxyTryResult, mode: 'no_key' 
     return `HTTP ${result.status} nhưng body là HTML giao diện — không phải API. Dùng path dạng ${DATA_PLANE_PREFIX}/... (có dấu / sau api).`;
   }
 
-  if (mode === 'no_key') {
+  if (mode === 'no_token') {
     if (result.status === 401) {
-      return 'Middleware dừng tại Authentication — thiếu X-API-Key / HMAC.';
+      return 'Middleware dừng tại Authentication — thiếu Authorization: Bearer token.';
     }
     if (result.status === 404) {
       if (isDataPlaneTypoPath(result.requestUrl)) {
@@ -123,19 +128,23 @@ export function describeProxyExpectation(result: ProxyTryResult, mode: 'no_key' 
     return `Nhận HTTP ${result.status}; kỳ vọng 401 tại bước Authentication.`;
   }
 
+  if (result.status === 401 && isUpstreamProviderBody(result.bodyJson)) {
+    return 'Đã qua gateway — upstream trả 401. Kiểm tra query (appid, q, …) hoặc Upstream URL route (base URL, không dính ?).';
+  }
+
   if (result.status === 401) {
-    if (errCode === 'invalid_signature' || errCode === 'replay_detected') {
-      return `Authentication — ${reasonLabel(errCode)}. Kiểm tra Secret (avaso_sk_...) và đồng hồ hệ thống (±5 phút).`;
+    if (errCode === 'token_expired') {
+      return 'Authentication — access token hết hạn. Lấy token mới qua POST /oauth/token.';
     }
-    if (errCode === 'missing_or_invalid_api_key') {
-      return 'Authentication — gateway không nhận API Key này. Copy lại từ Client Registry (cột API Key) hoặc chọn client ở dropdown; nếu vẫn lỗi thì tạo client mới hoặc reload gateway. Lỗi này không phải do Secret sai.';
+    if (errCode === 'invalid_token' || errCode === 'missing_token') {
+      return 'Authentication — token không hợp lệ hoặc thiếu Bearer header.';
     }
-    return 'Authentication — thiếu hoặc sai credential.';
+    return 'Authentication — thiếu hoặc sai access token.';
   }
 
   if (result.status === 403) {
     if (errCode === 'client_key_disabled') {
-      return 'Authorization — client bị tắt trong Client Registry. Bật lại hoặc tạo key mới.';
+      return 'Authorization — OAuth client bị tắt trong Client Registry. Bật lại hoặc tạo client mới.';
     }
     if (errCode === 'forbidden' || gwErr?.message?.includes('route')) {
       return 'Authorization — client không có quyền route này. Cấu hình ACL tại Client Registry.';
@@ -155,8 +164,12 @@ export function describeProxyExpectation(result: ProxyTryResult, mode: 'no_key' 
   }
 
   if (result.ok && result.bodyJson != null) {
-    const stage = inferMiddlewareStage(result.status, errCode, 'success');
+    const stage = inferMiddlewareStage(result.status, errCode, 'success', result.bodyJson);
     return `Qua middleware (${MIDDLEWARE_STAGE_VI[stage]}) — gateway forward upstream.`;
+  }
+
+  if (!result.ok && isUpstreamProviderBody(result.bodyJson)) {
+    return `Upstream trả HTTP ${result.status} — gateway đã forward; xem body JSON bên dưới.`;
   }
 
   if (result.ok) {

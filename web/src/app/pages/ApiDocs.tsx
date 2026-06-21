@@ -25,7 +25,7 @@ const TAB_CONFIG: Record<
     label: 'Data plane (middleware)',
     short: 'Middleware',
     description:
-      'Nền tảng tích hợp trung gian — connector, routing, transform canonical schema, queue, logging. HMAC bảo vệ data plane.',
+      'API Gateway — JWT validation, routing engine, rate limit, transform, logging trên prefix /v1/api/*.',
     icon: Globe,
     frameClass: 'border-blue-500/40 bg-blue-500/[0.06] shadow-[inset_0_1px_0_rgba(59,130,246,0.15)]',
     headerClass: 'from-blue-500/15 to-transparent border-blue-500/30',
@@ -50,7 +50,7 @@ const TAB_CONFIG: Record<
   examples: {
     label: 'Examples',
     short: 'curl mẫu',
-    description: 'Ví dụ gọi HMAC, login admin, list routes.',
+    description: 'Ví dụ OAuth2 token, Bearer JWT, routing, login admin.',
     icon: Terminal,
     frameClass: 'border-emerald-500/35 bg-emerald-500/[0.05] shadow-[inset_0_1px_0_rgba(16,185,129,0.12)]',
     headerClass: 'from-emerald-500/15 to-transparent border-emerald-500/30',
@@ -112,6 +112,13 @@ export function ApiDocs() {
   const [activeTab, setActiveTab] = useState<ApiDocTab>('data-plane');
   const dataPlaneEndpoints = [
     {
+      method: 'POST',
+      path: '/oauth/token',
+      description: 'Identity — phát access_token (password | client_credentials)',
+      auth: 'Không (public token endpoint)',
+      response: '{"access_token":"eyJ...","token_type":"Bearer","expires_in":3600}',
+    },
+    {
       method: 'GET',
       path: '/health',
       description: 'Kiểm tra trạng thái gateway',
@@ -129,28 +136,28 @@ export function ApiDocs() {
       method: 'GET',
       path: '/v1/api/canonical/contacts',
       description: 'Danh sách contact — canonical JSON (query target=sf|zoho)',
-      auth: 'HMAC',
+      auth: 'Bearer JWT',
       response: '{"entity":"contact","format":"canonical","data":[...]}',
     },
     {
       method: 'POST',
       path: '/v1/api/canonical/contacts',
       description: 'Tạo contact — body canonical, target=sf|zoho',
-      auth: 'HMAC',
+      auth: 'Bearer JWT',
       response: 'Canonical record sau transform',
     },
     {
       method: '*',
       path: '/v1/api/*',
-      description: 'Proxy route + đường tích hợp SF/Zoho (pass-through)',
-      auth: 'HMAC: X-API-Key, X-Timestamp, X-Signature',
-      response: 'Response từ upstream hoặc integration backend',
+      description: 'Routing engine — longest prefix match → proxy upstream (SF/Zoho/product API)',
+      auth: 'Authorization: Bearer <JWT>',
+      response: 'Response từ upstream qua gateway',
     },
     {
       method: '*',
       path: '/\{configured_route\}/*',
-      description: 'Proxy theo route CRUD trên UI (prefix tùy cấu hình)',
-      auth: 'HMAC (hoặc legacy X-API-Key nếu bật)',
+      description: 'Route CRUD trên dashboard — prefix tùy cấu hình',
+      auth: 'Bearer JWT',
       response: 'Response từ upstream',
     },
   ];
@@ -169,13 +176,13 @@ export function ApiDocs() {
     { method: 'PUT', path: '/api/routes/{id}', description: 'Cập nhật route', auth: 'Operator+', body: 'RouteWriteBody' },
     { method: 'DELETE', path: '/api/routes/{id}', description: 'Xóa route', auth: 'Admin', body: null },
     { method: 'GET', path: '/api/client-keys', description: 'Client Registry — danh sách client', auth: 'Operator+', body: null },
-    { method: 'POST', path: '/api/client-keys', description: 'Đăng ký client HMAC', auth: 'Operator+', body: '{"name":"erp","integration_type":"app","rate_limit_per_min":100}' },
+    { method: 'POST', path: '/api/client-keys', description: 'Đăng ký OAuth2 client (client_id + client_secret)', auth: 'Operator+', body: '{"name":"web-shop","integration_type":"app","rate_limit_per_min":100}' },
     { method: 'PATCH', path: '/api/client-keys/{id}', description: 'Cập nhật status / rate limit', auth: 'Operator+', body: '{"status":"disabled","rate_limit_per_min":200}' },
     { method: 'POST', path: '/api/client-keys/bulk-status', description: 'Bật/tắt nhiều client', auth: 'Operator+', body: '{"ids":[1,2],"status":"disabled"}' },
     { method: 'PUT', path: '/api/client-keys/{id}/routes', description: 'ACL route cho client', auth: 'Operator+', body: '{"route_ids":[1,2]}' },
     { method: 'GET', path: '/api/client-keys/traffic-summary', description: 'Tổng request 24h theo client (batch)', auth: 'Operator+', body: null },
     { method: 'GET', path: '/api/client-keys/{id}/traffic', description: 'Thống kê traffic 24h theo client', auth: 'Operator+', body: '?hours=24' },
-    { method: 'POST', path: '/api/client-keys/{id}/rotate', description: 'Rotate secret HMAC (API Key giữ nguyên)', auth: 'Operator+', body: null },
+    { method: 'POST', path: '/api/client-keys/{id}/rotate', description: 'Rotate client_secret (client_id giữ nguyên)', auth: 'Operator+', body: null },
     { method: 'POST', path: '/api/client-keys/encrypted', description: 'Đăng ký qua RSA envelope', auth: 'Operator+', body: 'CryptoEnvelope JSON' },
     { method: 'DELETE', path: '/api/client-keys/{id}', description: 'Xóa client khỏi registry', auth: 'Operator+', body: null },
     { method: 'GET', path: '/api/users', description: 'Danh sách admin users', auth: 'Admin', body: null },
@@ -204,7 +211,7 @@ export function ApiDocs() {
   ];
 
   const errorCodes = [
-    { code: '401', description: 'Authentication — thiếu/sai X-API-Key, HMAC, timestamp hoặc replay' },
+    { code: '401', description: 'JWT validation — thiếu/sai/hết hạn Bearer token' },
     { code: '403', description: 'Authorization — client disabled, ACL route, hoặc RBAC admin' },
     { code: '404', description: 'Routing — không có route khớp path' },
     { code: '429', description: 'Rate limiting — vượt quota client / route / global' },
@@ -214,10 +221,10 @@ export function ApiDocs() {
   ];
 
   const middlewareErrorFields = [
-    { field: 'missing_or_invalid_api_key', description: 'Không tìm thấy API Key trong Client Registry' },
-    { field: 'invalid_signature', description: 'X-Signature không khớp payload HMAC' },
-    { field: 'replay_detected', description: 'Cùng chữ ký lặp trong cửa sổ ~5 phút' },
-    { field: 'client_key_disabled', description: 'Client status = disabled' },
+    { field: 'missing_token', description: 'Thiếu header Authorization: Bearer' },
+    { field: 'invalid_token', description: 'JWT sai chữ ký, issuer hoặc format' },
+    { field: 'token_expired', description: 'JWT hết hạn (exp claim)' },
+    { field: 'client_key_disabled', description: 'OAuth client status = disabled' },
     { field: 'route_forbidden', description: 'Path không nằm trong ACL của client' },
     { field: 'rate_limit_exceeded', description: 'Token bucket hết — xem Retry-After' },
   ];
@@ -240,7 +247,7 @@ export function ApiDocs() {
         title="Tài liệu API"
         description={
           <>
-            Middleware Integration Platform — data plane HMAC và admin control plane.
+            API Gateway Rust — JWT identity, routing engine, admin control plane.
           </>
         }
       />
@@ -377,14 +384,33 @@ curl -X PUT https://thientinh.io.vn/api/client-keys/1/routes \\
             <div className="rounded-xl border border-border bg-background/40 p-4 sm:p-5">
               <h4 className="text-base font-bold text-white mb-3 flex items-center gap-2">
                 <Code className="w-5 h-5 text-emerald-400" />
-                HMAC data-plane request
+                OAuth2 token + JWT data-plane
               </h4>
               <div className="bg-[#050810] rounded-lg p-4 font-mono-tech text-xs overflow-x-auto border border-border/80 shadow-inner">
-                <pre className="text-slate-300">{`# Ký payload: api_key\\ntimestamp\\nMETHOD\\npath?query\\nbody
-curl -X GET "https://thientinh.io.vn/v1/api/get" \\
-  -H "X-API-Key: avaso_pk_..." \\
-  -H "X-Timestamp: $(date +%s)" \\
-  -H "X-Signature: <hmac_sha256_hex>"`}</pre>
+                <pre className="text-slate-300">{`# 1) Lấy token (machine client)
+curl -sS -X POST https://thientinh.io.vn/oauth/token \\
+  -H "Content-Type: application/x-www-form-urlencoded" \\
+  -d "grant_type=client_credentials&client_id=avaso_pk_...&client_secret=avaso_sk_..."
+
+# 2) Gọi qua routing engine
+TOKEN="<access_token>"
+curl -sS "https://thientinh.io.vn/v1/api/get" \\
+  -H "Authorization: Bearer $TOKEN"`}</pre>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-border bg-background/40 p-4 sm:p-5">
+              <h4 className="text-base font-bold text-white mb-3 flex items-center gap-2">
+                <Code className="w-5 h-5 text-sky-400" />
+                Benchmark (wrk)
+              </h4>
+              <div className="bg-[#050810] rounded-lg p-4 font-mono-tech text-xs overflow-x-auto border border-border/80 shadow-inner">
+                <pre className="text-slate-300">{`source ./scripts/ensure-bench-credentials.sh
+export BENCH_URL="http://127.0.0.1:3000/health"   # baseline
+./scripts/benchmark-gateway.sh
+
+export BENCH_URL="http://127.0.0.1:3000/v1/api/get"  # JWT + routing
+./scripts/benchmark-gateway.sh`}</pre>
               </div>
             </div>
 
@@ -399,7 +425,7 @@ curl -X GET "https://thientinh.io.vn/v1/api/get" \\
   -d '{"username":"admin","password":"***"}' \\
   -c cookies.txt
 
-# Response: {"status":"ok","username":"admin","role":"admin",...}`}</pre>
+# Response: {"status":"ok","access_token":"eyJ...","token_type":"Bearer",...}`}</pre>
               </div>
             </div>
 

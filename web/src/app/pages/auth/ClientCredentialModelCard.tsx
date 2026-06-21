@@ -29,7 +29,7 @@ export function ClientCredentialModelCard() {
           </div>
           <ul className="mt-3 space-y-1 text-[11px] text-slate-400 leading-relaxed list-disc pl-4">
             <li>Tạo credential <strong className="text-slate-300">một lần</strong> — không tạo key mỗi request</li>
-            <li>Mỗi HTTP call: gửi API Key + chữ ký HMAC</li>
+            <li>Mỗi HTTP call: POST /oauth/token → Authorization: Bearer JWT</li>
             <li>Admin UI dùng session cookie — khác plane với client data plane</li>
           </ul>
         </div>

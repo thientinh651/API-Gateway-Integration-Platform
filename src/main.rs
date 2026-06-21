@@ -4,8 +4,10 @@ mod crypto;
 mod db;
 mod dashboard;
 mod gateway_rsa;
+mod identity;
 mod integration_office;
 mod integrations;
+mod jwt_auth;
 mod metrics;
 mod password_reset;
 mod proxy_ext;
@@ -14,13 +16,14 @@ mod session;
 mod transform;
 
 use admin_auth::{session_unavailable_response, write_audit, write_audit_event, write_audit_failure, AdminCtx};
+use jwt_auth::VerifiedClient;
 use integrations::OAuthPending;
 use session::{SessionRecord, SessionStore, SessionStoreStatus};
 use axum::{
     body::Body,
-    extract::{Extension, Json, Path, Query},
+    extract::{Extension, Form, Json, Path, Query},
     http::{
-        header::{COOKIE, CONTENT_TYPE, RETRY_AFTER, SET_COOKIE},
+        header::{AUTHORIZATION, COOKIE, CONTENT_TYPE, RETRY_AFTER, SET_COOKIE},
         HeaderMap, HeaderValue, Method, Request, StatusCode, Uri,
     },
     middleware::{self, Next},
@@ -261,9 +264,7 @@ struct AppState {
     rl: Arc<DashMap<String, TokenBucket>>,
     /// Admin browser sessions — Redis (module `session`).
     session_store: Arc<SessionStore>,
-    /// HMAC X-Signature replay guard (TTL = timestamp skew window).
-    hmac_replay: Arc<DashMap<String, Instant>>,
-    /// OAuth CSRF cache (primary store: SQLite oauth_pending_states).
+    /// OAuth CSRF cache (SF/Zoho upstream connect).
     oauth_pending: Arc<DashMap<String, OAuthPending>>,
     proxy_queue: proxy_ext::ProxyQueue,
     gateway_metrics: Arc<metrics::GatewayMetrics>,
@@ -271,7 +272,7 @@ struct AppState {
 
 static STATE: OnceLock<AppState> = OnceLock::new();
 
-/// Prefix data plane (SRS): mọi path dưới đây bắt buộc `X-API-Key` client; không route → 404 JSON (không SPA).
+/// Prefix data plane (SRS): mọi path dưới đây bắt buộc `Authorization: Bearer` JWT; không route → 404 JSON (không SPA).
 /// `DATA_PLANE_PREFIX=` rỗng → tắt nhánh này.
 static DATA_PLANE_PREFIX: OnceLock<&'static str> = OnceLock::new();
 
@@ -477,7 +478,7 @@ fn validate_route_write(path: &str, target: &str, timeout_secs: i32, rate_limit_
 
 fn status_to_json_error(status: StatusCode) -> Response {
     let (error, message): (&str, &str) = match status {
-        StatusCode::UNAUTHORIZED => ("unauthorized", "Missing or invalid X-API-Key"),
+        StatusCode::UNAUTHORIZED => ("unauthorized", "Missing or invalid Bearer token"),
         StatusCode::TOO_MANY_REQUESTS => ("too_many_requests", "Rate limit exceeded"),
         StatusCode::BAD_GATEWAY => ("bad_gateway", "Upstream request failed"),
         StatusCode::BAD_REQUEST => ("bad_request", "Invalid request body"),
@@ -498,47 +499,21 @@ fn rate_limit_response(retry_after_secs: u64) -> Response {
     res
 }
 
-const HMAC_TIMESTAMP_MAX_SKEW_SECS: u64 = 300;
 const MAX_DATA_PLANE_BODY: usize = 1024 * 1024;
 
-fn x_api_key_from_headers(headers: &HeaderMap) -> String {
-    headers
-        .get("x-api-key")
-        .or_else(|| headers.get("X-API-Key"))
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .trim()
-        .to_string()
+fn verify_data_plane_auth(
+    cfg: &AppConfig,
+    headers: &HeaderMap,
+) -> Result<VerifiedClient, jwt_auth::TokenAuthFail> {
+    let token = jwt_auth::bearer_from_headers(headers).ok_or(jwt_auth::TokenAuthFail::MissingToken)?;
+    jwt_auth::verify_bearer(&cfg.client_credentials, &token)
 }
 
-fn header_str(headers: &HeaderMap, name: &str) -> String {
-    headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .trim()
-        .to_string()
-}
-
-#[derive(Debug, Clone)]
-struct VerifiedClient {
-    key_id: i64,
-    tenant_id: i64,
-    rate_limit_per_min: i32,
-    allowed_route_ids: Vec<i64>,
-}
-
-#[derive(Debug)]
-enum ClientAuthFail {
-    NoKeysConfigured,
-    MissingApiKey,
-    UnknownApiKey,
-    KeyDisabled,
-    MissingSignature,
-    MissingTimestamp,
-    BadTimestamp,
-    BadSignature,
-    ReplaySignature,
+/// Header `Authorization` dùng để auth gateway, không nên forward thẳng sang upstream generic.
+fn sanitize_upstream_headers(headers: &HeaderMap) -> HeaderMap {
+    let mut out = headers.clone();
+    out.remove(AUTHORIZATION);
+    out
 }
 
 fn canonical_request_path(uri: &Uri) -> String {
@@ -549,170 +524,15 @@ fn canonical_request_path(uri: &Uri) -> String {
     }
 }
 
-fn purge_hmac_replay_cache(cache: &DashMap<String, Instant>) {
-    let now = Instant::now();
-    cache.retain(|_, exp| *exp > now);
-}
-
-fn hmac_replay_cache_key(api_key: &str, signature: &str) -> String {
-    format!("{}:{}", api_key, signature.trim().to_ascii_lowercase())
-}
-
-fn hmac_replay_is_duplicate(state: &AppState, api_key: &str, signature: &str) -> bool {
-    purge_hmac_replay_cache(&state.hmac_replay);
-    state
-        .hmac_replay
-        .contains_key(&hmac_replay_cache_key(api_key, signature))
-}
-
-fn hmac_replay_record(state: &AppState, api_key: &str, signature: &str) {
-    let expires = Instant::now() + Duration::from_secs(HMAC_TIMESTAMP_MAX_SKEW_SECS);
-    state.hmac_replay.insert(
-        hmac_replay_cache_key(api_key, signature),
-        expires,
-    );
-}
-
-fn verify_client_auth(
-    state: &AppState,
-    cfg: &AppConfig,
-    headers: &HeaderMap,
-    method: &str,
-    sign_path: &str,
-    body: &[u8],
-) -> Result<VerifiedClient, ClientAuthFail> {
-    let creds = &cfg.client_credentials;
-    if creds.hmac.is_empty() && creds.legacy.is_empty() {
-        return Err(ClientAuthFail::NoKeysConfigured);
-    }
-
-    let api_key = x_api_key_from_headers(headers);
-    if api_key.is_empty() {
-        return Err(ClientAuthFail::MissingApiKey);
-    }
-
-    if creds.disabled_clients.iter().any(|k| k.api_key == api_key) {
-        return Err(ClientAuthFail::KeyDisabled);
-    }
-
-    if let Some(pair) = creds.hmac.iter().find(|k| k.api_key == api_key) {
-        let sig = header_str(headers, "x-signature");
-        let ts = header_str(headers, "x-timestamp");
-        if sig.is_empty() {
-            return Err(ClientAuthFail::MissingSignature);
-        }
-        if ts.is_empty() {
-            return Err(ClientAuthFail::MissingTimestamp);
-        }
-        let ts_u64: u64 = ts.parse().map_err(|_| ClientAuthFail::BadTimestamp)?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        if ts_u64.abs_diff(now) > HMAC_TIMESTAMP_MAX_SKEW_SECS {
-            return Err(ClientAuthFail::BadTimestamp);
-        }
-        if hmac_replay_is_duplicate(state, &api_key, &sig) {
-            return Err(ClientAuthFail::ReplaySignature);
-        }
-        let payload = crypto::signing_string(&api_key, &ts, method, sign_path, body);
-        if !crypto::verify_hmac_sha256_hex(&pair.secret, &payload, &sig) {
-            return Err(ClientAuthFail::BadSignature);
-        }
-        hmac_replay_record(state, &api_key, &sig);
-        return Ok(VerifiedClient {
-            key_id: pair.id,
-            tenant_id: pair.tenant_id,
-            rate_limit_per_min: pair.rate_limit_per_min,
-            allowed_route_ids: pair.allowed_route_ids.clone(),
-        });
-    }
-
-    let digest = db::sha256_hex(&api_key);
-    if let Some(leg) = creds.legacy.iter().find(|k| k.sha256_hex == digest) {
-        return Ok(VerifiedClient {
-            key_id: leg.id,
-            tenant_id: leg.tenant_id,
-            rate_limit_per_min: leg.rate_limit_per_min,
-            allowed_route_ids: leg.allowed_route_ids.clone(),
-        });
-    }
-
-    Err(ClientAuthFail::UnknownApiKey)
-}
-
-fn client_allows_route(client: &VerifiedClient, route: &RouteRow) -> bool {
-    if client.tenant_id != route.tenant_id {
-        return false;
-    }
-    if client.allowed_route_ids.is_empty() {
-        return true;
-    }
-    client.allowed_route_ids.contains(&route.id)
-}
-
-fn client_identity_for_log(cfg: &AppConfig, api_key: &str) -> (Option<i64>, Option<i64>) {
-    if api_key.is_empty() {
-        return (None, None);
-    }
-    let creds = &cfg.client_credentials;
-    if let Some(p) = creds.hmac.iter().find(|k| k.api_key == api_key) {
-        return (Some(p.id), Some(p.tenant_id));
-    }
-    if let Some(d) = creds.disabled_clients.iter().find(|k| k.api_key == api_key) {
-        return (Some(d.id), Some(d.tenant_id));
-    }
-    let digest = db::sha256_hex(api_key);
-    if let Some(leg) = creds.legacy.iter().find(|k| k.sha256_hex == digest) {
-        return (Some(leg.id), Some(leg.tenant_id));
-    }
-    (None, None)
-}
-
-fn client_auth_to_response(err: ClientAuthFail) -> (StatusCode, &'static str, &'static str) {
-    match err {
-        ClientAuthFail::NoKeysConfigured => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "service_unavailable",
-            "No client API keys configured; data plane requires X-API-Key per SRS",
-        ),
-        ClientAuthFail::MissingApiKey | ClientAuthFail::UnknownApiKey => (
-            StatusCode::UNAUTHORIZED,
-            "missing_or_invalid_api_key",
-            "Missing or invalid X-API-Key",
-        ),
-        ClientAuthFail::KeyDisabled => (
-            StatusCode::FORBIDDEN,
-            "client_key_disabled",
-            "Client API key is disabled",
-        ),
-        ClientAuthFail::MissingSignature
-        | ClientAuthFail::MissingTimestamp
-        | ClientAuthFail::BadTimestamp
-        | ClientAuthFail::BadSignature => (
-            StatusCode::UNAUTHORIZED,
-            "invalid_signature",
-            "Missing or invalid X-Signature / X-Timestamp (HMAC-SHA256)",
-        ),
-        ClientAuthFail::ReplaySignature => (
-            StatusCode::UNAUTHORIZED,
-            "replay_detected",
-            "Duplicate X-Signature within allowed time window",
-        ),
-    }
-}
-
-/// NFR-12: never log plaintext API keys.
-fn mask_api_key_for_log(key: &str) -> String {
-    let k = key.trim();
-    if k.is_empty() {
+fn mask_subject_for_log(subject: &str) -> String {
+    let s = subject.trim();
+    if s.is_empty() {
         return "(none)".into();
     }
-    if k.len() <= 4 {
+    if s.len() <= 8 {
         return "****".into();
     }
-    let prefix: String = k.chars().take(6).collect();
-    format!("{prefix}…")
+    format!("{}…", &s[..8.min(s.len())])
 }
 
 /// FR-D1: structured JSON transaction log + persist to SQLite for admin UI.
@@ -724,13 +544,13 @@ fn log_gateway_transaction(
     method: &str,
     path: &str,
     status: u16,
-    api_key_header: &str,
+    subject: &str,
     upstream: Option<&str>,
     elapsed_ms: u128,
     client_key_id: Option<i64>,
 ) {
     let request_id = uuid::Uuid::new_v4().to_string();
-    let api_key_masked = mask_api_key_for_log(api_key_header);
+    let api_key_masked = mask_subject_for_log(subject);
     info!(
         event = "gateway_transaction",
         request_id = %request_id,
@@ -1157,7 +977,6 @@ async fn main() {
         http: reqwest::Client::new(),
         rl: Arc::new(DashMap::new()),
         session_store,
-        hmac_replay: Arc::new(DashMap::new()),
         oauth_pending: Arc::new(DashMap::new()),
         proxy_queue,
         gateway_metrics: Arc::new(metrics::GatewayMetrics::new()),
@@ -1289,6 +1108,7 @@ async fn main() {
     let api_public = Router::new()
         .route("/ping", get(admin_api_ping))
         .route("/login", post(admin_login))
+        .route("/oauth/token", post(oauth_token_handler))
         .route("/logout", post(admin_logout))
         .route("/me", get(admin_me).put(api_update_me))
         .route("/register", post(api_register_viewer))
@@ -1318,9 +1138,6 @@ async fn main() {
             axum::http::header::AUTHORIZATION,
             axum::http::header::CONTENT_TYPE,
             COOKIE,
-            axum::http::HeaderName::from_static("x-api-key"),
-            axum::http::HeaderName::from_static("x-signature"),
-            axum::http::HeaderName::from_static("x-timestamp"),
         ])
         .allow_origin(AllowOrigin::list(cors_allowed_origins()));
 
@@ -1331,6 +1148,7 @@ async fn main() {
         .nest("/api", api)
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
+        .route("/oauth/token", post(oauth_token_handler))
         .fallback(proxy_or_static);
 
     let port = current_bind_port();
@@ -1361,7 +1179,8 @@ async fn main() {
     println!("   GET/POST /api/client-keys | DELETE /api/client-keys/:id");
     println!("   GET /api/integrations | SF OAuth connect/callback/test");
     println!("   GET /api/crypto/public-key | POST /api/client-keys/encrypted (RSA envelope)");
-    println!("   Data plane prefix (bắt buộc X-API-Key client): {}", data_plane_prefix());
+    println!("   POST /oauth/token (grant_type=password|client_credentials)");
+    println!("   Data plane prefix (Bearer JWT bắt buộc): {}", data_plane_prefix());
     let shutdown = async {
         let ctrl_c = async {
             tokio::signal::ctrl_c()
@@ -1628,20 +1447,50 @@ async fn establish_admin_session(
             "invalid cookie header",
         );
     };
-    let mut res = (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "status": "ok",
-            "username": username,
-            "role": ctx.role,
-            "tenant_id": ctx.tenant_id,
-            "user_id": ctx.user_id,
-            "email": admin.email
-        })),
-    )
-        .into_response();
+    let token = match identity::issue_user_token(admin) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            tracing::warn!(error = %e, "issue user jwt failed");
+            None
+        }
+    };
+    let mut body = serde_json::json!({
+        "status": "ok",
+        "username": username,
+        "role": ctx.role,
+        "tenant_id": ctx.tenant_id,
+        "user_id": ctx.user_id,
+        "email": admin.email
+    });
+    if let Some(t) = token {
+        body["access_token"] = serde_json::Value::String(t.access_token);
+        body["token_type"] = serde_json::Value::String(t.token_type.into());
+        body["expires_in"] = serde_json::json!(t.expires_in);
+    }
+    let mut res = (StatusCode::OK, Json(body)).into_response();
     res.headers_mut().append(SET_COOKIE, hv);
     res
+}
+
+async fn oauth_token_handler(Form(form): Form<identity::OAuthTokenForm>) -> impl IntoResponse {
+    let st = match STATE.get() {
+        Some(s) => s.clone(),
+        None => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "gateway state not initialized",
+            );
+        }
+    };
+    let cfg = st.config.read().await.clone();
+    match identity::exchange_token(&st.pool, &cfg.client_credentials, form).await {
+        Ok(token) => Json(token).into_response(),
+        Err(err) => {
+            let msg = err.message();
+            json_error(err.status(), err.error_code(), &msg)
+        }
+    }
 }
 
 async fn admin_login(headers: HeaderMap, Json(body): Json<LoginBody>) -> impl IntoResponse {
@@ -3747,7 +3596,7 @@ async fn api_create_client_key(
             fields,
         );
     }
-    match db::insert_client_key_hmac(
+    match db::insert_oauth_client(
         &st.pool,
         &name,
         &api_key,
@@ -3782,7 +3631,7 @@ async fn api_create_client_key(
                     name,
                     api_key,
                     secret_key,
-                    auth: "hmac-sha256",
+                    auth: "oauth2",
                     integration_type: integration_type.clone(),
                     tenant_id: ctx.tenant_id,
                     purpose,
@@ -3911,7 +3760,7 @@ async fn api_create_client_key_encrypted(
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| db::random_secret_key());
 
-    match db::insert_client_key_hmac(
+    match db::insert_oauth_client(
         &st.pool,
         &name,
         &api_key,
@@ -3946,7 +3795,7 @@ async fn api_create_client_key_encrypted(
                     name,
                     api_key,
                     secret_key,
-                    auth: "hmac-sha256",
+                    auth: "oauth2",
                     integration_type: integration_type.clone(),
                     tenant_id: ctx.tenant_id,
                     purpose,
@@ -4442,7 +4291,7 @@ async fn api_rotate_client_key(
                 Json(RotateClientKeyResponse {
                     api_key,
                     secret_key,
-                    auth: "hmac-sha256",
+                    auth: "oauth2",
                 }),
             )
                 .into_response()
@@ -4451,7 +4300,7 @@ async fn api_rotate_client_key(
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": "rotate_not_supported",
-                "message": "Chỉ client HMAC (avaso_pk_*) mới rotate secret"
+                "message": "Chỉ OAuth client (avaso_pk_*) mới rotate secret"
             })),
         )
             .into_response(),
@@ -5525,7 +5374,7 @@ struct MiddlewareStatusResponse {
     data_plane_prefix: &'static str,
     client_registry: dashboard::ClientRegistryStats,
     routes_count: i64,
-    hmac_clients_loaded: usize,
+    oauth_clients_loaded: usize,
     rate_limit_global_enabled: bool,
     rate_limit_global_rps: f64,
     integration_platform: IntegrationPlatformStatus,
@@ -5573,7 +5422,7 @@ async fn api_middleware_status(Extension(ctx): Extension<AdminCtx>) -> impl Into
         }
     };
     let cfg = st.config.read().await;
-    let hmac_clients_loaded = cfg.client_credentials.hmac.len();
+    let oauth_clients_loaded = cfg.client_credentials.oauth_clients.len();
     let bridge_row = db::fetch_integration_bridge(&st.pool, ctx.tenant_id)
         .await
         .ok()
@@ -5587,7 +5436,7 @@ async fn api_middleware_status(Extension(ctx): Extension<AdminCtx>) -> impl Into
             disabled,
         },
         routes_count,
-        hmac_clients_loaded,
+        oauth_clients_loaded,
         rate_limit_global_enabled: cfg.settings.rate_limit.enabled,
         rate_limit_global_rps: f64::from(cfg.settings.rate_limit.rps),
         integration_platform: IntegrationPlatformStatus {
@@ -5647,8 +5496,7 @@ async fn handle_data_plane_request(
 ) -> Response {
     let cfg = state.config.read().await.clone();
     let method = req.method().as_str().to_string();
-    let sign_path = canonical_request_path(&uri);
-    let key = x_api_key_from_headers(req.headers());
+    let bearer = jwt_auth::bearer_from_headers(req.headers()).unwrap_or_default();
     let (parts, body) = req.into_parts();
     let client_ip = admin_auth::client_ip(&parts.headers);
     let body_bytes = match axum::body::to_bytes(body, MAX_DATA_PLANE_BODY).await {
@@ -5661,18 +5509,11 @@ async fn handle_data_plane_request(
             );
         }
     };
-    let verified = match verify_client_auth(
-        &state,
-        &cfg,
-        &parts.headers,
-        &method,
-        &sign_path,
-        &body_bytes,
-    ) {
+    let verified = match verify_data_plane_auth(&cfg, &parts.headers) {
         Ok(v) => v,
         Err(err) => {
-            let (status, reason, msg) = client_auth_to_response(err);
-            let (log_key_id, log_tenant) = client_identity_for_log(&cfg, &key);
+            let (status, reason, msg) = jwt_auth::token_auth_to_response(err);
+            let (log_key_id, log_tenant) = jwt_auth::identity_for_log(&cfg.client_credentials, &bearer);
             log_gateway_transaction(
                 log_tenant,
                 client_ip.as_deref(),
@@ -5681,7 +5522,7 @@ async fn handle_data_plane_request(
                 &method,
                 &path,
                 status.as_u16(),
-                &key,
+                &bearer,
                 None,
                 0,
                 log_key_id,
@@ -5689,12 +5530,15 @@ async fn handle_data_plane_request(
             return json_error(status, reason, msg);
         }
     };
-    spawn_touch_client_key(verified.key_id);
+    let subject = verified.subject.clone();
+    if verified.key_id > 0 {
+        spawn_touch_client_key(verified.key_id);
+    }
     if canonical_api::parse_canonical_path(data_plane_prefix(), &path).is_some() {
         let (rl_active, rl_rps, rl_burst) =
             resolve_rate_limit(&verified, None, &cfg.settings);
         if rl_active {
-            let rl_key = rate_limit_bucket_key(verified.tenant_id, "canonical", &key);
+            let rl_key = rate_limit_bucket_key(verified.tenant_id, "canonical", &subject);
             if let Err(retry_after) =
                 try_consume_rate_limit(&state, &rl_key, rl_rps, rl_burst)
             {
@@ -5706,7 +5550,7 @@ async fn handle_data_plane_request(
                     &method,
                     &path,
                     StatusCode::TOO_MANY_REQUESTS.as_u16(),
-                    &key,
+                    &subject,
                     Some("canonical_transform"),
                     0,
                     Some(verified.key_id),
@@ -5736,7 +5580,7 @@ async fn handle_data_plane_request(
             &method,
             &path,
             resp.status().as_u16(),
-            &key,
+            &subject,
             Some("canonical_transform"),
             0,
             Some(verified.key_id),
@@ -5747,7 +5591,7 @@ async fn handle_data_plane_request(
         let (rl_active, rl_rps, rl_burst) =
             resolve_rate_limit(&verified, None, &cfg.settings);
         if rl_active {
-            let rl_key = rate_limit_bucket_key(verified.tenant_id, "integration", &key);
+            let rl_key = rate_limit_bucket_key(verified.tenant_id, "integration", &subject);
             if let Err(retry_after) =
                 try_consume_rate_limit(&state, &rl_key, rl_rps, rl_burst)
             {
@@ -5759,7 +5603,7 @@ async fn handle_data_plane_request(
                     &method,
                     &path,
                     StatusCode::TOO_MANY_REQUESTS.as_u16(),
-                    &key,
+                    &subject,
                     Some("integration_oauth"),
                     0,
                     Some(verified.key_id),
@@ -5789,7 +5633,7 @@ async fn handle_data_plane_request(
             &method,
             &path,
             resp.status().as_u16(),
-            &key,
+            &subject,
             Some("integration_oauth"),
             0,
             Some(verified.key_id),
@@ -5799,7 +5643,7 @@ async fn handle_data_plane_request(
     let matched = route_match::find_route(&cfg.routes, &method, &path);
     if let Some(matched) = matched {
         let route = matched.route;
-        if !client_allows_route(&verified, &route) {
+        if !jwt_auth::client_allows_route(&verified, &route) {
             log_gateway_transaction(
                 Some(verified.tenant_id),
                 client_ip.as_deref(),
@@ -5808,7 +5652,7 @@ async fn handle_data_plane_request(
                 &method,
                 &path,
                 StatusCode::FORBIDDEN.as_u16(),
-                &key,
+                &subject,
                 Some(&route.target),
                 0,
                 Some(verified.key_id),
@@ -5835,7 +5679,7 @@ async fn handle_data_plane_request(
         &method,
         &path,
         StatusCode::NOT_FOUND.as_u16(),
-        &key,
+        &subject,
         None,
         0,
         Some(verified.key_id),
@@ -5855,25 +5699,19 @@ async fn handle_proxied_route(
     route: RouteRow,
 ) -> Result<Response, Response> {
     let cfg = state.config.read().await.clone();
-    let sign_path = canonical_request_path(&uri);
     let (parts, body) = req.into_parts();
     let body_bytes = axum::body::to_bytes(body, MAX_DATA_PLANE_BODY)
         .await
         .map_err(|_| status_to_json_error(StatusCode::BAD_REQUEST))?;
-    let verified = verify_client_auth(
-        &state,
-        &cfg,
-        &parts.headers,
-        parts.method.as_str(),
-        &sign_path,
-        &body_bytes,
-    )
-    .map_err(|err| {
-        let (status, _, _) = client_auth_to_response(err);
+    let verified = verify_data_plane_auth(&cfg, &parts.headers).map_err(|err| {
+        let (status, _, _) = jwt_auth::token_auth_to_response(err);
         status_to_json_error(status)
     })?;
-    if !client_allows_route(&verified, &route) {
+    if !jwt_auth::client_allows_route(&verified, &route) {
         return Err(status_to_json_error(StatusCode::FORBIDDEN));
+    }
+    if verified.key_id > 0 {
+        spawn_touch_client_key(verified.key_id);
     }
     let req = Request::from_parts(parts, Body::from(body_bytes));
     let suffix = path
@@ -5942,7 +5780,7 @@ async fn do_proxy(
     let (parts, body) = req.into_parts();
 
     let cfg = state.config.read().await.clone();
-    let key = x_api_key_from_headers(&parts.headers);
+    let subject = verified.subject.clone();
     let client_ip = admin_auth::client_ip(&parts.headers);
 
     let body_bytes = axum::body::to_bytes(body, MAX_DATA_PLANE_BODY)
@@ -5960,7 +5798,7 @@ async fn do_proxy(
         } else {
             "global".to_string()
         };
-        let rl_key = rate_limit_bucket_key(verified.tenant_id, &scope, &key);
+        let rl_key = rate_limit_bucket_key(verified.tenant_id, &scope, &subject);
         if let Err(retry_after) = try_consume_rate_limit(&state, &rl_key, rl_rps, rl_burst) {
             let elapsed_ms = started.elapsed().as_millis();
             log_gateway_transaction(
@@ -5971,7 +5809,7 @@ async fn do_proxy(
                 parts.method.as_str(),
                 &path,
                 StatusCode::TOO_MANY_REQUESTS.as_u16(),
-                &key,
+                &subject,
                 Some(&route.target),
                 elapsed_ms,
                 Some(verified.key_id),
@@ -5982,12 +5820,11 @@ async fn do_proxy(
 
     let mut url = route_match::build_upstream_url(&route.target, &route_params, &route_suffix);
     if let Some(q) = uri.query() {
-        url.push('?');
-        url.push_str(q);
+        url = route_match::append_query_to_upstream_url(&url, q);
     }
 
     let method = parts.method.clone();
-    let headers: HeaderMap = parts.headers.clone();
+    let headers = sanitize_upstream_headers(&parts.headers);
     let policy = proxy_ext::RouteProxyPolicy::from_row(&route);
     let timeout_secs = route.timeout_secs.max(1) as u64;
 
@@ -6032,7 +5869,7 @@ async fn do_proxy(
         parts.method.as_str(),
         &path,
         status.as_u16(),
-        &key,
+        &subject,
         Some(&route.target),
         elapsed_ms,
         Some(verified.key_id),
@@ -6069,7 +5906,7 @@ async fn do_proxy(
 #[cfg(test)]
 mod path_tests {
     use super::*;
-    use axum::http::Uri;
+    use axum::http::{HeaderValue, Uri};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -6101,6 +5938,17 @@ mod path_tests {
     }
 
     #[test]
+    fn strips_gateway_bearer_before_upstream() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer test-token"));
+        headers.insert("x-demo", HeaderValue::from_static("ok"));
+
+        let sanitized = sanitize_upstream_headers(&headers);
+        assert!(sanitized.get(AUTHORIZATION).is_none());
+        assert_eq!(sanitized.get("x-demo"), Some(&HeaderValue::from_static("ok")));
+    }
+
+    #[test]
     fn parse_bool_setting_values() {
         assert!(parse_bool_setting(Some("true".into()), false));
         assert!(parse_bool_setting(Some("1".into()), false));
@@ -6117,14 +5965,6 @@ mod path_tests {
         assert!(!bucket.take(start, 100.0, 2));
         let later = start + Duration::from_secs(1);
         assert!(bucket.take(later, 1.0, 2));
-    }
-
-    #[test]
-    fn hmac_replay_cache_key_normalizes_sig() {
-        assert_eq!(
-            hmac_replay_cache_key("pk", "AbCdEf"),
-            hmac_replay_cache_key("pk", "abcdef")
-        );
     }
 
     fn test_route(id: i64, tenant_id: i64) -> RouteRow {
@@ -6147,29 +5987,33 @@ mod path_tests {
 
     #[test]
     fn client_allows_route_tenant_and_acl() {
+        let route = test_route(5, 1);
+        let other_tenant = test_route(6, 10);
         let full = VerifiedClient {
             key_id: 1,
-            tenant_id: 10,
+            tenant_id: 1,
             rate_limit_per_min: 0,
             allowed_route_ids: vec![],
+            subject: "client:pk".into(),
+            token_type: "client".into(),
         };
         let restricted = VerifiedClient {
             key_id: 2,
-            tenant_id: 10,
-            rate_limit_per_min: 100,
+            tenant_id: 1,
+            rate_limit_per_min: 0,
             allowed_route_ids: vec![5],
+            subject: "client:pk2".into(),
+            token_type: "client".into(),
         };
-        let route = test_route(5, 10);
-        let other_tenant = test_route(5, 99);
-        assert!(client_allows_route(&full, &route));
-        assert!(client_allows_route(&restricted, &route));
-        assert!(!client_allows_route(&restricted, &test_route(6, 10)));
-        assert!(!client_allows_route(&full, &other_tenant));
+        assert!(jwt_auth::client_allows_route(&full, &route));
+        assert!(jwt_auth::client_allows_route(&restricted, &route));
+        assert!(!jwt_auth::client_allows_route(&restricted, &test_route(6, 10)));
+        assert!(!jwt_auth::client_allows_route(&full, &other_tenant));
     }
 
     #[test]
-    fn mask_api_key_for_log_prefix() {
-        assert_eq!(mask_api_key_for_log("avaso_pk_abcdefgh"), "avaso_…");
-        assert_eq!(mask_api_key_for_log(""), "(none)");
+    fn mask_subject_for_log_prefix() {
+        assert_eq!(mask_subject_for_log("client:avaso_pk_ab"), "client:a…");
+        assert_eq!(mask_subject_for_log(""), "(none)");
     }
 }

@@ -13,23 +13,40 @@ body {
   overflow-x: hidden;
 }
 
-/* Sonner: nút đóng mặc định trái (biến --toast-close-button-*). Ép sang phải. */
+/* Sonner toast — lùi khỏi viền phải/trên, nút × nằm trong khung */
+[data-sonner-toaster].avaso-toaster,
+.avaso-toaster[data-sonner-toaster] {
+  --offset-right: 2.5rem !important;
+  --offset-top: 1.5rem !important;
+  --mobile-offset-right: 1.25rem !important;
+  --mobile-offset-left: 1.25rem !important;
+  --mobile-offset-top: 1rem !important;
+  --toast-close-button-end: 0.625rem !important;
+  --toast-close-button-transform: none !important;
+  right: calc(2.5rem + env(safe-area-inset-right, 0px)) !important;
+  top: calc(1.5rem + env(safe-area-inset-top, 0px)) !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+[data-sonner-toaster].avaso-toaster [data-sonner-toast][data-styled='true'],
+.avaso-toaster[data-sonner-toaster] [data-sonner-toast][data-styled='true'] {
+  padding-right: 2.75rem !important;
+}
+
+[data-sonner-toaster].avaso-toaster [data-sonner-toast][data-styled='true'] [data-close-button],
+.avaso-toaster[data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-close-button] {
+  left: unset !important;
+  right: 0.625rem !important;
+  top: 0.625rem !important;
+  transform: none !important;
+}
+
+html[dir='ltr'],
 [data-sonner-toaster][dir='ltr'] {
   --toast-close-button-start: unset !important;
-  --toast-close-button-end: 0 !important;
-  --toast-close-button-transform: translate(35%, -35%) !important;
-}
-
-html[dir='ltr'] {
-  --toast-close-button-start: unset !important;
-  --toast-close-button-end: 0 !important;
-  --toast-close-button-transform: translate(35%, -35%) !important;
-}
-
-[data-sonner-toast][data-styled='true'] [data-close-button] {
-  left: unset !important;
-  right: 0 !important;
-  transform: translate(35%, -35%) !important;
+  --toast-close-button-end: 0.625rem !important;
+  --toast-close-button-transform: none !important;
 }
 
 /* Sonner stack — mở/gom mượt; class JS (không :hover) tránh giật viền */
@@ -38,8 +55,6 @@ html[dir='ltr'] {
   --toast-collapse-ease: cubic-bezier(0.45, 0.05, 0.2, 1);
   --toast-expand-ms: 580ms;
   --toast-collapse-ms: 700ms;
-  padding: 10px;
-  margin: -10px;
 }
 
 .avaso-toaster[data-sonner-toaster] [data-sonner-toast][data-mounted='true']:not([data-removed='true']) {

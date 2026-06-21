@@ -30,7 +30,7 @@ export function ClientSecretInput({ className, ...props }: InputProps) {
   return (
     <Input
       type="text"
-      name="gw-client-hmac-secret"
+      name="gw-client-oauth-secret"
       autoComplete="one-time-code"
       spellCheck={false}
       className={cn('gw-secret-mask', className)}
