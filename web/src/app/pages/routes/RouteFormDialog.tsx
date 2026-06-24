@@ -1,4 +1,3 @@
-import { useEffect } from 'react';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -17,6 +16,7 @@ import {
   useNumericDefaultsOnOpen,
 } from '../../../lib/zeroDefaultNumberInput';
 import type { UiRoute } from './routeTypes';
+import { RetryOnStatusPicker } from './RetryOnStatusPicker';
 
 export type RouteFormState = {
   path: string;
@@ -214,20 +214,20 @@ export function RouteFormDialog({
                 <FieldError message={fieldErrors.retry_max} />
               </div>
               <div>
-                <Label className="text-foreground">Retry on status</Label>
-                <Input
-                  value={formData.retryOnStatus}
-                  onChange={(e) => setFormData({ ...formData, retryOnStatus: e.target.value })}
-                  placeholder="502,503,504"
-                  className="bg-input border-border text-foreground mt-1 font-mono text-xs"
-                />
+                <Label className="text-foreground">Retry on timeout</Label>
+                <div className="mt-1 flex h-9 items-center">
+                  <Switch
+                    checked={formData.retryOnTimeout}
+                    onCheckedChange={(c) => setFormData({ ...formData, retryOnTimeout: c })}
+                  />
+                </div>
               </div>
             </div>
-            <div className="flex items-center justify-between">
-              <Label className="text-foreground">Retry on timeout</Label>
-              <Switch
-                checked={formData.retryOnTimeout}
-                onCheckedChange={(c) => setFormData({ ...formData, retryOnTimeout: c })}
+            <div>
+              <Label className="text-foreground">Retry on status</Label>
+              <RetryOnStatusPicker
+                value={formData.retryOnStatus}
+                onChange={(retryOnStatus) => setFormData({ ...formData, retryOnStatus })}
               />
             </div>
             <div className="flex items-center justify-between">

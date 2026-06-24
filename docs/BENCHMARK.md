@@ -12,7 +12,7 @@ source ./scripts/ensure-bench-credentials.sh
 # → BENCH_API_KEY, BENCH_SECRET_KEY, BENCH_ACCESS_TOKEN
 ```
 
-Cài `wrk` (khuyến nghị):
+Cài `wrk` (khuyến nghị) hoặc **k6 trên laptop Windows** (xem [`k6/README.md`](../k6/README.md)):
 
 ```bash
 sudo apt install wrk   # Ubuntu

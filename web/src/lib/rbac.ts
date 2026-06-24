@@ -66,6 +66,10 @@ export function rbacAllow(method: HttpMethod, path: string, role?: string): bool
     if (p.startsWith('/client-keys/') && p.endsWith('/routes') && (m === 'PUT' || m === 'GET')) return true;
     if (p.startsWith('/client-keys/') && p.endsWith('/rotate') && m === 'POST') return true;
     if (p.startsWith('/client-keys/') && p.endsWith('/traffic') && m === 'GET') return true;
+    if (p.startsWith('/client-keys/') && p.endsWith('/revoke-tokens') && m === 'POST') return true;
+    if (p === '/oauth/tokens' && m === 'GET') return true;
+    if (p === '/oauth/tokens/revoke' && m === 'POST') return true;
+    if (p === '/oauth/apps' && m === 'GET') return true;
     if (p === '/routes/acl-summary' && m === 'GET') return true;
     if (p.startsWith('/routes/') && p.endsWith('/clients') && m === 'GET') return true;
     return false;
@@ -132,8 +136,17 @@ export function canViewAudit(user: AdminMe | null): boolean {
   return rbacAllow('GET', '/api/audit-logs', user?.role);
 }
 
-export function canViewJournal(user: AdminMe | null): boolean {
-  return canViewLogs(user) || canViewAudit(user);
+export function canManageOAuthApps(user: AdminMe | null): boolean {
+  return normalizeRole(user?.role) === 'admin';
+}
+
+export function canViewOAuthTokens(user: AdminMe | null): boolean {
+  const r = normalizeRole(user?.role);
+  return r === 'admin' || r === 'operator';
+}
+
+export function canRevokeClientTokens(user: AdminMe | null): boolean {
+  return canWriteClientKeys(user) && rbacAllow('POST', '/api/client-keys/1/revoke-tokens', user?.role);
 }
 
 export function isViewer(user: AdminMe | null): boolean {
@@ -163,7 +176,7 @@ export function canAccessNavPath(path: string, user: AdminMe | null): boolean {
   if (path === '/users') return canManageUsers(user);
   if (path === '/integrations') return canManageIntegrations(user);
   if (path === '/auth') return canAccessClientKeys(user);
-  if (path === '/logs') return canViewJournal(user);
+  if (path === '/logs') return canViewLogs(user);
   if (path === '/proxy-queue') return rbacAllow('GET', '/api/proxy-queue', user.role);
   return rbacAllow('GET', api, user.role);
 }

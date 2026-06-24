@@ -40,6 +40,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '../../components/ui/collapsible';
+import { RadioGroup, RadioGroupItem } from '../../components/ui/radio-group';
 import { useAdminAuth } from '../../../contexts/AdminAuthContext';
 import { canWriteClientKeys } from '../../../lib/rbac';
 import {
@@ -176,9 +177,9 @@ export function CreateApiKeyDialog({
   };
 
   const copyBoth = async () => {
-    const block = `API Key: ${generatedApiKey}\nSecret Key: ${generatedSecret}`;
+    const block = `Client ID: ${generatedApiKey}\nClient Secret: ${generatedSecret}`;
     await navigator.clipboard.writeText(block);
-    toast.success('Đã copy cả API Key và Secret');
+    toast.success('Đã copy Client ID và Client Secret');
   };
 
   const goTryProxy = () => {
@@ -213,8 +214,7 @@ export function CreateApiKeyDialog({
                 {fieldErrors._form}
               </p>
             ) : null}
-            <div className="space-y-2">
-              <Label className="text-foreground block">Tên ứng dụng / đối tác</Label>
+                       <div className="space-y-2">
               <Input
                 placeholder="vd: mobile-app-prod, đối-tác-ABC"
                 value={name}
@@ -275,7 +275,7 @@ export function CreateApiKeyDialog({
                   checked={restrictRoutes}
                   onChange={(e) => setRestrictRoutes(e.target.checked)}
                 />
-                Giới hạn route ngay khi đăng ký (ACL)
+                Giới hạn route được gọi (ACL)
               </label>
               {restrictRoutes ? (
                 <div className="max-h-32 overflow-y-auto rounded border border-border">
@@ -318,15 +318,37 @@ export function CreateApiKeyDialog({
               </CollapsibleTrigger>
               <CollapsibleContent className="mt-3 space-y-2 rounded-lg border border-border/60 bg-slate-950/50 p-3">
                 <Label className="text-xs text-muted-foreground">Chế độ tạo</Label>
-                <Select value={mode} onValueChange={(v) => setMode(v as CreateMode)}>
-                  <SelectTrigger className="bg-input border-border text-foreground h-9 text-sm">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="direct">Thường — HTTPS (khuyến nghị)</SelectItem>
-                    <SelectItem value="rsa">RSA envelope — demo enterprise</SelectItem>
-                  </SelectContent>
-                </Select>
+                <RadioGroup
+                  value={mode}
+                  onValueChange={(v) => setMode(v as CreateMode)}
+                  className="gap-2"
+                >
+                  <label
+                    className={`flex items-start gap-2.5 rounded-md border px-3 py-2.5 cursor-pointer transition-colors ${
+                      mode === 'direct'
+                        ? 'border-primary/40 bg-primary/5'
+                        : 'border-border/60 hover:border-border'
+                    }`}
+                  >
+                    <RadioGroupItem value="direct" className="mt-0.5" />
+                    <span className="text-xs leading-relaxed">
+                      <span className="font-medium text-slate-200">Thường — HTTPS</span>
+                      <span className="text-muted-foreground"> · khuyến nghị</span>
+                    </span>
+                  </label>
+                  <label
+                    className={`flex items-start gap-2.5 rounded-md border px-3 py-2.5 cursor-pointer transition-colors ${
+                      mode === 'rsa'
+                        ? 'border-primary/40 bg-primary/5'
+                        : 'border-border/60 hover:border-border'
+                    }`}
+                  >
+                    <RadioGroupItem value="rsa" className="mt-0.5" />
+                    <span className="text-xs leading-relaxed text-slate-300">
+                      RSA envelope — mã hóa payload đăng ký (tùy chọn)
+                    </span>
+                  </label>
+                </RadioGroup>
               </CollapsibleContent>
             </Collapsible>
 
@@ -348,13 +370,13 @@ export function CreateApiKeyDialog({
             </div>
 
             <CredentialRow
-              label="API Key"
+              label="Client ID"
               value={generatedApiKey}
-              onCopy={() => void copyText(generatedApiKey, 'API Key')}
+              onCopy={() => void copyText(generatedApiKey, 'Client ID')}
             />
             <SecretCredentialRow
               value={generatedSecret}
-              onCopy={() => void copyText(generatedSecret, 'Secret')}
+              onCopy={() => void copyText(generatedSecret, 'Client Secret')}
             />
 
             <div className="flex flex-col gap-2 pt-1">
@@ -414,7 +436,7 @@ function SecretCredentialRow({ value, onCopy }: { value: string; onCopy: () => v
 
   return (
     <div className="rounded-lg border border-border bg-slate-950/60 p-3">
-      <Label className="text-foreground text-sm mb-2 block">Secret Key</Label>
+      <Label className="text-foreground text-sm mb-2 block">Client Secret</Label>
       {showOnScreen ? (
         <pre className="mb-2 max-h-24 overflow-auto rounded-md border border-border bg-input px-3 py-2 font-mono text-xs text-foreground whitespace-pre-wrap break-all">
           {value}
@@ -427,7 +449,7 @@ function SecretCredentialRow({ value, onCopy }: { value: string; onCopy: () => v
       <div className="flex flex-wrap gap-2">
         <Button onClick={onCopy} size="sm" className="bg-primary hover:bg-primary/90">
           <Copy className="w-3.5 h-3.5 mr-1.5" />
-          Copy Secret
+          Copy Client Secret
         </Button>
         <Button
           type="button"

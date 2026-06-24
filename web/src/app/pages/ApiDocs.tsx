@@ -34,7 +34,7 @@ const TAB_CONFIG: Record<
     label: 'Quản trị trên dashboard',
     short: 'Admin',
     description:
-      'Cấu hình route, API key, user, audit, Salesforce/Zoho. Đăng nhập web (cookie) hoặc gửi header X-API-Key admin — mọi path bắt đầu /api/.',
+      'Cấu hình client, route, user, audit, Salesforce/Zoho.',
     icon: Server,
     frameClass: 'border-primary/45 bg-primary/[0.07] shadow-[inset_0_1px_0_rgba(249,115,22,0.2)]',
     headerClass: 'from-primary/20 to-transparent border-primary/35',
@@ -114,7 +114,7 @@ export function ApiDocs() {
     {
       method: 'POST',
       path: '/oauth/token',
-      description: 'Identity — phát access_token (password | client_credentials)',
+      description: 'Identity — phát access_token (password | client_credentials | authorization_code). Rate limit: 20/phút/client_id, 50/phút/IP (burst ≤3)',
       auth: 'Không (public token endpoint)',
       response: '{"access_token":"eyJ...","token_type":"Bearer","expires_in":3600}',
     },
@@ -183,6 +183,14 @@ export function ApiDocs() {
     { method: 'GET', path: '/api/client-keys/traffic-summary', description: 'Tổng request 24h theo client (batch)', auth: 'Operator+', body: null },
     { method: 'GET', path: '/api/client-keys/{id}/traffic', description: 'Thống kê traffic 24h theo client', auth: 'Operator+', body: '?hours=24' },
     { method: 'POST', path: '/api/client-keys/{id}/rotate', description: 'Rotate client_secret (client_id giữ nguyên)', auth: 'Operator+', body: null },
+    { method: 'POST', path: '/api/client-keys/{id}/revoke-tokens', description: 'Thu hồi mọi JWT của client (tăng token_version)', auth: 'Operator+', body: null },
+    { method: 'GET', path: '/api/oauth/tokens', description: 'Audit JWT đang live / lịch sử', auth: 'Operator+', body: '?active_only=true&limit=100' },
+    { method: 'POST', path: '/api/oauth/tokens/revoke', description: 'Thu hồi một JWT theo jti', auth: 'Operator+', body: '{"jti":"uuid"}' },
+    { method: 'POST', path: '/api/oauth/revoke', description: 'RFC 7009 — thu hồi theo raw access_token', auth: 'Không', body: 'token=eyJ...' },
+    { method: 'POST', path: '/api/oauth/logout', description: 'Thu hồi Bearer token đang gửi', auth: 'Bearer JWT', body: null },
+    { method: 'GET', path: '/api/oauth/apps', description: 'App OAuth bên thứ 3 (Authorization Code)', auth: 'Operator+', body: null },
+    { method: 'POST', path: '/api/oauth/apps', description: 'Đăng ký app + redirect_uris', auth: 'Admin', body: '{"name":"Partner","redirect_uris":["https://..."],"with_secret":true}' },
+    { method: 'GET', path: '/oauth/authorize', description: 'Consent + authorization code redirect', auth: 'Session dashboard', body: '?client_id&redirect_uri&response_type=code' },
     { method: 'POST', path: '/api/client-keys/encrypted', description: 'Đăng ký qua RSA envelope', auth: 'Operator+', body: 'CryptoEnvelope JSON' },
     { method: 'DELETE', path: '/api/client-keys/{id}', description: 'Xóa client khỏi registry', auth: 'Operator+', body: null },
     { method: 'GET', path: '/api/users', description: 'Danh sách admin users', auth: 'Admin', body: null },
@@ -207,7 +215,7 @@ export function ApiDocs() {
     { method: 'GET', path: '/api/integrations/zoho/connect', description: 'Bắt đầu OAuth Zoho', auth: 'Admin', body: null },
     { method: 'POST', path: '/api/integrations/zoho/sync', description: 'Sync snapshot Zoho', auth: 'Admin', body: null },
     { method: 'POST', path: '/api/reload-config', description: 'Reload routes từ DB', auth: 'Admin', body: null },
-    { method: 'GET', path: '/api/crypto/public-key', description: 'RSA public key gateway', auth: 'Không', body: null },
+    { method: 'GET', path: '/api/crypto/public-key', description: 'RSA public key của gateway (envelope đăng ký client — không phải client_id avaso_pk_)', auth: 'Không', body: null },
   ];
 
   const errorCodes = [
@@ -226,7 +234,7 @@ export function ApiDocs() {
     { field: 'token_expired', description: 'JWT hết hạn (exp claim)' },
     { field: 'client_key_disabled', description: 'OAuth client status = disabled' },
     { field: 'route_forbidden', description: 'Path không nằm trong ACL của client' },
-    { field: 'rate_limit_exceeded', description: 'Token bucket hết — xem Retry-After' },
+    { field: 'rate_limit_exceeded', description: 'Token bucket hết (data plane hoặc POST /oauth/token) — xem Retry-After' },
   ];
 
   const getMethodColor = (method: string) => {
@@ -387,16 +395,21 @@ curl -X PUT https://thientinh.io.vn/api/client-keys/1/routes \\
                 OAuth2 token + JWT data-plane
               </h4>
               <div className="bg-[#050810] rounded-lg p-4 font-mono-tech text-xs overflow-x-auto border border-border/80 shadow-inner">
-                <pre className="text-slate-300">{`# 1) Lấy token (machine client)
-curl -sS -X POST https://thientinh.io.vn/oauth/token \\
+                <pre className="text-slate-300">{`# 1) Lấy JWT (client_id + client_secret — CHỈ tại token endpoint)
+curl -sS -X POST https://thientinh.io.vn/api/oauth/token \\
   -H "Content-Type: application/x-www-form-urlencoded" \\
   -d "grant_type=client_credentials&client_id=avaso_pk_...&client_secret=avaso_sk_..."
 
-# 2) Gọi qua routing engine
+# 2) Data plane — Bearer JWT (KHÔNG gửi secret)
 TOKEN="<access_token>"
 curl -sS "https://thientinh.io.vn/v1/api/get" \\
   -H "Authorization: Bearer $TOKEN"`}</pre>
               </div>
+              <p className="text-xs text-muted-foreground mt-3 leading-relaxed">
+                Tiền tố <span className="font-mono">avaso_pk_</span>/<span className="font-mono">avaso_sk_</span>{' '}
+                là OAuth2 client_id/client_secret — không phải cặp khóa RSA. Secret mã hóa AES trong DB;
+                data plane xác thực JWT HS256.
+              </p>
             </div>
 
             <div className="rounded-xl border border-border bg-background/40 p-4 sm:p-5">

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -215,7 +215,9 @@ export function Logs() {
   const [params, setParams] = useSearchParams();
 
   const [entries, setEntries] = useState<UnifiedLogEntry[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const loadGenRef = useRef(0);
   const [searchTerm, setSearchTerm] = useState(() => params.get('search') ?? '');
   const [kindFilter, setKindFilter] = useState<KindFilter>(() => {
     const k = params.get('kind');
@@ -250,7 +252,8 @@ export function Logs() {
   }, [kindFilter, showTraffic, showAdmin]);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    const gen = ++loadGenRef.current;
+    setRefreshing(true);
     try {
       const fetchTraffic =
         showTraffic && (effectiveKind === 'all' || effectiveKind === 'traffic');
@@ -281,11 +284,16 @@ export function Logs() {
           : Promise.resolve([] as AuditLogRow[]),
       ]);
 
+      if (gen !== loadGenRef.current) return;
       setEntries(mergeLogs(traffic, admin));
     } catch (e) {
+      if (gen !== loadGenRef.current) return;
       toastApiError(e);
     } finally {
-      setLoading(false);
+      if (gen === loadGenRef.current) {
+        setRefreshing(false);
+        setInitialLoading(false);
+      }
     }
   }, [
     showTraffic,
@@ -305,44 +313,17 @@ export function Logs() {
   }, [load, searchTerm]);
 
   useEffect(() => {
-    const current = params.get('kind');
-    const desired = effectiveKind === 'all' ? null : effectiveKind;
-    if (current === desired) return;
-    const next = new URLSearchParams(params);
-    if (desired) next.set('kind', desired);
-    else next.delete('kind');
-    setParams(next, { replace: true });
-  }, [effectiveKind, params, setParams]);
-
-  useEffect(() => {
-    const current = params.get('reason');
-    const desired = reasonFilter === 'all' ? null : reasonFilter;
-    if (current === desired) return;
-    const next = new URLSearchParams(params);
-    if (desired) next.set('reason', desired);
-    else next.delete('reason');
-    setParams(next, { replace: true });
-  }, [reasonFilter, params, setParams]);
-
-  useEffect(() => {
-    const current = params.get('search');
-    const desired = searchTerm.trim() || null;
-    if (current === desired) return;
-    const next = new URLSearchParams(params);
-    if (desired) next.set('search', desired);
-    else next.delete('search');
-    setParams(next, { replace: true });
-  }, [searchTerm, params, setParams]);
-
-  useEffect(() => {
-    const current = params.get('client_key_id');
-    const desired = clientKeyFilter != null ? String(clientKeyFilter) : null;
-    if (current === desired) return;
-    const next = new URLSearchParams(params);
-    if (desired) next.set('client_key_id', desired);
-    else next.delete('client_key_id');
-    setParams(next, { replace: true });
-  }, [clientKeyFilter, params, setParams]);
+    const next = new URLSearchParams();
+    if (effectiveKind !== 'all') next.set('kind', effectiveKind);
+    if (reasonFilter !== 'all') next.set('reason', reasonFilter);
+    if (searchTerm.trim()) next.set('search', searchTerm.trim());
+    if (clientKeyFilter != null) next.set('client_key_id', String(clientKeyFilter));
+    if (resultFilter !== 'all') next.set('result', resultFilter);
+    const nextStr = next.toString();
+    if (nextStr !== params.toString()) {
+      setParams(next, { replace: true });
+    }
+  }, [effectiveKind, reasonFilter, searchTerm, clientKeyFilter, resultFilter, params, setParams]);
 
   const showMethodStatusFilters =
     showTraffic && (effectiveKind === 'all' || effectiveKind === 'traffic');
@@ -456,9 +437,9 @@ export function Logs() {
             variant="outline"
             className="border-border"
             onClick={() => void load()}
-            disabled={loading}
+            disabled={refreshing}
           >
-            <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
             Làm mới
           </Button>
           <Button
@@ -472,7 +453,7 @@ export function Logs() {
           </Button>
         </div>
 
-        {!loading && effectiveKind === 'all' && showTraffic && showAdmin ? (
+        {!initialLoading && effectiveKind === 'all' && showTraffic && showAdmin ? (
           <p className="text-xs text-muted-foreground">
             Hiển thị {entries.length} sự kiện gần nhất — {trafficCount} traffic, {adminCount}{' '}
             quản trị
@@ -480,7 +461,7 @@ export function Logs() {
               ? ` · lọc kết quả: ${resultFilter === 'success' ? 'thành công' : 'thất bại'} (traffic: outcome; audit: result)`
               : ''}
           </p>
-        ) : !loading && resultFilter !== 'all' ? (
+        ) : !initialLoading && resultFilter !== 'all' ? (
           <p className="text-xs text-muted-foreground">
             Lọc kết quả: {resultFilter === 'success' ? 'thành công' : 'thất bại'} — traffic theo{' '}
             <code className="text-slate-400">outcome</code>, audit theo{' '}
@@ -517,15 +498,24 @@ export function Logs() {
           <LogColumnHeader />
         </div>
 
-        <div className="text-sm">
-          {loading ? (
+        <div className="relative text-sm min-h-[12rem]">
+          {refreshing && entries.length > 0 ? (
+            <div
+              className="absolute inset-0 z-10 flex items-start justify-center pt-20 pointer-events-none bg-slate-950/25"
+              aria-hidden
+            >
+              <RefreshCw className="w-5 h-5 animate-spin text-primary/80" />
+            </div>
+          ) : null}
+          {initialLoading && entries.length === 0 ? (
             <p className="px-6 py-10 text-center text-muted-foreground">Đang tải…</p>
           ) : entries.length === 0 ? (
             <p className="px-6 py-10 text-center text-muted-foreground">
               Không có bản ghi — thử đổi bộ lọc hoặc thực hiện thao tác / gọi API.
             </p>
           ) : (
-            entries.map((entry) => {
+            <div className={refreshing ? 'opacity-60 transition-opacity duration-150' : 'transition-opacity duration-150'}>
+            {entries.map((entry) => {
               if (entry.kind === 'traffic') {
                 const log = entry.row;
                 return (
@@ -671,7 +661,8 @@ export function Logs() {
                   </div>
                 </div>
               );
-            })
+            })}
+            </div>
           )}
         </div>
       </Card>

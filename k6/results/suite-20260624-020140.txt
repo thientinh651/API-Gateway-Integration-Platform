@@ -1,0 +1,58 @@
+benchmark_suite_at=2026-06-24T02:01:40+00:00
+base=http://127.0.0.1:3000 mock=http://127.0.0.1:8089 jwt_path=/v1/api/bench/get
+rss_kb=2148
+---
+k6 not found — using wrk
+=== A_upstream_direct ===
+url=http://127.0.0.1:8089/get?bench=
+vus=50 duration=30s
+Running 30s test @ http://127.0.0.1:8089/get?bench=
+  50 threads and 50 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency    17.89ms   99.67ms   1.68s    96.46%
+    Req/Sec    68.99    110.80     0.85k    83.53%
+  Latency Distribution
+     50%    3.48ms
+     75%    4.71ms
+     90%    8.50ms
+     99%  420.55ms
+  19474 requests in 30.10s, 2.51MB read
+  Socket errors: connect 0, read 19474, write 0, timeout 13
+Requests/sec:    647.04
+Transfer/sec:     85.31KB
+
+=== B_health ===
+url=http://127.0.0.1:3000/health
+vus=50 duration=30s
+Running 30s test @ http://127.0.0.1:3000/health
+  50 threads and 50 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency    22.69ms    9.61ms 111.05ms   87.21%
+    Req/Sec    45.04     14.78   280.00     48.78%
+  Latency Distribution
+     50%   19.35ms
+     75%   22.93ms
+     90%   37.26ms
+     99%   56.65ms
+  67642 requests in 30.09s, 16.77MB read
+Requests/sec:   2248.30
+Transfer/sec:    570.86KB
+
+=== C_jwt_full_pipeline ===
+url=http://127.0.0.1:3000/v1/api/bench/get
+vus=50 duration=30s
+Running 30s test @ http://127.0.0.1:3000/v1/api/bench/get
+  50 threads and 50 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency   258.44ms  304.08ms   2.00s    85.21%
+    Req/Sec     8.41      4.41    40.00     87.00%
+  Latency Distribution
+     50%  143.17ms
+     75%  180.37ms
+     90%  780.10ms
+     99%    1.24s 
+  8288 requests in 30.10s, 1.23MB read
+  Socket errors: connect 0, read 0, write 0, timeout 43
+Requests/sec:    275.34
+Transfer/sec:     41.68KB
+

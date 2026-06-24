@@ -117,6 +117,12 @@ impl SessionStore {
         }
     }
 
+    pub async fn ping_timed(&self) -> (SessionStoreStatus, u128) {
+        let start = std::time::Instant::now();
+        let status = self.ping().await;
+        (status, start.elapsed().as_millis())
+    }
+
     pub async fn get(&self, sid: &str) -> Result<Option<SessionRecord>, SessionError> {
         if sid.trim().is_empty() {
             return Err(SessionError::NotFound);
@@ -258,6 +264,20 @@ pub fn redis_url_from_env() -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "redis://127.0.0.1:6379".into())
+}
+
+pub fn sid_from_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
+    let raw = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
+    for part in raw.split(';') {
+        let p = part.trim();
+        if let Some(val) = p.strip_prefix(&format!("{SESSION_COOKIE}=")) {
+            let v = val.trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
 }
 
 pub async fn init_session_store() -> Arc<SessionStore> {

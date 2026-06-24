@@ -23,9 +23,22 @@ pub struct GatewayClaims {
     pub role: Option<String>,
     #[serde(default)]
     pub scope: String,
+    /// JWT ID — revoke từng token qua Redis blacklist.
+    #[serde(default)]
+    pub jti: String,
+    /// Token generation; bump trên client/user → vô hiệu mọi JWT cũ.
+    #[serde(default)]
+    pub tv: i32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone)]
+pub struct IssuedToken {
+    pub response: TokenResponse,
+    pub claims: GatewayClaims,
+    pub grant_type: &'static str,
+}
+
+#[derive(Debug, Serialize, Clone)]
 pub struct TokenResponse {
     pub access_token: String,
     pub token_type: &'static str,
@@ -39,6 +52,8 @@ pub struct OAuthTokenForm {
     pub password: Option<String>,
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
+    pub code: Option<String>,
+    pub redirect_uri: Option<String>,
 }
 
 #[derive(Debug)]
@@ -74,7 +89,7 @@ impl OAuthTokenError {
     pub fn message(&self) -> String {
         match self {
             Self::UnsupportedGrant => {
-                "Supported grant_type: password, client_credentials".into()
+                "Supported grant_type: password, client_credentials, authorization_code".into()
             }
             Self::InvalidClient => "Invalid client_id or client_secret".into(),
             Self::InvalidGrant => "Invalid username, password, or revoked client".into(),
@@ -91,6 +106,8 @@ pub enum TokenValidationError {
     Expired,
     InvalidIssuer,
     InvalidSignature,
+    Revoked,
+    StaleVersion,
 }
 
 pub fn jwt_secret_bytes() -> Vec<u8> {
@@ -120,6 +137,10 @@ fn now_unix() -> usize {
         .unwrap_or(0)
 }
 
+fn new_jti() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
 fn encode_claims(claims: &GatewayClaims) -> Result<String, String> {
     encode(
         &Header::new(Algorithm::HS256),
@@ -130,6 +151,14 @@ fn encode_claims(claims: &GatewayClaims) -> Result<String, String> {
 }
 
 pub fn issue_user_token(user: &AdminUserRow) -> Result<TokenResponse, String> {
+    Ok(issue_user_token_with_version(user, user.token_version, "proxy:invoke")?.response)
+}
+
+pub fn issue_user_token_with_version(
+    user: &AdminUserRow,
+    token_version: i32,
+    scope: &str,
+) -> Result<IssuedToken, String> {
     if user.is_active == 0 {
         return Err("account disabled".into());
     }
@@ -145,17 +174,27 @@ pub fn issue_user_token(user: &AdminUserRow) -> Result<TokenResponse, String> {
         token_type: "user".into(),
         client_key_id: 0,
         role: Some(user.role.clone()),
-        scope: "proxy:invoke".into(),
+        scope: scope.to_string(),
+        jti: new_jti(),
+        tv: token_version,
     };
     let access_token = encode_claims(&claims)?;
-    Ok(TokenResponse {
-        access_token,
-        token_type: TOKEN_TYPE_BEARER,
-        expires_in: jwt_expires_secs(),
+    Ok(IssuedToken {
+        response: TokenResponse {
+            access_token,
+            token_type: TOKEN_TYPE_BEARER,
+            expires_in: jwt_expires_secs(),
+        },
+        claims,
+        grant_type: "password",
     })
 }
 
 pub fn issue_client_token(client: &OAuthClientKey) -> Result<TokenResponse, String> {
+    Ok(issue_client_token_with_version(client)?.response)
+}
+
+pub fn issue_client_token_with_version(client: &OAuthClientKey) -> Result<IssuedToken, String> {
     let now = now_unix();
     let exp = now + jwt_expires_secs() as usize;
     let claims = GatewayClaims {
@@ -168,12 +207,18 @@ pub fn issue_client_token(client: &OAuthClientKey) -> Result<TokenResponse, Stri
         client_key_id: client.id,
         role: None,
         scope: "proxy:invoke".into(),
+        jti: new_jti(),
+        tv: client.token_version,
     };
     let access_token = encode_claims(&claims)?;
-    Ok(TokenResponse {
-        access_token,
-        token_type: TOKEN_TYPE_BEARER,
-        expires_in: jwt_expires_secs(),
+    Ok(IssuedToken {
+        response: TokenResponse {
+            access_token,
+            token_type: TOKEN_TYPE_BEARER,
+            expires_in: jwt_expires_secs(),
+        },
+        claims,
+        grant_type: "client_credentials",
     })
 }
 
@@ -207,16 +252,51 @@ pub async fn exchange_token(
     pool: &PgPool,
     creds: &db::ClientCredentials,
     form: OAuthTokenForm,
-) -> Result<TokenResponse, OAuthTokenError> {
+) -> Result<IssuedToken, OAuthTokenError> {
     let grant = form.grant_type.trim();
     match grant {
         "password" => password_grant(pool, form).await,
         "client_credentials" => client_credentials_grant(creds, form),
+        "authorization_code" => authorization_code_grant(pool, form).await,
         _ => Err(OAuthTokenError::UnsupportedGrant),
     }
 }
 
-async fn password_grant(pool: &PgPool, form: OAuthTokenForm) -> Result<TokenResponse, OAuthTokenError> {
+async fn authorization_code_grant(
+    pool: &PgPool,
+    form: OAuthTokenForm,
+) -> Result<IssuedToken, OAuthTokenError> {
+    let code = form
+        .code
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or(OAuthTokenError::InvalidRequest("code required"))?;
+    let client_id = form
+        .client_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or(OAuthTokenError::InvalidRequest("client_id required"))?;
+    let redirect_uri = form
+        .redirect_uri
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or(OAuthTokenError::InvalidRequest("redirect_uri required"))?;
+    let client_secret = form.client_secret.as_deref().unwrap_or("");
+
+    let (response, claims) =
+        crate::oauth_authorize::exchange_authorization_code(pool, code, client_id, client_secret, redirect_uri)
+            .await?;
+    Ok(IssuedToken {
+        response,
+        claims,
+        grant_type: "authorization_code",
+    })
+}
+
+async fn password_grant(pool: &PgPool, form: OAuthTokenForm) -> Result<IssuedToken, OAuthTokenError> {
     let username = form
         .username
         .as_deref()
@@ -237,13 +317,13 @@ async fn password_grant(pool: &PgPool, form: OAuthTokenForm) -> Result<TokenResp
         return Err(OAuthTokenError::InvalidGrant);
     }
 
-    issue_user_token(&user).map_err(OAuthTokenError::Internal)
+    issue_user_token_with_version(&user, user.token_version, "proxy:invoke").map_err(OAuthTokenError::Internal)
 }
 
 fn client_credentials_grant(
     creds: &db::ClientCredentials,
     form: OAuthTokenForm,
-) -> Result<TokenResponse, OAuthTokenError> {
+) -> Result<IssuedToken, OAuthTokenError> {
     let client_id = form
         .client_id
         .as_deref()
@@ -269,7 +349,7 @@ fn client_credentials_grant(
         .find(|c| c.client_id == client_id && c.secret == client_secret)
         .ok_or(OAuthTokenError::InvalidClient)?;
 
-    issue_client_token(client).map_err(OAuthTokenError::Internal)
+    issue_client_token_with_version(client).map_err(OAuthTokenError::Internal)
 }
 
 #[cfg(test)]
@@ -286,6 +366,7 @@ mod tests {
             tenant_id: Some(1),
             is_active: 1,
             email: None,
+            token_version: 0,
         };
         let issued = issue_user_token(&user).expect("issue");
         let claims = validate_access_token(&issued.access_token).expect("valid");
@@ -303,6 +384,7 @@ mod tests {
             tenant_id: 1,
             rate_limit_per_min: 100,
             allowed_route_ids: vec![1, 2],
+            token_version: 0,
         };
         let issued = issue_client_token(&client).expect("issue");
         let claims = validate_access_token(&issued.access_token).expect("valid");

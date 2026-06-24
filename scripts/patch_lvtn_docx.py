@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch docs/Tài liệu LVTN.docx — sửa lệch code (PostgreSQL, HMAC, reload, log)."""
+"""Patch docs/Tài liệu LVTN.docx — sửa lệch code (PostgreSQL, OAuth2 JWT, reload, log)."""
 from __future__ import annotations
 
 import shutil
@@ -16,7 +16,7 @@ DOC_PATH = ROOT / "docs" / "Tài liệu LVTN.docx"
 BAK_PATH = ROOT / "docs" / "Tài liệu LVTN.docx.bak"
 DIAGRAMS = [
     ("Sơ đồ chức năng", ROOT / "docs" / "diagrams" / "BAO_VE_KIEN_TRUC.png", "Hình kiến trúc AVASO Gateway (khớp code)"),
-    ("Hình luồng data plane", ROOT / "docs" / "diagrams" / "LUONG_DATA_PLANE.png", "Luồng xử lý data plane HMAC"),
+    ("Hình luồng data plane", ROOT / "docs" / "diagrams" / "LUONG_DATA_PLANE.png", "Luồng xử lý data plane OAuth2 JWT"),
 ]
 
 
@@ -99,7 +99,7 @@ def main() -> None:
         insert_after(
             anchor,
             [
-                "Xác thực data plane bằng HMAC-SHA256 (header X-API-Key, X-Timestamp, X-Signature), không dùng JWT.",
+                "Xác thực data plane bằng OAuth2 Client Credentials: client đổi client_id + client_secret tại POST /api/oauth/token, sau đó gửi Authorization: Bearer JWT (HS256). Secret không dùng trên mỗi request proxy.",
                 "Quản lý danh tính: đăng ký Viewer, quên mật khẩu OTP qua email (Brevo API).",
                 "Integration Platform MVP — chi tiết trong docs/BAO_CAO.md, docs/BAN_VE_HE_THONG.md và docs/MA_TRAN_DONG_AN.md trong repository.",
             ],
@@ -111,7 +111,7 @@ def main() -> None:
         insert_after(
             anchor,
             [
-                "Đầu vào: Request data plane có HMAC hợp lệ (Proxy Try hoặc script test_hmac_replay.py).",
+                "Đầu vào: Request data plane có Bearer JWT hợp lệ (Proxy Try hoặc script test_jwt_auth.py).",
                 "Kết quả mong đợi: HTTP 200 từ upstream; transaction log ghi outcome success.",
             ],
         )

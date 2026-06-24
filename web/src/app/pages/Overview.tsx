@@ -48,6 +48,8 @@ import { formatDbTimestamp } from '../../lib/formatDbTimestamp';
 import { reasonLabel } from '../../lib/middlewareLabels';
 import { OverviewGuest } from './OverviewGuest';
 import { TechPageHeader } from '../components/tech/TechPageHeader';
+import { ErrorBoundary } from '../components/ErrorBoundary';
+import { useMediaQuery } from '../../hooks/useMediaQuery';
 
 const CHART_COLORS = ['#10b981', '#3b82f6', '#f97316', '#ef4444', '#a855f7', '#fb923c'];
 
@@ -106,8 +108,22 @@ function truncatePath(path: string, max = 28) {
   return `${path.slice(0, max - 1)}…`;
 }
 
+function MiniCountList({ rows }: { rows: Array<{ name: string; count: number }> }) {
+  return (
+    <ul className="space-y-2 text-xs">
+      {rows.map((r) => (
+        <li key={r.name} className="flex justify-between gap-2 text-slate-300">
+          <span className="truncate">{r.name}</span>
+          <span className="font-mono text-cyan-400 shrink-0">{r.count}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function OverviewAdmin() {
   const { user } = useAdminAuth();
+  const isMobile = useMediaQuery('(max-width: 639px)');
   const showIntegrations = canManageIntegrations(user);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [routes, setRoutes] = useState<GatewayRouteRow[]>([]);
@@ -331,8 +347,8 @@ function OverviewAdmin() {
         </NavCard>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 lg:gap-8 mb-8">
-        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="HTTP status 24h">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 lg:gap-8 mb-8 min-w-0">
+        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border min-w-0" ariaLabel="HTTP status 24h">
           <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
             HTTP status (24h)
           </h3>
@@ -347,8 +363,10 @@ function OverviewAdmin() {
               </Link>{' '}
               hoặc client thật qua gateway.
             </p>
+          ) : isMobile ? (
+            <MiniCountList rows={httpStatusPieData} />
           ) : (
-            <ChartContainer config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
+            <ChartContainer config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full">
               <PieChart>
                 <ChartTooltip content={<ChartTooltipContent nameKey="name" />} />
                 <Pie
@@ -381,8 +399,10 @@ function OverviewAdmin() {
           </p>
           {outcomePieData.length === 0 ? (
             <p className="text-sm text-muted-foreground">Chưa có dữ liệu.</p>
+          ) : isMobile ? (
+            <MiniCountList rows={outcomePieData} />
           ) : (
-            <ChartContainer config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
+            <ChartContainer config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full">
               <PieChart>
                 <ChartTooltip content={<ChartTooltipContent nameKey="name" />} />
                 <Pie
@@ -472,8 +492,10 @@ function OverviewAdmin() {
           <p className="text-xs text-muted-foreground mb-4">Mật độ request API qua gateway.</p>
           {trafficHourlyData.length === 0 ? (
             <p className="text-sm text-muted-foreground">Chưa có traffic trong 24h.</p>
+          ) : isMobile ? (
+            <MiniCountList rows={trafficHourlyData.map((h) => ({ name: h.time, count: h.count }))} />
           ) : (
-            <ChartContainer config={trafficHourlyConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
+            <ChartContainer config={trafficHourlyConfig} className="h-[240px] sm:h-[260px] w-full">
               <LineChart data={trafficHourlyData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                 <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
                 <XAxis
@@ -510,8 +532,10 @@ function OverviewAdmin() {
           <p className="text-xs text-muted-foreground mb-4">Endpoint được gọi nhiều nhất.</p>
           {topPathsData.length === 0 ? (
             <p className="text-sm text-muted-foreground">Chưa có path nào.</p>
+          ) : isMobile ? (
+            <MiniCountList rows={topPathsData.map((p) => ({ name: p.fullPath, count: p.count }))} />
           ) : (
-            <ChartContainer config={countBarConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
+            <ChartContainer config={countBarConfig} className="h-[240px] sm:h-[260px] w-full">
               <BarChart data={topPathsData} margin={{ top: 8, right: 8, left: 0, bottom: 32 }}>
                 <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
                 <XAxis
@@ -554,8 +578,10 @@ function OverviewAdmin() {
           <p className="text-xs text-muted-foreground mb-4">GET, POST, PUT…</p>
           {methodData.length === 0 ? (
             <p className="text-sm text-muted-foreground">Chưa có dữ liệu.</p>
+          ) : isMobile ? (
+            <MiniCountList rows={methodData.map((m) => ({ name: m.label, count: m.count }))} />
           ) : (
-            <ChartContainer config={countBarConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
+            <ChartContainer config={countBarConfig} className="h-[240px] sm:h-[260px] w-full">
               <BarChart data={methodData} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
                 <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
                 <XAxis
@@ -591,8 +617,10 @@ function OverviewAdmin() {
             <p className="text-xs text-muted-foreground mb-4">Salesforce / Zoho OAuth connection.</p>
             {integrationPieData.length === 0 ? (
               <p className="text-sm text-muted-foreground">Chưa cấu hình — bấm card để mở Tích hợp.</p>
+            ) : isMobile ? (
+              <MiniCountList rows={integrationPieData} />
             ) : (
-              <ChartContainer config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full aspect-auto">
+              <ChartContainer config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full">
                 <PieChart>
                   <ChartTooltip content={<ChartTooltipContent nameKey="name" />} />
                   <Pie
@@ -685,10 +713,14 @@ export function Overview() {
   const { user, loading } = useAdminAuth();
 
   if (loading) {
-    return <p className="text-sm text-muted-foreground">Đang tải…</p>;
+    return <p className="text-sm text-muted-foreground p-4 sm:p-6">Đang tải…</p>;
   }
 
   if (!user) return <OverviewGuest />;
 
-  return <OverviewAdmin />;
+  return (
+    <ErrorBoundary title="Dashboard lỗi — thử tải lại hoặc dùng menu bên trái">
+      <OverviewAdmin />
+    </ErrorBoundary>
+  );
 }

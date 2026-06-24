@@ -265,7 +265,7 @@ export function ProxyTry() {
             <CardHeader className="pb-3">
               <CardTitle className="text-white text-base flex items-center gap-2">
                 <KeyRound className="w-4 h-4 text-emerald-400" />
-                OAuth2 client (JWT)
+                OAuth2 client
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -273,7 +273,7 @@ export function ProxyTry() {
                 <PasswordManagerTrap />
                 {registryClients.length > 0 ? (
                   <div className="mb-3">
-                    <Label className="text-foreground text-xs">Chọn từ Client Registry</Label>
+                    <Label className="text-foreground text-xs">Chọn Client</Label>
                     <select
                       className="mt-1 w-full h-9 rounded-md border border-border bg-input text-foreground text-xs px-2"
                       value={pickedClientId}
@@ -290,10 +290,7 @@ export function ProxyTry() {
                   </div>
                 ) : null}
                 <div>
-                  <Label className="text-foreground text-xs">API Key</Label>
-                  <p className="text-[10px] text-muted-foreground mt-0.5 mb-1">
-                    Lấy từ cột API Key trong Client Registry — tự điền khi chọn client ở trên.
-                  </p>
+                  <Label className="text-foreground text-xs">Client ID</Label>
                   <ClientApiKeyInput
                     value={apiKey}
                     onChange={(e) => {
@@ -309,10 +306,7 @@ export function ProxyTry() {
                   <FieldError message={fieldErrors.api_key} />
                 </div>
                 <div className="mt-3">
-                  <Label className="text-foreground text-xs">Secret Key</Label>
-                  <p className="text-[10px] text-muted-foreground mt-0.5 mb-1">
-                    Chỉ hiện một lần lúc tạo client hoặc Rotate secret — hệ thống không lưu để xem lại.
-                  </p>
+                  <Label className="text-foreground text-xs">Client Secret</Label>
                   <ClientSecretInput
                     value={secretKey}
                     onChange={(e) => {
@@ -358,7 +352,7 @@ export function ProxyTry() {
           <CardHeader className="pb-3">
             <CardTitle className="text-white text-base flex items-center gap-2">
               <Play className="w-4 h-4 text-primary" />
-              Kết quả middleware
+              Kết quả
             </CardTitle>
           </CardHeader>
           <CardContent className="min-w-0">

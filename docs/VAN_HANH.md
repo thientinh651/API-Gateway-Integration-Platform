@@ -63,8 +63,8 @@ source data/.integration-proxy-credentials
 ./scripts/test-integration-proxy.sh
 ```
 
-App ký HMAC → `GET /v1/api/sf/services/data/v59.0/limits`  
-Chi tiết: [`HMAC_MIDDLEWARE_FLOW.md`](HMAC_MIDDLEWARE_FLOW.md), [`BAN_VE_HE_THONG.md`](BAN_VE_HE_THONG.md) §6.
+App gửi Bearer JWT → `GET /v1/api/sf/services/data/v59.0/limits`  
+Chi tiết: [`OAUTH2_IDENTITY.md`](OAUTH2_IDENTITY.md), [`BAN_VE_HE_THONG.md`](BAN_VE_HE_THONG.md) §6.
 
 ---
 

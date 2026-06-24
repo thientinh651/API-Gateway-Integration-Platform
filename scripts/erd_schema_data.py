@@ -69,8 +69,8 @@ TABLES = [
         [
             ("id", "BIGSERIAL", "x", "x", "x", "Định danh số tự tăng của client"),
             ("name", "TEXT", "", "", "x", "Tên hiển thị client"),
-            ("secret_sha256_hex", "TEXT", "", "x", "x", "Băm SHA-256 secret phục vụ HMAC"),
-            ("api_key", "TEXT", "", "x", "", "Khóa API công khai định danh client"),
+            ("secret_sha256_hex", "TEXT", "", "x", "x", "Legacy SHA-256 (migration); OAuth2 dùng secret_encrypted"),
+            ("api_key", "TEXT", "", "x", "", "OAuth2 client_id (prefix avaso_pk_)"),
             ("secret_encrypted", "TEXT", "", "", "", "Secret mã hóa AES-256-GCM"),
             ("tenant_id", "BIGINT", "", "", "x", "Khóa ngoại tham chiếu tenants.id"),
             ("integration_type", "TEXT", "", "", "x", "Loại client"),

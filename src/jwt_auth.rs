@@ -4,6 +4,7 @@ use axum::http::{HeaderMap, StatusCode};
 
 use crate::db::ClientCredentials;
 use crate::identity::{self, TokenValidationError};
+use crate::oauth_tokens::TokenRevocationStore;
 
 #[derive(Debug, Clone)]
 pub struct VerifiedClient {
@@ -23,6 +24,8 @@ pub enum TokenAuthFail {
     ExpiredToken,
     InvalidIssuer,
     InvalidSignature,
+    RevokedToken,
+    StaleTokenVersion,
     ClientDisabled,
     ClientNotFound,
 }
@@ -42,31 +45,53 @@ pub fn bearer_from_headers(headers: &HeaderMap) -> Option<String> {
     None
 }
 
-pub fn verify_bearer(creds: &ClientCredentials, token: &str) -> Result<VerifiedClient, TokenAuthFail> {
-    if creds.oauth_clients.is_empty() {
-        // Still allow user tokens when no OAuth clients registered.
-    }
-
+pub async fn verify_bearer(
+    creds: &ClientCredentials,
+    store: &TokenRevocationStore,
+    token: &str,
+) -> Result<VerifiedClient, TokenAuthFail> {
     let claims = identity::validate_access_token(token).map_err(|e| match e {
         TokenValidationError::Missing => TokenAuthFail::MissingToken,
         TokenValidationError::Malformed => TokenAuthFail::MalformedToken,
         TokenValidationError::Expired => TokenAuthFail::ExpiredToken,
         TokenValidationError::InvalidIssuer => TokenAuthFail::InvalidIssuer,
         TokenValidationError::InvalidSignature => TokenAuthFail::InvalidSignature,
+        TokenValidationError::Revoked => TokenAuthFail::RevokedToken,
+        TokenValidationError::StaleVersion => TokenAuthFail::StaleTokenVersion,
     })?;
+
+    if !claims.jti.is_empty() && store.is_revoked(&claims.jti).await {
+        return Err(TokenAuthFail::RevokedToken);
+    }
 
     match claims.token_type.as_str() {
         "client" => verify_client_claims(creds, &claims),
-        "user" => Ok(VerifiedClient {
-            key_id: 0,
-            tenant_id: claims.tenant_id,
-            rate_limit_per_min: 0,
-            allowed_route_ids: vec![],
-            subject: claims.sub,
-            token_type: "user".into(),
-        }),
+        "user" => verify_user_claims(creds, &claims),
         _ => Err(TokenAuthFail::MalformedToken),
     }
+}
+
+fn verify_user_claims(
+    creds: &ClientCredentials,
+    claims: &identity::GatewayClaims,
+) -> Result<VerifiedClient, TokenAuthFail> {
+    let user_id = claims
+        .sub
+        .strip_prefix("user:")
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0);
+    let current = creds.user_token_versions.get(&user_id).copied().unwrap_or(0);
+    if claims.tv != current {
+        return Err(TokenAuthFail::StaleTokenVersion);
+    }
+    Ok(VerifiedClient {
+        key_id: 0,
+        tenant_id: claims.tenant_id,
+        rate_limit_per_min: 0,
+        allowed_route_ids: vec![],
+        subject: claims.sub.clone(),
+        token_type: "user".into(),
+    })
 }
 
 fn verify_client_claims(
@@ -87,6 +112,10 @@ fn verify_client_claims(
         .iter()
         .find(|c| c.id == claims.client_key_id || c.client_id == client_id)
         .ok_or(TokenAuthFail::ClientNotFound)?;
+
+    if claims.tv != client.token_version {
+        return Err(TokenAuthFail::StaleTokenVersion);
+    }
 
     Ok(VerifiedClient {
         key_id: client.id,
@@ -159,6 +188,16 @@ pub fn token_auth_to_response(err: TokenAuthFail) -> (StatusCode, &'static str, 
             "invalid_token",
             "Access token signature invalid",
         ),
+        TokenAuthFail::RevokedToken => (
+            StatusCode::UNAUTHORIZED,
+            "token_revoked",
+            "Access token has been revoked",
+        ),
+        TokenAuthFail::StaleTokenVersion => (
+            StatusCode::UNAUTHORIZED,
+            "token_revoked",
+            "Access token invalidated — please obtain a new token",
+        ),
         TokenAuthFail::ClientDisabled => (
             StatusCode::FORBIDDEN,
             "client_key_disabled",
@@ -176,6 +215,7 @@ pub fn token_auth_to_response(err: TokenAuthFail) -> (StatusCode, &'static str, 
 mod tests {
     use super::*;
     use crate::db::{ClientCredentials, DisabledClientKey, OAuthClientKey};
+    use crate::oauth_tokens::TokenRevocationStore;
 
     #[test]
     fn bearer_header_parsing() {
@@ -188,8 +228,8 @@ mod tests {
         assert_eq!(bearer_from_headers(&h).as_deref(), Some("eyJ.test"));
     }
 
-    #[test]
-    fn client_token_maps_to_verified_client() {
+    #[tokio::test]
+    async fn client_token_maps_to_verified_client() {
         let client = OAuthClientKey {
             id: 3,
             client_id: "avaso_pk_demo".into(),
@@ -197,19 +237,49 @@ mod tests {
             tenant_id: 1,
             rate_limit_per_min: 60,
             allowed_route_ids: vec![9],
+            token_version: 0,
         };
         let creds = ClientCredentials {
             oauth_clients: vec![client.clone()],
             disabled_clients: vec![],
+            user_token_versions: std::collections::HashMap::new(),
         };
         let issued = identity::issue_client_token(&client).unwrap();
-        let v = verify_bearer(&creds, &issued.access_token).unwrap();
+        let store = TokenRevocationStore::noop();
+        let v = verify_bearer(&creds, &store, &issued.access_token).await.unwrap();
         assert_eq!(v.key_id, 3);
         assert_eq!(v.allowed_route_ids, vec![9]);
     }
 
-    #[test]
-    fn disabled_client_rejected() {
+    #[tokio::test]
+    async fn stale_client_token_version_rejected() {
+        let client = OAuthClientKey {
+            id: 3,
+            client_id: "avaso_pk_demo".into(),
+            secret: "sk".into(),
+            tenant_id: 1,
+            rate_limit_per_min: 60,
+            allowed_route_ids: vec![],
+            token_version: 0,
+        };
+        let issued = identity::issue_client_token(&client).unwrap();
+        let creds = ClientCredentials {
+            oauth_clients: vec![OAuthClientKey {
+                token_version: 1,
+                ..client
+            }],
+            disabled_clients: vec![],
+            user_token_versions: std::collections::HashMap::new(),
+        };
+        let store = TokenRevocationStore::noop();
+        assert!(matches!(
+            verify_bearer(&creds, &store, &issued.access_token).await,
+            Err(TokenAuthFail::StaleTokenVersion)
+        ));
+    }
+
+    #[tokio::test]
+    async fn disabled_client_rejected() {
         let creds = ClientCredentials {
             oauth_clients: vec![],
             disabled_clients: vec![DisabledClientKey {
@@ -217,6 +287,7 @@ mod tests {
                 client_id: "avaso_pk_off".into(),
                 tenant_id: 1,
             }],
+            user_token_versions: std::collections::HashMap::new(),
         };
         let client = OAuthClientKey {
             id: 1,
@@ -225,10 +296,12 @@ mod tests {
             tenant_id: 1,
             rate_limit_per_min: 0,
             allowed_route_ids: vec![],
+            token_version: 0,
         };
         let issued = identity::issue_client_token(&client).unwrap();
+        let store = TokenRevocationStore::noop();
         assert!(matches!(
-            verify_bearer(&creds, &issued.access_token),
+            verify_bearer(&creds, &store, &issued.access_token).await,
             Err(TokenAuthFail::ClientDisabled)
         ));
     }

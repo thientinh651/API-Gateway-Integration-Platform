@@ -12,6 +12,7 @@ pub struct GatewayMetrics {
     data_plane_success: AtomicU64,
     data_plane_denied: AtomicU64,
     data_plane_errors: AtomicU64,
+    rate_limit_hits: AtomicU64,
     latency_buckets: [AtomicU64; LATENCY_BOUNDS_MS.len()],
     latency_inf: AtomicU64,
     latency_sum_ms: AtomicU64,
@@ -32,6 +33,10 @@ impl GatewayMetrics {
 
     pub fn started_at_unix(&self) -> u64 {
         self.started_at_unix.load(Ordering::Relaxed)
+    }
+
+    pub fn record_rate_limit_hit(&self) {
+        self.rate_limit_hits.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_data_plane(&self, outcome: &str) {
@@ -87,6 +92,7 @@ impl GatewayMetrics {
                 "success_total": self.data_plane_success.load(Ordering::Relaxed),
                 "denied_total": self.data_plane_denied.load(Ordering::Relaxed),
                 "errors_total": self.data_plane_errors.load(Ordering::Relaxed),
+                "rate_limit_hits_total": self.rate_limit_hits.load(Ordering::Relaxed),
             },
             "latency_ms": {
                 "count": self.latency_count.load(Ordering::Relaxed),
@@ -108,6 +114,7 @@ impl GatewayMetrics {
         let ok = self.data_plane_success.load(Ordering::Relaxed);
         let denied = self.data_plane_denied.load(Ordering::Relaxed);
         let err = self.data_plane_errors.load(Ordering::Relaxed);
+        let rl_hits = self.rate_limit_hits.load(Ordering::Relaxed);
         let lat_count = self.latency_count.load(Ordering::Relaxed);
         let lat_sum = self.latency_sum_ms.load(Ordering::Relaxed);
 
@@ -127,6 +134,9 @@ impl GatewayMetrics {
         out.push_str("# HELP gateway_data_plane_errors_total Data-plane upstream/other errors.\n");
         out.push_str("# TYPE gateway_data_plane_errors_total counter\n");
         out.push_str(&format!("gateway_data_plane_errors_total {err}\n"));
+        out.push_str("# HELP gateway_rate_limit_hits_total Data-plane rate limit denials.\n");
+        out.push_str("# TYPE gateway_rate_limit_hits_total counter\n");
+        out.push_str(&format!("gateway_rate_limit_hits_total {rl_hits}\n"));
         out.push_str("# HELP gateway_request_duration_ms Request latency histogram (ms).\n");
         out.push_str("# TYPE gateway_request_duration_ms histogram\n");
         for (i, bound) in LATENCY_BOUNDS_MS.iter().enumerate() {

@@ -29,7 +29,7 @@
         <mxCell id="lane_dp" value="AVASO Gateway — Data Plane (/v1/api/*)" style="swimlane;startSize=30;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1" vertex="1" parent="1">
           <mxGeometry x="500" y="90" width="520" height="280" as="geometry"/>
         </mxCell>
-        <mxCell id="hmac" value="1. HMAC-SHA256&#xa;+ Anti-replay" style="rounded=1;whiteSpace=wrap;html=1" vertex="1" parent="lane_dp">
+        <mxCell id="hmac" value="1. OAuth2 JWT&#xa;Bearer verify" style="rounded=1;whiteSpace=wrap;html=1" vertex="1" parent="lane_dp">
           <mxGeometry x="20" y="50" width="110" height="55" as="geometry"/>
         </mxCell>
         <mxCell id="rl" value="2. Rate Limit&#xa;(Token Bucket)" style="rounded=1;whiteSpace=wrap;html=1" vertex="1" parent="lane_dp">
@@ -44,7 +44,7 @@
         <mxCell id="txlog" value="5. Async Tx Log&#xa;(tokio::spawn → PG)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656" vertex="1" parent="lane_dp">
           <mxGeometry x="145" y="150" width="160" height="55" as="geometry"/>
         </mxCell>
-        <mxCell id="dp_note" value="Không JWT | Không SIGHUP/YAML runtime | Không Redis Pub/Sub" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=11;fontColor=#666666" vertex="1" parent="lane_dp">
+        <mxCell id="dp_note" value="Token: POST /api/oauth/token (client_id + secret) → Bearer JWT | Không SIGHUP/YAML runtime" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=11;fontColor=#666666" vertex="1" parent="lane_dp">
           <mxGeometry x="20" y="220" width="480" height="30" as="geometry"/>
         </mxCell>
 
@@ -99,7 +99,7 @@
         <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;endArrow=block" edge="1" parent="1" source="app" target="nginx">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
-        <mxCell id="e1l" value="HTTPS + HMAC headers" style="edgeLabel;html=1;align=center" vertex="1" connectable="0" parent="e1">
+        <mxCell id="e1l" value="HTTPS + Bearer JWT" style="edgeLabel;html=1;align=center" vertex="1" connectable="0" parent="e1">
           <mxGeometry relative="1" x="-0.1" y="1" as="geometry"><mxPoint as="offset"/></mxGeometry>
         </mxCell>
         <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;endArrow=block" edge="1" parent="1" source="nginx" target="hmac">

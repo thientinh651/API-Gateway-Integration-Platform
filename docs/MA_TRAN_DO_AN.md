@@ -6,7 +6,7 @@
 |----------|---|---------------|-----|------------|------------|
 | **70%** | 1 | API Gateway + Proxy | FR-A1, A3, A4 | ✅ | `main.rs` `do_proxy`, `/health` |
 | **70%** | 2 | Routing động | FR-B1–B4 | ✅ | `route_match.rs`, `{id}` |
-| **70%** | 3 | HMAC auth + replay | FR-F1–F3 | ✅ | `verify_client_auth`, `test_hmac_replay.py` |
+| **70%** | 3 | OAuth2 JWT + token endpoint | FR-F1–F3 | ✅ | `identity.rs`, `test_jwt_auth.py` |
 | **70%** | 4 | Rate limiting | FR-F4, F5 | ✅ | Token bucket, 429 |
 | **70%** | 5 | Pipeline T/R/DLQ | FR-B5, H1, H2 | ✅ | `proxy_ext.rs`, DLQ PostgreSQL |
 | **70%** | 6 | Transaction log | FR-D1–D3 | ✅ | `gateway_transaction_logs` |
@@ -31,7 +31,7 @@
 | FR-B5 | Header transform | ✅ |
 | FR-D1–D3 | Transaction log async | ✅ |
 | FR-D4 | Prometheus /metrics | ✅ |
-| FR-F1–F8 | HMAC, rate limit, RBAC, audit | ✅ |
+| FR-F1–F8 | OAuth2 JWT, rate limit, RBAC, audit | ✅ |
 | FR-G1–G4 | Admin CRUD + SPA | ✅ |
 | FR-H1–H2 | Retry + DLQ PostgreSQL | ✅ |
 
@@ -41,7 +41,7 @@
 |----|------------|--------|
 | FR-E1 | Salesforce OAuth + snapshot + proxy | ✅ |
 | FR-E2 | Zoho Projects OAuth + proxy | ✅ |
-| FR-E3 | Data plane `/v1/api/sf|zoho/*` qua HMAC | ✅ |
+| FR-E3 | Data plane `/v1/api/sf|zoho/*` qua Bearer JWT | ✅ |
 | FR-E4 | Sync pipeline Closed Won → Project | ✅ |
 | FR-E5 | Entity link idempotency | ✅ |
 
@@ -51,7 +51,7 @@
 # Demo 1–3: Gateway core
 curl -sS https://thientinh.io.vn/health
 ./scripts/smoke-test.sh
-python3 scripts/test_hmac_replay.py
+python3 scripts/test_jwt_auth.py
 
 # Demo 4: Extension
 ./scripts/test-integrations.sh

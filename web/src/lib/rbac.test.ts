@@ -113,6 +113,7 @@ describe('canAccessNavPath', () => {
 
   it('admin all nav pages', () => {
     expect(canAccessNavPath('/users', admin)).toBe(true);
+    expect(canAccessNavPath('/logs', admin)).toBe(true);
     expect(canAccessNavPath('/proxy-try', admin)).toBe(true);
   });
 });

@@ -19,6 +19,8 @@ pub struct ClientCredentials {
     pub oauth_clients: Vec<OAuthClientKey>,
     /// Disabled clients — 403 rõ ràng + giữ id cho transaction log.
     pub disabled_clients: Vec<DisabledClientKey>,
+    /// user_id → token_version (JWT user grant / authorization_code).
+    pub user_token_versions: std::collections::HashMap<i64, i32>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +38,7 @@ pub struct OAuthClientKey {
     pub tenant_id: i64,
     pub rate_limit_per_min: i32,
     pub allowed_route_ids: Vec<i64>,
+    pub token_version: i32,
 }
 
 pub fn sha256_hex(s: &str) -> String {
@@ -68,6 +71,8 @@ pub struct AdminUserRow {
     pub tenant_id: Option<i64>,
     pub is_active: i32,
     pub email: Option<String>,
+    #[sqlx(default)]
+    pub token_version: i32,
 }
 
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
@@ -91,7 +96,7 @@ pub async fn fetch_admin_user_by_username(
     username: &str,
 ) -> Result<Option<AdminUserRow>, sqlx::Error> {
     sqlx::query_as::<_, AdminUserRow>(
-        "SELECT id, username, password_hash, role, tenant_id, is_active, email FROM dashboard_users WHERE username = $1 LIMIT 1",
+        "SELECT id, username, password_hash, role, tenant_id, is_active, email, COALESCE(token_version, 0) AS token_version FROM dashboard_users WHERE username = $1 LIMIT 1",
     )
     .bind(username)
     .fetch_optional(pool)
@@ -585,7 +590,7 @@ pub async fn fetch_admin_user_by_id(
     tenant_id: i64,
 ) -> Result<Option<AdminUserRow>, sqlx::Error> {
     sqlx::query_as::<_, AdminUserRow>(
-        "SELECT id, username, password_hash, role, tenant_id, is_active, email FROM dashboard_users
+        "SELECT id, username, password_hash, role, tenant_id, is_active, email, COALESCE(token_version, 0) AS token_version FROM dashboard_users
          WHERE id = $1 AND COALESCE(tenant_id, 1) = $2 LIMIT 1",
     )
     .bind(id)
@@ -761,7 +766,7 @@ pub async fn fetch_admin_user_by_id_any(
     id: i64,
 ) -> Result<Option<AdminUserRow>, sqlx::Error> {
     sqlx::query_as::<_, AdminUserRow>(
-        "SELECT id, username, password_hash, role, tenant_id, is_active, email
+        "SELECT id, username, password_hash, role, tenant_id, is_active, email, COALESCE(token_version, 0) AS token_version
          FROM dashboard_users WHERE id = $1 LIMIT 1",
     )
     .bind(id)
@@ -1428,18 +1433,21 @@ pub async fn load_client_credentials(pool: &PgPool) -> Result<ClientCredentials,
         i64,
         String,
         i32,
+        i32,
     )> = sqlx::query_as(
         "SELECT id, api_key, secret_encrypted, secret_sha256_hex, tenant_id,
-                COALESCE(status, 'active'), COALESCE(rate_limit_per_min, 0)
+                COALESCE(status, 'active'), COALESCE(rate_limit_per_min, 0), COALESCE(token_version, 0)
          FROM gateway_client_keys ORDER BY id",
     )
     .fetch_all(pool)
     .await?;
 
     let allowlists = load_all_client_key_route_allowlists(pool).await?;
+    let user_token_versions = load_user_token_versions(pool).await?;
 
     let mut creds = ClientCredentials::default();
-    for (id, api_key, secret_enc, _legacy_hash, tenant_id, status, rate_limit_per_min) in rows {
+    creds.user_token_versions = user_token_versions;
+    for (id, api_key, secret_enc, _legacy_hash, tenant_id, status, rate_limit_per_min, token_version) in rows {
         let allowed_route_ids = allowlists.get(&id).cloned().unwrap_or_default();
         if status != "active" {
             if let Some(k) = api_key.filter(|s| !s.is_empty()) {
@@ -1461,6 +1469,7 @@ pub async fn load_client_credentials(pool: &PgPool) -> Result<ClientCredentials,
                         tenant_id,
                         rate_limit_per_min,
                         allowed_route_ids,
+                        token_version,
                     }),
                     Err(e) => tracing::error!(client_id = %client_id, error = %e, "skip oauth client: decrypt failed"),
                 }
@@ -1468,6 +1477,42 @@ pub async fn load_client_credentials(pool: &PgPool) -> Result<ClientCredentials,
         }
     }
     Ok(creds)
+}
+
+pub async fn load_user_token_versions(
+    pool: &PgPool,
+) -> Result<std::collections::HashMap<i64, i32>, sqlx::Error> {
+    let rows: Vec<(i64, i32)> = sqlx::query_as(
+        "SELECT id, COALESCE(token_version, 0) FROM dashboard_users",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+pub async fn bump_client_token_version(pool: &PgPool, client_key_id: i64, tenant_id: i64) -> Result<i32, sqlx::Error> {
+    let row: Option<i32> = sqlx::query_scalar(
+        "UPDATE gateway_client_keys SET token_version = COALESCE(token_version, 0) + 1
+         WHERE id = $1 AND tenant_id = $2
+         RETURNING token_version",
+    )
+    .bind(client_key_id)
+    .bind(tenant_id)
+    .fetch_optional(pool)
+    .await?;
+    row.ok_or_else(|| sqlx::Error::RowNotFound)
+}
+
+pub async fn bump_user_token_version(pool: &PgPool, user_id: i64) -> Result<i32, sqlx::Error> {
+    let row: Option<i32> = sqlx::query_scalar(
+        "UPDATE dashboard_users SET token_version = COALESCE(token_version, 0) + 1
+         WHERE id = $1
+         RETURNING token_version",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+    row.ok_or_else(|| sqlx::Error::RowNotFound)
 }
 
 async fn load_all_client_key_route_allowlists(
@@ -1752,10 +1797,12 @@ fn random_token(prefix: &str, len: usize) -> String {
     format!("{prefix}{tail}")
 }
 
+/// OAuth2 `client_id` — prefix `avaso_pk_` (định danh API, không phải RSA public key).
 pub fn random_api_key_id() -> String {
     random_token("avaso_pk_", 24)
 }
 
+/// OAuth2 `client_secret` — prefix `avaso_sk_` (shared secret, mã hóa AES at rest).
 pub fn random_secret_key() -> String {
     random_token("avaso_sk_", 40)
 }
@@ -2561,6 +2608,12 @@ pub async fn traffic_method_counts_24h(
 
 pub async fn ping(pool: &PgPool) -> bool {
     sqlx::query("SELECT 1").execute(pool).await.is_ok()
+}
+
+pub async fn ping_timed(pool: &PgPool) -> (bool, u128) {
+    let start = std::time::Instant::now();
+    let ok = ping(pool).await;
+    (ok, start.elapsed().as_millis())
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

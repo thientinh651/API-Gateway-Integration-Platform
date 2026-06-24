@@ -208,7 +208,7 @@ export function ClientRegistryTable({
                 </th>
               ) : null}
               <th className="px-3 py-2.5">Client</th>
-              <th className="px-3 py-2.5">API Key</th>
+              <th className="px-3 py-2.5">Client ID</th>
               <th className="px-3 py-2.5">Xác thực</th>
               <th className="px-3 py-2.5">Phân quyền</th>
               <th className="px-3 py-2.5">Rate limit</th>
@@ -257,12 +257,23 @@ export function ClientRegistryTable({
                   </Badge>
                 </td>
                 <td className="px-3 py-3 align-middle max-w-0 overflow-hidden">
-                  <p
-                    className="text-xs text-slate-400 truncate"
-                    title={authorizationLabel(client.allowedRouteIds)}
-                  >
-                    {authorizationLabelShort(client.allowedRouteIds)}
-                  </p>
+                  {client.allowedRouteIds.length === 0 ? (
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] border-sky-500/30 text-sky-300 bg-sky-500/10 max-w-full truncate inline-block"
+                      title="ACL rỗng = client được gọi mọi route trong tenant"
+                    >
+                      Full tenant access
+                    </Badge>
+                  ) : (
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] border-amber-500/30 text-amber-300 bg-amber-500/10 max-w-full truncate inline-block"
+                      title={authorizationLabel(client.allowedRouteIds)}
+                    >
+                      {authorizationLabelShort(client.allowedRouteIds)}
+                    </Badge>
+                  )}
                 </td>
                 <td className="px-3 py-3 align-middle text-xs text-slate-400 whitespace-nowrap">
                   {client.rateLimitPerMinute > 0
@@ -313,10 +324,10 @@ export function ClientRegistryTable({
                       <Button
                         variant="ghost"
                         size="icon"
-                        title="Copy API Key"
+                        title="Copy Client ID"
                         onClick={() => {
                           void navigator.clipboard.writeText(client.apiKey);
-                          toast.success('Đã copy API Key');
+                          toast.success('Đã copy Client ID');
                         }}
                         className="h-7 w-7 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 shrink-0"
                       >

@@ -9,8 +9,12 @@ mod integration_office;
 mod integrations;
 mod jwt_auth;
 mod metrics;
+mod oauth_authorize;
+mod oauth_handlers;
+mod oauth_tokens;
 mod password_reset;
 mod proxy_ext;
+mod rate_limit;
 mod route_match;
 mod session;
 mod transform;
@@ -261,7 +265,7 @@ struct AppState {
     pool: PgPool,
     config: Arc<RwLock<AppConfig>>,
     http: reqwest::Client,
-    rl: Arc<DashMap<String, TokenBucket>>,
+    rate_limiter: Arc<rate_limit::RateLimiter>,
     /// Admin browser sessions — Redis (module `session`).
     session_store: Arc<SessionStore>,
     /// OAuth CSRF cache (SF/Zoho upstream connect).
@@ -365,63 +369,120 @@ pub(crate) fn json_error_fields(
 }
 
 /// Kiểm tra path/target trước khi ghi DB. Trả về response lỗi nếu không hợp lệ.
-/// `rate_limit_per_min == 0` → không áp limit theo route (fallback `config.yaml` nếu bật).
-fn per_min_to_bucket(per_min: i32) -> (f64, u32) {
-    let per_min = per_min.max(1) as u32;
-    (per_min as f64 / 60.0, per_min)
+/// Rate limit: client registry → route → global settings.
+#[derive(Debug, Clone, Copy)]
+struct ResolvedRateLimit {
+    active: bool,
+    rps: f64,
+    burst: u32,
+    /// Giá trị hiển thị header `X-RateLimit-Limit`.
+    limit_header: u32,
 }
 
-/// Rate limit: client registry → route → global settings.
 fn resolve_rate_limit(
     client: &VerifiedClient,
     route: Option<&RouteRow>,
     settings: &RuntimeSettings,
-) -> (bool, f64, u32) {
+) -> ResolvedRateLimit {
     if client.rate_limit_per_min > 0 {
-        let (rps, burst) = per_min_to_bucket(client.rate_limit_per_min);
-        return (true, rps, burst);
+        let (rps, burst) = rate_limit::per_min_to_bucket(client.rate_limit_per_min);
+        return ResolvedRateLimit {
+            active: true,
+            rps,
+            burst,
+            limit_header: client.rate_limit_per_min as u32,
+        };
     }
     if let Some(r) = route.filter(|r| r.rate_limit_per_min > 0) {
-        let (rps, burst) = per_min_to_bucket(r.rate_limit_per_min);
-        return (true, rps, burst);
+        let (rps, burst) = rate_limit::per_min_to_bucket(r.rate_limit_per_min);
+        return ResolvedRateLimit {
+            active: true,
+            rps,
+            burst,
+            limit_header: r.rate_limit_per_min as u32,
+        };
     }
     if settings.rate_limit.enabled {
-        (
-            true,
-            settings.rate_limit.rps as f64,
-            settings.rate_limit.burst,
-        )
+        ResolvedRateLimit {
+            active: true,
+            rps: settings.rate_limit.rps as f64,
+            burst: settings.rate_limit.burst,
+            limit_header: settings.rate_limit.rps,
+        }
     } else {
-        (false, 0.0, 0)
+        ResolvedRateLimit {
+            active: false,
+            rps: 0.0,
+            burst: 0,
+            limit_header: 0,
+        }
     }
 }
 
-fn rate_limit_bucket_key(tenant_id: i64, scope: &str, api_key: &str) -> String {
-    let key_part = if api_key.is_empty() {
-        "anon".to_string()
-    } else {
-        db::sha256_hex(api_key)
-    };
-    format!("{tenant_id}:{scope}:{key_part}")
+fn rate_limit_header_triple(info: &rate_limit::RateLimitInfo) -> [(HeaderValue, HeaderValue, HeaderValue); 1] {
+    let limit = HeaderValue::from_str(&info.limit.to_string()).unwrap_or(HeaderValue::from_static("0"));
+    let remaining =
+        HeaderValue::from_str(&info.remaining.to_string()).unwrap_or(HeaderValue::from_static("0"));
+    let reset =
+        HeaderValue::from_str(&info.reset_unix.to_string()).unwrap_or(HeaderValue::from_static("0"));
+    [(limit, remaining, reset)]
 }
 
-fn try_consume_rate_limit(
-    state: &AppState,
-    bucket_key: &str,
-    rps: f64,
-    burst: u32,
-) -> Result<(), u64> {
-    let now = Instant::now();
-    let mut entry = state
-        .rl
-        .entry(bucket_key.to_string())
-        .or_insert_with(|| TokenBucket::new(now, burst));
-    let bucket = entry.value_mut();
-    if bucket.take(now, rps, burst) {
-        Ok(())
-    } else {
-        Err(bucket.retry_after_secs(rps))
+fn apply_rate_limit_headers(res: &mut Response, info: &rate_limit::RateLimitInfo) {
+    let [(limit, remaining, reset)] = rate_limit_header_triple(info);
+    res.headers_mut()
+        .insert("X-RateLimit-Limit", limit);
+    res.headers_mut()
+        .insert("X-RateLimit-Remaining", remaining);
+    res.headers_mut()
+        .insert("X-RateLimit-Reset", reset);
+}
+
+fn rate_limit_response(info: &rate_limit::RateLimitInfo, retry_after_secs: u64) -> Response {
+    let mut res = json_error(
+        StatusCode::TOO_MANY_REQUESTS,
+        "too_many_requests",
+        "Rate limit exceeded",
+    );
+    if let Ok(hv) = HeaderValue::from_str(&retry_after_secs.max(1).to_string()) {
+        res.headers_mut().insert(RETRY_AFTER, hv);
     }
+    apply_rate_limit_headers(&mut res, info);
+    res
+}
+
+async fn consume_data_plane_rate_limit(
+    limiter: &rate_limit::RateLimiter,
+    rl: ResolvedRateLimit,
+    rl_key: &str,
+) -> Result<Option<rate_limit::RateLimitInfo>, (rate_limit::RateLimitInfo, u64)> {
+    if !rl.active {
+        return Ok(None);
+    }
+    match limiter
+        .try_consume(rl_key, rl.rps, rl.burst, rl.limit_header)
+        .await
+    {
+        rate_limit::ConsumeOutcome::Allowed(info) => Ok(Some(info)),
+        rate_limit::ConsumeOutcome::Denied {
+            info,
+            retry_after_secs,
+        } => Err((info, retry_after_secs)),
+    }
+}
+
+fn append_rate_limit_to_builder(
+    mut builder: axum::http::response::Builder,
+    info: Option<&rate_limit::RateLimitInfo>,
+) -> axum::http::response::Builder {
+    if let Some(info) = info {
+        let [(limit, remaining, reset)] = rate_limit_header_triple(info);
+        builder = builder
+            .header("X-RateLimit-Limit", limit)
+            .header("X-RateLimit-Remaining", remaining)
+            .header("X-RateLimit-Reset", reset);
+    }
+    builder
 }
 
 fn validate_route_write(path: &str, target: &str, timeout_secs: i32, rate_limit_per_min: i32) -> Option<Response> {
@@ -487,26 +548,23 @@ fn status_to_json_error(status: StatusCode) -> Response {
     json_error(status, error, message)
 }
 
-fn rate_limit_response(retry_after_secs: u64) -> Response {
-    let mut res = json_error(
-        StatusCode::TOO_MANY_REQUESTS,
-        "too_many_requests",
-        "Rate limit exceeded",
-    );
-    if let Ok(hv) = HeaderValue::from_str(&retry_after_secs.max(1).to_string()) {
-        res.headers_mut().insert(RETRY_AFTER, hv);
-    }
-    res
-}
-
 const MAX_DATA_PLANE_BODY: usize = 1024 * 1024;
 
-fn verify_data_plane_auth(
+async fn verify_data_plane_auth(
+    state: &AppState,
     cfg: &AppConfig,
     headers: &HeaderMap,
 ) -> Result<VerifiedClient, jwt_auth::TokenAuthFail> {
     let token = jwt_auth::bearer_from_headers(headers).ok_or(jwt_auth::TokenAuthFail::MissingToken)?;
-    jwt_auth::verify_bearer(&cfg.client_credentials, &token)
+    let store = oauth_tokens::TokenRevocationStore::from_session(&state.session_store);
+    jwt_auth::verify_bearer(&cfg.client_credentials, &store, &token).await
+}
+
+fn oauth_handler_state(st: &AppState) -> oauth_handlers::OAuthHandlerState {
+    oauth_handlers::OAuthHandlerState {
+        pool: st.pool.clone(),
+        session_store: st.session_store.clone(),
+    }
 }
 
 /// Header `Authorization` dùng để auth gateway, không nên forward thẳng sang upstream generic.
@@ -599,47 +657,6 @@ fn log_gateway_transaction(
             )
             .await;
         });
-    }
-}
-
-#[derive(Debug, Clone)]
-struct TokenBucket {
-    tokens: f64,
-    last_refill: Instant,
-}
-
-impl TokenBucket {
-    fn new(now: Instant, burst: u32) -> Self {
-        Self {
-            tokens: burst as f64,
-            last_refill: now,
-        }
-    }
-
-    fn take(&mut self, now: Instant, rps: f64, burst: u32) -> bool {
-        let elapsed = now.duration_since(self.last_refill);
-        let refill = elapsed.as_secs_f64() * rps;
-        self.tokens = (self.tokens + refill).min(burst as f64);
-        self.last_refill = now;
-        if self.tokens >= 1.0 {
-            self.tokens -= 1.0;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn retry_after_secs(&self, rps: f64) -> u64 {
-        if self.tokens >= 1.0 {
-            return 1;
-        }
-        let needed = 1.0 - self.tokens;
-        let secs = if rps > 0.0 {
-            needed / rps
-        } else {
-            60.0
-        };
-        secs.ceil().max(1.0) as u64
     }
 }
 
@@ -966,6 +983,7 @@ async fn main() {
         .expect("load config from database");
 
     let session_store = session::init_session_store().await;
+    let rate_limiter = Arc::new(rate_limit::RateLimiter::new(session_store.redis()));
     let proxy_queue = proxy_ext::ProxyQueue::new(pool.clone());
 
     integrations::spawn_integration_sync_worker(pool.clone());
@@ -975,7 +993,7 @@ async fn main() {
         pool,
         config: Arc::new(RwLock::new(initial)),
         http: reqwest::Client::new(),
-        rl: Arc::new(DashMap::new()),
+        rate_limiter,
         session_store,
         oauth_pending: Arc::new(DashMap::new()),
         proxy_queue,
@@ -1001,6 +1019,7 @@ async fn main() {
             "/client-keys/:id/routes",
             get(api_get_client_key_routes).put(api_put_client_key_routes),
         )
+        .route("/client-keys/:id/revoke-tokens", post(api_client_key_revoke_tokens))
         .route("/client-keys/:id/rotate", post(api_rotate_client_key))
         .route("/client-keys/:id/traffic", get(api_get_client_key_traffic))
         .route("/users", get(api_list_users).post(api_create_user))
@@ -1012,6 +1031,7 @@ async fn main() {
         .route("/audit-logs", get(api_list_audit_logs))
         .route("/transaction-logs", get(api_list_transaction_logs))
         .route("/proxy-queue", get(api_list_proxy_queue))
+        .route("/proxy-queue/bulk-delete", post(api_bulk_delete_proxy_queue))
         .route("/proxy-queue/:id/retry", post(api_retry_proxy_queue))
         .route("/proxy-queue/:id", delete(api_delete_proxy_queue))
         .route("/integrations", get(api_list_integrations))
@@ -1102,11 +1122,16 @@ async fn main() {
         .route("/dashboard/stats", get(api_dashboard_stats))
         .route("/middleware/status", get(api_middleware_status))
         .route("/reload-config", post(api_reload_config))
+        .route("/oauth/tokens", get(api_oauth_tokens_list))
+        .route("/oauth/tokens/revoke", post(api_oauth_revoke_jti_handler))
+        .route("/oauth/apps", get(api_oauth_apps_list).post(api_oauth_apps_create))
         .layer(middleware::from_fn(rbac_middleware))
         .layer(middleware::from_fn(admin_auth_middleware));
 
     let api_public = Router::new()
         .route("/ping", get(admin_api_ping))
+        .route("/oauth/revoke", post(api_oauth_revoke_handler))
+        .route("/oauth/logout", post(api_oauth_logout_handler))
         .route("/login", post(admin_login))
         .route("/oauth/token", post(oauth_token_handler))
         .route("/logout", post(admin_logout))
@@ -1145,10 +1170,12 @@ async fn main() {
         .layer(NormalizePathLayer::trim_trailing_slash())
         .layer(middleware::from_fn(instance_label_middleware))
         .layer(cors)
+        .route("/oauth/token", post(oauth_token_handler))
+        .route("/oauth/authorize", get(oauth_authorize_handler))
+        .route("/oauth/consent", post(oauth_consent_handler))
         .nest("/api", api)
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
-        .route("/oauth/token", post(oauth_token_handler))
         .fallback(proxy_or_static);
 
     let port = current_bind_port();
@@ -1472,7 +1499,10 @@ async fn establish_admin_session(
     res
 }
 
-async fn oauth_token_handler(Form(form): Form<identity::OAuthTokenForm>) -> impl IntoResponse {
+async fn oauth_token_handler(
+    headers: HeaderMap,
+    Form(form): Form<identity::OAuthTokenForm>,
+) -> impl IntoResponse {
     let st = match STATE.get() {
         Some(s) => s.clone(),
         None => {
@@ -1483,14 +1513,142 @@ async fn oauth_token_handler(Form(form): Form<identity::OAuthTokenForm>) -> impl
             );
         }
     };
+    let ip = admin_auth::client_ip(&headers);
+    let client_id = form
+        .client_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Err(retry_after) = st
+        .rate_limiter
+        .check_oauth_token_endpoint(client_id, ip.as_deref())
+        .await
+    {
+        st.gateway_metrics.record_rate_limit_hit();
+        log_gateway_transaction(
+            None,
+            ip.as_deref(),
+            "denied",
+            "rate_limit_exceeded",
+            "POST",
+            "/oauth/token",
+            StatusCode::TOO_MANY_REQUESTS.as_u16(),
+            client_id.unwrap_or("(no-client)"),
+            None,
+            0,
+            None,
+        );
+        let reset = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            + retry_after;
+        return rate_limit_response(
+            &rate_limit::RateLimitInfo {
+                limit: rate_limit::OAUTH_TOKEN_IP_PER_MIN,
+                remaining: 0,
+                reset_unix: reset,
+            },
+            retry_after,
+        );
+    }
     let cfg = st.config.read().await.clone();
     match identity::exchange_token(&st.pool, &cfg.client_credentials, form).await {
-        Ok(token) => Json(token).into_response(),
+        Ok(issued) => {
+            oauth_handlers::record_issued_token(&st.pool, &headers, &issued).await;
+            Json(issued.response).into_response()
+        }
         Err(err) => {
             let msg = err.message();
             json_error(err.status(), err.error_code(), &msg)
         }
     }
+}
+
+async fn api_oauth_revoke_handler(Form(body): Form<oauth_handlers::OAuthRevokeForm>) -> impl IntoResponse {
+    let Some(st) = STATE.get() else {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "state");
+    };
+    oauth_handlers::api_oauth_revoke(&oauth_handler_state(st), body).await
+}
+
+async fn api_oauth_logout_handler(headers: HeaderMap) -> impl IntoResponse {
+    let Some(st) = STATE.get() else {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "state");
+    };
+    oauth_handlers::api_oauth_logout_bearer(&oauth_handler_state(st), headers).await
+}
+
+async fn api_oauth_tokens_list(
+    Extension(ctx): Extension<AdminCtx>,
+    Query(q): Query<oauth_handlers::ListTokensQuery>,
+) -> impl IntoResponse {
+    let Some(st) = STATE.get() else {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "state");
+    };
+    oauth_handlers::api_list_oauth_tokens(&oauth_handler_state(st), &ctx, q).await
+}
+
+async fn api_oauth_apps_list(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    let Some(st) = STATE.get() else {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "state");
+    };
+    oauth_handlers::api_list_oauth_apps(&oauth_handler_state(st), &ctx).await
+}
+
+async fn api_oauth_apps_create(
+    Extension(ctx): Extension<AdminCtx>,
+    Json(body): Json<oauth_handlers::CreateOAuthAppBody>,
+) -> impl IntoResponse {
+    let Some(st) = STATE.get() else {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "state");
+    };
+    oauth_handlers::api_create_oauth_app(&oauth_handler_state(st), &ctx, body).await
+}
+
+async fn api_client_key_revoke_tokens(
+    Extension(ctx): Extension<AdminCtx>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    let Some(st) = STATE.get() else {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "state");
+    };
+    if let Err(e) = ensure_client_key_manage_access(&st.pool, &ctx, id).await {
+        return e;
+    }
+    let resp = oauth_handlers::api_revoke_client_tokens(&oauth_handler_state(st), &ctx, id).await;
+    spawn_reload_runtime_config();
+    resp
+}
+
+async fn api_oauth_revoke_jti_handler(
+    Extension(ctx): Extension<AdminCtx>,
+    Json(body): Json<oauth_handlers::RevokeJtiBody>,
+) -> impl IntoResponse {
+    let Some(st) = STATE.get() else {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "state");
+    };
+    oauth_handlers::api_revoke_token_jti(&oauth_handler_state(st), &ctx, body).await
+}
+
+async fn oauth_authorize_handler(
+    headers: HeaderMap,
+    Query(q): Query<oauth_handlers::AuthorizeQuery>,
+) -> impl IntoResponse {
+    let Some(st) = STATE.get() else {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "state");
+    };
+    oauth_handlers::oauth_authorize_get(&oauth_handler_state(st), headers, q).await
+}
+
+async fn oauth_consent_handler(
+    headers: HeaderMap,
+    Form(form): Form<oauth_handlers::ConsentForm>,
+) -> impl IntoResponse {
+    let Some(st) = STATE.get() else {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "state");
+    };
+    oauth_handlers::oauth_consent_post(&oauth_handler_state(st), form, headers).await
 }
 
 async fn admin_login(headers: HeaderMap, Json(body): Json<LoginBody>) -> impl IntoResponse {
@@ -2087,6 +2245,7 @@ async fn api_update_me(headers: HeaderMap, Json(body): Json<UpdateMeBody>) -> im
         ),
         Ok(_) => {
             if pass_hash.is_some() {
+                let _ = db::bump_user_token_version(&st.pool, ctx.user_id).await;
                 if let Err(e) = st.session_store.revoke_all_for_user(ctx.user_id).await {
                     tracing::warn!(error = %e, user_id = ctx.user_id, "revoke sessions after password change failed");
                 }
@@ -2450,6 +2609,7 @@ async fn api_reset_password(Json(body): Json<ResetPasswordBody>) -> impl IntoRes
             "Tài khoản không tồn tại",
         ),
         Ok(_) => {
+            let _ = db::bump_user_token_version(&st.pool, user_id).await;
             let _ = st.session_store.revoke_all_for_user(user_id).await;
             if let Ok(Some(u)) = db::fetch_admin_user_by_id_any(&st.pool, user_id).await {
                 write_audit_event(
@@ -2832,14 +2992,14 @@ async fn health_handler() -> Response {
         return json_error(StatusCode::NOT_FOUND, "disabled", "health endpoint disabled");
     }
 
-    let (db_ok, redis_ok) = if let Some(st) = STATE.get() {
-        (
-            db::ping(&st.pool).await,
-            st.session_store.ping().await == SessionStoreStatus::Up,
-        )
+    let (db_ok, db_ms, redis_status, redis_ms) = if let Some(st) = STATE.get() {
+        let (db_ok, db_ms) = db::ping_timed(&st.pool).await;
+        let (redis_status, redis_ms) = st.session_store.ping_timed().await;
+        (db_ok, db_ms, redis_status, redis_ms)
     } else {
-        (false, false)
+        (false, 0, SessionStoreStatus::Down, 0)
     };
+    let redis_ok = redis_status == SessionStoreStatus::Up;
 
     let overall = if db_ok && redis_ok {
         "ok"
@@ -2852,10 +3012,11 @@ async fn health_handler() -> Response {
         "service": "avaso-gateway",
         "version": env!("CARGO_PKG_VERSION"),
         "components": {
-            "database": { "status": if db_ok { "up" } else { "down" } },
+            "database": { "status": if db_ok { "up" } else { "down" }, "latency_ms": db_ms },
             "session_store": {
                 "status": if redis_ok { "up" } else { "down" },
-                "backend": "redis"
+                "backend": "redis",
+                "latency_ms": redis_ms
             }
         }
     });
@@ -4275,6 +4436,7 @@ async fn api_rotate_client_key(
     let secret_key = db::random_secret_key();
     match db::rotate_client_key_secret(&st.pool, id, ctx.tenant_id, &secret_key).await {
         Ok(Some(api_key)) => {
+            let _ = db::bump_client_token_version(&st.pool, id, ctx.tenant_id).await;
             spawn_reload_runtime_config();
             write_audit(
                 &st.pool,
@@ -4927,6 +5089,54 @@ async fn api_retry_proxy_queue(
     }
 }
 
+#[derive(Deserialize)]
+struct BulkProxyQueueDeleteBody {
+    ids: Vec<String>,
+}
+
+async fn api_bulk_delete_proxy_queue(
+    Extension(ctx): Extension<AdminCtx>,
+    Json(body): Json<BulkProxyQueueDeleteBody>,
+) -> impl IntoResponse {
+    let Some(st) = STATE.get() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "state not initialized" })),
+        )
+            .into_response();
+    };
+    let ids: Vec<String> = body
+        .ids
+        .into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect();
+    if ids.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "validation_failed",
+                "message": "Chọn ít nhất một bản ghi"
+            })),
+        )
+            .into_response();
+    }
+    let deleted = st.proxy_queue.remove_many(ctx.tenant_id, &ids).await;
+    if deleted > 0 {
+        write_audit(
+            &st.pool,
+            &ctx,
+            "proxy_queue_bulk_discard",
+            &format!("count={deleted}"),
+            "success",
+            None,
+            Some(&ids.join(",")),
+        )
+        .await;
+    }
+    Json(serde_json::json!({ "deleted": deleted })).into_response()
+}
+
 async fn api_delete_proxy_queue(
     Extension(ctx): Extension<AdminCtx>,
     Path(id): Path<String>,
@@ -5509,7 +5719,7 @@ async fn handle_data_plane_request(
             );
         }
     };
-    let verified = match verify_data_plane_auth(&cfg, &parts.headers) {
+    let verified = match verify_data_plane_auth(&state, &cfg, &parts.headers).await {
         Ok(v) => v,
         Err(err) => {
             let (status, reason, msg) = jwt_auth::token_auth_to_response(err);
@@ -5535,13 +5745,12 @@ async fn handle_data_plane_request(
         spawn_touch_client_key(verified.key_id);
     }
     if canonical_api::parse_canonical_path(data_plane_prefix(), &path).is_some() {
-        let (rl_active, rl_rps, rl_burst) =
-            resolve_rate_limit(&verified, None, &cfg.settings);
-        if rl_active {
-            let rl_key = rate_limit_bucket_key(verified.tenant_id, "canonical", &subject);
-            if let Err(retry_after) =
-                try_consume_rate_limit(&state, &rl_key, rl_rps, rl_burst)
-            {
+        let rl = resolve_rate_limit(&verified, None, &cfg.settings);
+        let rl_key = rate_limit::bucket_key(verified.tenant_id, "canonical", &subject);
+        let rl_info = match consume_data_plane_rate_limit(&state.rate_limiter, rl, &rl_key).await {
+            Ok(info) => info,
+            Err((info, retry_after)) => {
+                state.gateway_metrics.record_rate_limit_hit();
                 log_gateway_transaction(
                     Some(verified.tenant_id),
                     client_ip.as_deref(),
@@ -5555,9 +5764,9 @@ async fn handle_data_plane_request(
                     0,
                     Some(verified.key_id),
                 );
-                return rate_limit_response(retry_after);
+                return rate_limit_response(&info, retry_after);
             }
-        }
+        };
         let ct = parts
             .headers
             .get(axum::http::header::CONTENT_TYPE)
@@ -5585,16 +5794,20 @@ async fn handle_data_plane_request(
             0,
             Some(verified.key_id),
         );
+        if let Some(info) = rl_info.as_ref() {
+            let mut out = resp;
+            apply_rate_limit_headers(&mut out, info);
+            return out;
+        }
         return resp;
     }
     if integrations::parse_integration_proxy_path(data_plane_prefix(), &path).is_some() {
-        let (rl_active, rl_rps, rl_burst) =
-            resolve_rate_limit(&verified, None, &cfg.settings);
-        if rl_active {
-            let rl_key = rate_limit_bucket_key(verified.tenant_id, "integration", &subject);
-            if let Err(retry_after) =
-                try_consume_rate_limit(&state, &rl_key, rl_rps, rl_burst)
-            {
+        let rl = resolve_rate_limit(&verified, None, &cfg.settings);
+        let rl_key = rate_limit::bucket_key(verified.tenant_id, "integration", &subject);
+        let rl_info = match consume_data_plane_rate_limit(&state.rate_limiter, rl, &rl_key).await {
+            Ok(info) => info,
+            Err((info, retry_after)) => {
+                state.gateway_metrics.record_rate_limit_hit();
                 log_gateway_transaction(
                     Some(verified.tenant_id),
                     client_ip.as_deref(),
@@ -5608,9 +5821,9 @@ async fn handle_data_plane_request(
                     0,
                     Some(verified.key_id),
                 );
-                return rate_limit_response(retry_after);
+                return rate_limit_response(&info, retry_after);
             }
-        }
+        };
         let ct = parts
             .headers
             .get(axum::http::header::CONTENT_TYPE)
@@ -5638,6 +5851,11 @@ async fn handle_data_plane_request(
             0,
             Some(verified.key_id),
         );
+        if let Some(info) = rl_info.as_ref() {
+            let mut out = resp;
+            apply_rate_limit_headers(&mut out, info);
+            return out;
+        }
         return resp;
     }
     let matched = route_match::find_route(&cfg.routes, &method, &path);
@@ -5703,7 +5921,9 @@ async fn handle_proxied_route(
     let body_bytes = axum::body::to_bytes(body, MAX_DATA_PLANE_BODY)
         .await
         .map_err(|_| status_to_json_error(StatusCode::BAD_REQUEST))?;
-    let verified = verify_data_plane_auth(&cfg, &parts.headers).map_err(|err| {
+    let verified = verify_data_plane_auth(&state, &cfg, &parts.headers)
+        .await
+        .map_err(|err| {
         let (status, _, _) = jwt_auth::token_auth_to_response(err);
         status_to_json_error(status)
     })?;
@@ -5731,8 +5951,28 @@ async fn handle_proxied_route(
     .await
 }
 
+/// SPA fallback chỉ cho route UI — không trả index.html cho asset (.js/.css/…) thiếu file.
+fn spa_index_fallback_allowed(path: &str) -> bool {
+    let p = path.trim();
+    if p.is_empty() || p == "/" {
+        return true;
+    }
+    if p.starts_with("/assets/") {
+        return false;
+    }
+    if let Some(ext) = p.rsplit('.').next() {
+        match ext.to_ascii_lowercase().as_str() {
+            "js" | "mjs" | "css" | "map" | "svg" | "png" | "jpg" | "jpeg" | "webp" | "gif"
+            | "ico" | "woff" | "woff2" | "ttf" | "eot" | "json" | "txt" | "xml" => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
 async fn serve_frontend(req: Request<Body>) -> Response {
     let dist_dir = "web/dist";
+    let path = req.uri().path().to_string();
 
     let resp = match ServeDir::new(dist_dir)
         .append_index_html_on_directories(true)
@@ -5749,7 +5989,7 @@ async fn serve_frontend(req: Request<Body>) -> Response {
         }
     };
 
-    if resp.status() == StatusCode::NOT_FOUND {
+    if resp.status() == StatusCode::NOT_FOUND && spa_index_fallback_allowed(&path) {
         return match ServeFile::new(format!("{dist_dir}/index.html"))
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
             .await
@@ -5787,20 +6027,20 @@ async fn do_proxy(
         .await
         .map_err(|_| status_to_json_error(StatusCode::BAD_REQUEST))?;
 
-    let (rl_active, rl_rps, rl_burst) =
-        resolve_rate_limit(&verified, Some(&route), &cfg.settings);
-
-    if rl_active {
-        let scope = if verified.rate_limit_per_min > 0 {
-            "client".to_string()
-        } else if route.rate_limit_per_min > 0 {
-            format!("route:{}", route.id)
-        } else {
-            "global".to_string()
-        };
-        let rl_key = rate_limit_bucket_key(verified.tenant_id, &scope, &subject);
-        if let Err(retry_after) = try_consume_rate_limit(&state, &rl_key, rl_rps, rl_burst) {
+    let rl = resolve_rate_limit(&verified, Some(&route), &cfg.settings);
+    let scope = if verified.rate_limit_per_min > 0 {
+        "client".to_string()
+    } else if route.rate_limit_per_min > 0 {
+        format!("route:{}", route.id)
+    } else {
+        "global".to_string()
+    };
+    let rl_key = rate_limit::bucket_key(verified.tenant_id, &scope, &subject);
+    let rl_info = match consume_data_plane_rate_limit(&state.rate_limiter, rl, &rl_key).await {
+        Ok(info) => info,
+        Err((info, retry_after)) => {
             let elapsed_ms = started.elapsed().as_millis();
+            state.gateway_metrics.record_rate_limit_hit();
             log_gateway_transaction(
                 Some(route.tenant_id),
                 client_ip.as_deref(),
@@ -5814,9 +6054,9 @@ async fn do_proxy(
                 elapsed_ms,
                 Some(verified.key_id),
             );
-            return Err(rate_limit_response(retry_after));
+            return Err(rate_limit_response(&info, retry_after));
         }
-    }
+    };
 
     let mut url = route_match::build_upstream_url(&route.target, &route_params, &route_suffix);
     if let Some(q) = uri.query() {
@@ -5882,12 +6122,15 @@ async fn do_proxy(
             "queue_id": qid,
             "attempts": upstream.attempts,
         });
-        return Ok(Response::builder()
-            .status(StatusCode::BAD_GATEWAY)
-            .header(CONTENT_TYPE, "application/json")
-            .header("X-Queue-Id", qid)
-            .body(Body::from(body_json.to_string()))
-            .map_err(|_| status_to_json_error(StatusCode::BAD_GATEWAY))?);
+        return Ok(append_rate_limit_to_builder(
+            Response::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .header(CONTENT_TYPE, "application/json")
+                .header("X-Queue-Id", qid),
+            rl_info.as_ref(),
+        )
+        .body(Body::from(body_json.to_string()))
+        .map_err(|_| status_to_json_error(StatusCode::BAD_GATEWAY))?);
     }
 
     let mut builder = Response::builder().status(status);
@@ -5897,6 +6140,7 @@ async fn do_proxy(
     for (k, v) in upstream.headers.iter() {
         builder = builder.header(k, v);
     }
+    builder = append_rate_limit_to_builder(builder, rl_info.as_ref());
 
     builder
         .body(Body::from(upstream.body))
@@ -5957,14 +6201,17 @@ mod path_tests {
     }
 
     #[test]
-    fn token_bucket_allows_burst_then_limits() {
-        let start = Instant::now();
-        let mut bucket = TokenBucket::new(start, 2);
-        assert!(bucket.take(start, 100.0, 2));
-        assert!(bucket.take(start, 100.0, 2));
-        assert!(!bucket.take(start, 100.0, 2));
-        let later = start + Duration::from_secs(1);
-        assert!(bucket.take(later, 1.0, 2));
+    fn per_min_burst_capped_via_module() {
+        let (_, burst) = rate_limit::per_min_to_bucket(10);
+        assert_eq!(burst, 3);
+    }
+
+    #[test]
+    fn spa_fallback_skips_assets() {
+        assert!(!spa_index_fallback_allowed("/assets/main-abc.js"));
+        assert!(!spa_index_fallback_allowed("/assets/index.css"));
+        assert!(spa_index_fallback_allowed("/auth"));
+        assert!(spa_index_fallback_allowed("/"));
     }
 
     fn test_route(id: i64, tenant_id: i64) -> RouteRow {

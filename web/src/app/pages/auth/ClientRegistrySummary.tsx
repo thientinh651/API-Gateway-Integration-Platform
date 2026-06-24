@@ -21,7 +21,7 @@ export function ClientRegistrySummary({ clients }: { clients: ClientRegistryRow[
     {
       label: 'OAuth2 clients',
       value: clients.filter((c) => c.authMode === 'oauth_client' || c.authMode === 'hmac').length,
-      hint: 'API Key + Secret — ký mỗi request',
+      hint: 'Client ID + Secret → JWT Bearer (OAuth2)',
       icon: KeyRound,
       iconClass: 'text-emerald-400 bg-emerald-500/10',
     },

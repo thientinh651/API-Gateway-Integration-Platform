@@ -298,6 +298,19 @@ impl ProxyQueue {
             .unwrap_or(false)
     }
 
+    pub async fn remove_many(&self, tenant_id: i64, ids: &[String]) -> u64 {
+        if ids.is_empty() {
+            return 0;
+        }
+        sqlx::query("DELETE FROM gateway_proxy_queue WHERE tenant_id = $1 AND id = ANY($2)")
+            .bind(tenant_id)
+            .bind(ids)
+            .execute(&self.pool)
+            .await
+            .map(|r| r.rows_affected())
+            .unwrap_or(0)
+    }
+
     /// Oldest items across tenants — for background DLQ worker.
     pub async fn list_oldest(&self, limit: i64) -> Vec<ProxyQueueItem> {
         let rows = sqlx::query_as::<_, QueueRow>(

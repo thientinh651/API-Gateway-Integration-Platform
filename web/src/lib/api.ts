@@ -541,6 +541,14 @@ export function deleteProxyQueueItem(id: string): Promise<void> {
   return fetchOk(`/api/proxy-queue/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
+export function bulkDeleteProxyQueueItems(ids: string[]): Promise<{ deleted: number }> {
+  return fetchJson<{ deleted: number }>('/api/proxy-queue/bulk-delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
+}
+
 export function fetchGatewaySettings(): Promise<GatewaySettings> {
   return fetchJson<GatewaySettings>('/api/settings');
 }
@@ -1121,5 +1129,75 @@ export type RotateClientKeyResponse = {
 export function rotateClientKey(id: number): Promise<RotateClientKeyResponse> {
   return fetchJson<RotateClientKeyResponse>(`/api/client-keys/${id}/rotate`, {
     method: 'POST',
+  });
+}
+
+export type OAuthTokenAuditRow = {
+  jti: string;
+  subject: string;
+  token_type: string;
+  grant_type: string;
+  scope: string;
+  issued_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  source_ip: string | null;
+  client_key_id: number | null;
+  user_id: number | null;
+};
+
+export function fetchOAuthTokens(params?: {
+  active_only?: boolean;
+  limit?: number;
+}): Promise<{ tokens: OAuthTokenAuditRow[] }> {
+  const q = new URLSearchParams();
+  if (params?.active_only !== undefined) q.set('active_only', String(params.active_only));
+  if (params?.limit !== undefined) q.set('limit', String(params.limit));
+  const qs = q.toString();
+  return fetchJson<{ tokens: OAuthTokenAuditRow[] }>(
+    `/api/oauth/tokens${qs ? `?${qs}` : ''}`,
+  );
+}
+
+export function revokeOAuthTokenJti(jti: string): Promise<{ status: string; jti: string }> {
+  return fetchJson('/api/oauth/tokens/revoke', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jti }),
+  });
+}
+
+export function revokeClientTokens(id: number): Promise<{ status: string; message: string }> {
+  return fetchJson(`/api/client-keys/${id}/revoke-tokens`, { method: 'POST' });
+}
+
+export type OAuthThirdPartyAppRow = {
+  id: number;
+  tenant_id: number;
+  client_id: string;
+  name: string;
+  redirect_uris_json: string;
+  scopes: string;
+  created_at: string;
+};
+
+export function fetchOAuthApps(): Promise<{ apps: OAuthThirdPartyAppRow[] }> {
+  return fetchJson('/api/oauth/apps');
+}
+
+export function createOAuthApp(body: {
+  name: string;
+  redirect_uris: string[];
+  with_secret?: boolean;
+}): Promise<{
+  client_id: string;
+  client_secret: string | null;
+  redirect_uris: string[];
+  grant_types: string[];
+}> {
+  return fetchJson('/api/oauth/apps', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
 }

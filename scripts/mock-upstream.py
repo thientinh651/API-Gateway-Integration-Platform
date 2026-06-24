@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""Stable local upstream for benchmark — static JSON, no external latency."""
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import os
+import sys
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        pass
+
+    def do_GET(self):
+        body = json.dumps({"ok": True, "path": self.path}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def main():
+    host = os.environ.get("MOCK_HOST", "127.0.0.1")
+    port = int(os.environ.get("MOCK_PORT", "8089"))
+    server = ThreadingHTTPServer((host, port), Handler)
+    print(f"mock-upstream listening on http://{host}:{port}/get", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

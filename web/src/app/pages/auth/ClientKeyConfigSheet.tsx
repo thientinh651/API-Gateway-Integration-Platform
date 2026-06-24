@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import { Copy, FlaskConical, Gauge, KeyRound, Route, Shield, UserCheck, Activity } from 'lucide-react';
+import { Copy, FlaskConical, Gauge, KeyRound, Route, Shield, UserCheck, Activity, Ban } from 'lucide-react';
 import { toast } from 'sonner';
 import type { GatewayRouteRow } from '../../../lib/gatewayRoutes';
 import {
   fetchClientKeyTraffic,
   patchClientKey,
   putClientKeyRoutes,
+  revokeClientTokens,
   rotateClientKey,
   type ClientKeyTrafficStats,
 } from '../../../lib/api';
@@ -58,6 +59,7 @@ export function ClientKeyConfigSheet({
   const [restrictRoutes, setRestrictRoutes] = useState(false);
   const [saving, setSaving] = useState(false);
   const [rotating, setRotating] = useState(false);
+  const [revokingTokens, setRevokingTokens] = useState(false);
   const [rotatedSecret, setRotatedSecret] = useState('');
   const [rotateDialogOpen, setRotateDialogOpen] = useState(false);
   const [traffic, setTraffic] = useState<ClientKeyTrafficStats | null>(null);
@@ -131,11 +133,24 @@ export function ClientKeyConfigSheet({
       const res = await rotateClientKey(Number(client.id));
       setRotatedSecret(res.secret_key);
       setRotateDialogOpen(true);
-      toast.success('Đã rotate secret — copy ngay, không hiện lại');
+      toast.success('Đã rotate secret — mọi JWT cũ vô hiệu');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setRotating(false);
+    }
+  };
+
+  const handleRevokeAllTokens = async () => {
+    if (!client || !canManage) return;
+    setRevokingTokens(true);
+    try {
+      await revokeClientTokens(Number(client.id));
+      toast.success('Đã thu hồi mọi JWT của client — cần đổi token mới');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRevokingTokens(false);
     }
   };
 
@@ -156,7 +171,7 @@ export function ClientKeyConfigSheet({
             </div>
             <div className="rounded-lg border border-border bg-slate-950/50 p-3 space-y-2 text-xs">
               <div className="flex justify-between gap-2">
-                <span className="text-muted-foreground">API Key</span>
+                <span className="text-muted-foreground">Client ID</span>
                 <code className="text-slate-300 font-mono truncate max-w-[200px]">
                   {client.apiKey}
                 </code>
@@ -178,19 +193,39 @@ export function ClientKeyConfigSheet({
                 </span>
               </div>
               {canManage && client.apiKey.startsWith('avaso_pk_') ? (
-                <ConfirmDangerButton
-                  title="Rotate secret?"
-                  description="Secret cũ hết hiệu lực ngay. Client phải cập nhật secret mới trên mọi hệ thống gọi API."
-                  confirmLabel="Rotate secret"
-                  pendingLabel="Đang rotate…"
-                  variant="outline"
-                  disabled={rotating}
-                  onConfirm={() => void handleRotate()}
-                  className="mt-2 w-full text-xs border-amber-500/40 text-amber-400 hover:bg-amber-500/10"
-                >
-                  <KeyRound className="w-3.5 h-3.5 mr-1.5" />
-                  Rotate secret
-                </ConfirmDangerButton>
+                <div className="mt-2 space-y-2">
+                  <ConfirmDangerButton
+                    title="Rotate secret?"
+                    description="Secret cũ hết hiệu lực ngay. Mọi JWT đang live cũng bị vô hiệu."
+                    confirmLabel="Rotate secret"
+                    pendingLabel="Đang rotate…"
+                    variant="outline"
+                    disabled={rotating}
+                    onConfirm={() => void handleRotate()}
+                    className="w-full text-xs border-amber-500/40 text-amber-400 hover:bg-amber-500/10"
+                  >
+                    <KeyRound className="w-3.5 h-3.5 mr-1.5" />
+                    Rotate secret
+                  </ConfirmDangerButton>
+                  <ConfirmDangerButton
+                    title="Thu hồi mọi JWT?"
+                    description="Tăng token version — mọi access token hiện tại của client này không dùng được nữa. App phải gọi lại POST /api/oauth/token."
+                    confirmLabel="Thu hồi"
+                    pendingLabel="Đang thu hồi…"
+                    variant="outline"
+                    disabled={revokingTokens}
+                    onConfirm={() => void handleRevokeAllTokens()}
+                    className="w-full text-xs border-red-500/40 text-red-400 hover:bg-red-500/10"
+                  >
+                    <Ban className="w-3.5 h-3.5 mr-1.5" />
+                    Thu hồi mọi token
+                  </ConfirmDangerButton>
+                  <Button asChild variant="outline" size="sm" className="w-full text-xs border-border">
+                    <Link to="/auth?tab=tokens">
+                      Xem audit token
+                    </Link>
+                  </Button>
+                </div>
               ) : null}
             </div>
           </section>
@@ -264,7 +299,20 @@ export function ClientKeyConfigSheet({
               <label htmlFor="client-acl" className="cursor-pointer select-none">
                 Giới hạn route (ACL)
               </label>
+              {!restrictRoutes ? (
+                <Badge
+                  variant="outline"
+                  className="text-[10px] border-sky-500/30 text-sky-300 bg-sky-500/10"
+                >
+                  Full tenant access
+                </Badge>
+              ) : null}
             </div>
+            {!restrictRoutes ? (
+              <p className="text-xs text-sky-300/80 leading-relaxed">
+                ACL rỗng — client gọi được <strong>mọi route</strong> trong tenant (mặc định an toàn cho demo).
+              </p>
+            ) : null}
             <div className="space-y-2">
               {canManage && routes.length > 0 && restrictRoutes ? (
                 <div className="flex gap-2 text-[11px]">
@@ -381,7 +429,7 @@ export function ClientKeyConfigSheet({
           </DialogHeader>
           <div className="space-y-3">
             <div>
-              <p className="text-[10px] uppercase text-muted-foreground mb-1">API Key (không đổi)</p>
+              <p className="text-[10px] uppercase text-muted-foreground mb-1">Client ID (không đổi)</p>
               <code className="block text-xs font-mono text-slate-300 break-all">{client.apiKey}</code>
             </div>
             <div>

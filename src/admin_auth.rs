@@ -189,6 +189,18 @@ pub fn rbac_allow(method: &Method, path: &str, role: &str) -> bool {
         if p.ends_with("/traffic") && p.starts_with("/client-keys/") && get {
             return true;
         }
+        if p.ends_with("/revoke-tokens") && p.starts_with("/client-keys/") && *method == Method::POST {
+            return true;
+        }
+        if p == "/oauth/tokens" && get {
+            return true;
+        }
+        if p == "/oauth/tokens/revoke" && *method == Method::POST {
+            return true;
+        }
+        if p == "/oauth/apps" && get {
+            return true;
+        }
         if p == "/routes/acl-summary" && get {
             return true;
         }

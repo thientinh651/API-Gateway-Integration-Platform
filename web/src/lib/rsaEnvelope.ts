@@ -1,6 +1,7 @@
 /**
  * WSO2-style hybrid encryption: RSA-OAEP-256 (encrypt AES key) + AES-256-GCM (payload).
- * Client uses gateway public key; only gateway private key decrypts.
+ * Client fetches gateway RSA public key for optional encrypted client registration.
+ * Data-plane auth uses OAuth2 Bearer JWT — not per-request client_secret.
  */
 
 export type CryptoEnvelope = {

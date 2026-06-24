@@ -1,6 +1,6 @@
 # CHƯƠNG 4. THỬ NGHIỆM
 
-Quá trình thử nghiệm nhằm xác minh nền tảng Gateway đa tích hợp (Rust) đáp ứng các yêu cầu chức năng đã nêu ở Chương 3, tập trung vào mặt phẳng dữ liệu (xác thực client, định tuyến, điều tiết), mặt phẳng điều khiển (session, RBAC) và phần mở rộng tích hợp Salesforce/Zoho. Môi trường: PostgreSQL, gateway chạy cổng 3000; công cụ: `curl`, script `smoke-test.sh`, `test_hmac_replay.py`, giao diện dashboard và kiểm thử thủ công.
+Quá trình thử nghiệm nhằm xác minh nền tảng Gateway đa tích hợp (Rust) đáp ứng các yêu cầu chức năng đã nêu ở Chương 3, tập trung vào mặt phẳng dữ liệu (OAuth2 JWT, định tuyến, điều tiết), mặt phẳng điều khiển (session, RBAC) và phần mở rộng tích hợp Salesforce/Zoho. Môi trường: PostgreSQL, gateway chạy cổng 3000; công cụ: `curl`, `scripts/test_jwt_auth.py`, `scripts/smoke-test.sh`, k6/wrk, giao diện dashboard và kiểm thử thủ công.
 
 ---
 
@@ -10,15 +10,15 @@ Quá trình thử nghiệm nhằm xác minh nền tảng Gateway đa tích hợp
 
 ### 4.1.1 Nhóm xác thực an ninh và điều tiết giao dịch
 
-Nhóm này kiểm tra cơ chế xác thực client (HMAC-SHA256), chống replay, giới hạn tần suất (rate limit) và kiểm soát truy cập theo tuyến (ACL).
+Nhóm này kiểm tra cơ chế xác thực OAuth2 Client Credentials + JWT Bearer, giới hạn tần suất (rate limit) và kiểm soát truy cập theo tuyến (ACL).
 
 | Mã kịch bản | Tên kịch bản | Mô tả | Đầu vào | Kết quả mong đợi |
 |-------------|--------------|-------|---------|------------------|
-| TC_01 | Xác thực HMAC hợp lệ | Kiểm tra Gateway chấp nhận yêu cầu data plane khi client gửi đủ `X-API-Key`, `X-Timestamp`, `X-Signature` đúng thuật toán HMAC-SHA256 | Client active; header HMAC đúng secret; `GET /v1/api/{route}` đã cấu hình | HTTP 200/404 từ upstream (tùy target); không trả 401; ghi log giao dịch `outcome=success` hoặc upstream tương ứng |
-| TC_02 | Từ chối thiếu hoặc sai API Key / chữ ký | Kiểm tra Gateway từ chối yêu cầu không có key, key không tồn tại, thiếu chữ ký hoặc chữ ký sai | (a) Không header `X-API-Key`; (b) Key không đăng ký; (c) Thiếu `X-Signature`; (d) Signature sai secret | HTTP 401; body JSON mô tả lỗi (`missing_api_key`, `bad_signature`, …); không chuyển tiếp upstream |
-| TC_03 | Chống replay chữ ký HMAC | Kiểm tra cùng bộ (timestamp + signature) gửi lần hai bị chặn | Gửi 2 lần liên tiếp cùng `X-Timestamp` và `X-Signature` hợp lệ | Lần 1: chấp nhận xử lý; lần 2: HTTP 401, thông báo replay; script `test_hmac_replay.py` báo OK |
+| TC_01 | Xác thực JWT hợp lệ | Kiểm tra Gateway chấp nhận data plane khi client có Bearer JWT hợp lệ (sau `POST /api/oauth/token`) | Client active; `client_id` + `client_secret` → token; `GET /v1/api/{route}` + `Authorization: Bearer` | HTTP 200/404 từ upstream (tùy target); không trả 401; ghi log giao dịch `outcome=success` hoặc upstream tương ứng |
+| TC_02 | Từ chối thiếu hoặc sai token | Kiểm tra Gateway từ chối yêu cầu không Bearer, token sai, hết hạn hoặc client disabled | (a) Không header `Authorization`; (b) Token sai/hết hạn; (c) Client disabled | HTTP 401; body JSON (`missing_token`, `invalid_token`, `token_expired`, …); không chuyển tiếp upstream |
+| TC_03 | Token endpoint — client_id/secret | Kiểm tra đổi credential tại `/api/oauth/token` (secret không dùng trên data plane) | (a) Sai `client_secret` → 401; (b) Đúng credential → `access_token`; (c) Data plane chỉ gửi Bearer | Token endpoint từ chối secret sai; data plane không yêu cầu secret |
 | TC_04 | Rate limit vượt ngưỡng | Kiểm tra điều tiết khi vượt giới hạn req/phút (client hoặc route) | Client `clientRateLimit=10`/phút; gửi >10 request/phút tới route hợp lệ | HTTP 429; header `Retry-After`; không proxy quá ngưỡng; metric/data plane ghi nhận bị chặn |
-| TC_05 | ACL tuyến theo client | Kiểm tra client chỉ gọi được tuyến được gán trong `gateway_client_key_routes` | Client A chỉ ACL route `/v1/api/a`; gửi HMAC tới `/v1/api/b` | HTTP 403; không forward upstream; log ghi lý do từ chối ACL |
+| TC_05 | ACL tuyến theo client | Kiểm tra client chỉ gọi được tuyến được gán trong `gateway_client_key_routes` | Client A chỉ ACL route `/v1/api/a`; gửi JWT tới `/v1/api/b` | HTTP 403; không forward upstream; log ghi lý do từ chối ACL |
 
 ### 4.1.2 Nhóm định tuyến, proxy và pipeline xử lý yêu cầu
 
@@ -26,10 +26,10 @@ Nhóm này kiểm tra khả năng định tuyến động, lọc phương thức
 
 | Mã kịch bản | Tên kịch bản | Mô tả | Đầu vào | Kết quả mong đợi |
 |-------------|--------------|-------|---------|------------------|
-| TC_06 | Proxy định tuyến thành công | Kiểm tra match route theo path và chuyển tiếp upstream | Route `path=/v1/api/demo`, `target=https://httpbin.org/get`; HMAC hợp lệ; `GET /v1/api/demo` | HTTP 200; phản hồi từ upstream; header transform (nếu cấu hình) được áp dụng |
+| TC_06 | Proxy định tuyến thành công | Kiểm tra match route theo path và chuyển tiếp upstream | Route `path=/v1/api/demo`, `target=https://httpbin.org/get`; Bearer JWT hợp lệ; `GET /v1/api/demo` | HTTP 200; phản hồi từ upstream; header transform (nếu cấu hình) được áp dụng |
 | TC_07 | Lọc phương thức HTTP theo tuyến | Kiểm tra `allowedMethods` trên route | Route chỉ cho phép `GET`; gửi `POST` cùng path | HTTP 405 hoặc 403 (method not allowed); không gọi upstream |
 | TC_08 | Retry và đưa vào DLQ khi upstream lỗi | Kiểm tra pipeline retry và hàng đợi lỗi khi upstream trả 502/503 hoặc timeout | Route bật `queueOnFailure=1`, `retryMax>0`; upstream cố ý lỗi | Sau retry thất bại: bản ghi xuất hiện trong `gateway_proxy_queue`; operator xem/replay trên dashboard |
-| TC_09 | Ghi nhật ký giao dịch (transaction log) | Kiểm tra mỗi yêu cầu data plane được ghi log bất đồng bộ | Bất kỳ request HMAC hợp lệ (thành công hoặc thất bại) | Bản ghi mới trong `gateway_transaction_logs` gồm `requestId`, `method`, `path`, `status`, `durationMs`, `clientKeyId` |
+| TC_09 | Ghi nhật ký giao dịch (transaction log) | Kiểm tra mỗi yêu cầu data plane được ghi log bất đồng bộ | Bất kỳ request Bearer JWT hợp lệ (thành công hoặc thất bại) | Bản ghi mới trong `gateway_transaction_logs` gồm `requestId`, `method`, `path`, `status`, `durationMs`, `clientKeyId` |
 
 ### 4.1.3 Nhóm quản trị control plane và tích hợp mở rộng
 
@@ -49,9 +49,9 @@ Môi trường thử nghiệm: Ubuntu VPS / Docker Compose; PostgreSQL 16; Gatew
 
 | Mã kịch bản | Kết quả mong đợi | Kết quả thực tế | Trạng thái |
 |-------------|-------------------|-----------------|------------|
-| TC_01 | HTTP 200/404; không 401; có log giao dịch | Request HMAC hợp lệ nhận phản hồi upstream; `gateway_transaction_logs` có bản ghi tương ứng | **Đạt** |
-| TC_02 | HTTP 401; không forward upstream | Thiếu key / sai chữ ký đều trả 401 JSON đúng mã lỗi | **Đạt** |
-| TC_03 | Lần 2 HTTP 401 replay | `test_hmac_replay.py`: lần 1 thành công, lần 2 HTTP 401 `replay_detected` | **Đạt** |
+| TC_01 | HTTP 200/404; không 401; có log giao dịch | Request Bearer JWT hợp lệ nhận phản hồi upstream; `gateway_transaction_logs` có bản ghi tương ứng | **Đạt** |
+| TC_02 | HTTP 401; không forward upstream | Thiếu/sai/hết hạn token đều trả 401 JSON đúng mã lỗi | **Đạt** |
+| TC_03 | Token endpoint từ chối secret sai | `test_jwt_auth.py`: sai secret → 401; đúng → `access_token`; data plane chỉ Bearer | **Đạt** |
 | TC_04 | HTTP 429 khi vượt ngưỡng | Burst vượt limit trả 429 kèm `Retry-After` | **Đạt** |
 | TC_05 | HTTP 403 khi gọi route ngoài ACL | Client không trong ACL bị chặn trước upstream | **Đạt** |
 | TC_06 | Proxy thành công theo route | Path match đúng, upstream phản hồi 200 | **Đạt** |
@@ -78,7 +78,7 @@ Trong quá trình thử nghiệm, các trường hợp ngoại lệ (edge cases)
 | 2 | Tạo route với `path` rỗng hoặc không bắt đầu `/` | Validate trước khi ghi DB | HTTP 400; JSON mô tả trường lỗi; không insert |
 | 3 | Tạo route `target` không phải URL http/https | Validate schema URL | HTTP 400; không lưu cấu hình sai |
 | 4 | `timeoutSecs` hoặc `routeRateLimit` âm | Validate biên số | HTTP 400; thông báo out of range |
-| 5 | Timestamp HMAC lệch > 5 phút so với server | Từ chối replay/time skew | HTTP 401 `bad_timestamp` |
+| 5 | JWT hết hạn hoặc sai issuer | Verify JWT trước proxy | HTTP 401 `token_expired` / `invalid_token` |
 | 6 | Request body JSON admin API sai định dạng | Axum deserialize lỗi | HTTP 400/422; không thay đổi DB |
 | 7 | Tạo client key thiếu tên hoặc rate limit ngoài [0, 1_000_000] | Validate form/API | HTTP 400; field error rõ ràng trên UI |
 | 8 | Gọi API admin không cookie và không `X-API-Key` | Middleware auth | HTTP 401 unauthorized |
@@ -101,7 +101,7 @@ Trong quá trình thử nghiệm, các trường hợp ngoại lệ (edge cases)
 | 1 | Viewer truy cập `POST /api/routes` | `rbac_allow()` từ chối | HTTP 403; ghi audit failure (nếu có thao tác) |
 | 2 | Operator truy cập `GET /api/users` hoặc `PUT /api/settings` | RBAC chặn quản trị user/settings | HTTP 403 |
 | 3 | Operator/Viewer truy cập `/api/integrations/*` | Chỉ admin được tích hợp | HTTP 403 |
-| 4 | Client disabled gọi data plane | Kiểm tra `status=disabled` trước HMAC | HTTP 401/403; key disabled |
+| 4 | Client disabled gọi data plane | Kiểm tra `status=disabled` trước verify JWT | HTTP 401/403; key disabled |
 
 ### 4.3.4 Xử lý các trường hợp biên
 
@@ -118,4 +118,4 @@ Trong quá trình thử nghiệm, các trường hợp ngoại lệ (edge cases)
 
 ---
 
-*Tài liệu tham chiếu kiểm thử: `scripts/smoke-test.sh`, `scripts/test_hmac_replay.py`, `scripts/test-integrations.sh`, `web/src/lib/rbac.test.ts`, dashboard Proxy Try / Routes / Client Registry.*
+*Tài liệu tham chiếu kiểm thử: `scripts/smoke-test.sh`, `scripts/test_jwt_auth.py`, `scripts/test-integrations.sh`, `web/src/lib/rbac.test.ts`, dashboard Proxy Try / Routes / Client Registry.*
