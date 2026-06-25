@@ -119,9 +119,9 @@ function getStatusBadgeClass(status: number) {
   return 'bg-slate-500/10 text-slate-400 border-slate-500/20';
 }
 
-/** Grid 6 cột — header tách khỏi body, sticky ổn định (không dùng table thead). */
+/** Grid 6 cột — Loại · Sự kiện · Thời gian · Chi tiết · IP · Kết quả */
 const LOG_GRID =
-  'grid w-full min-w-0 grid-cols-[13%_10%_27%_22%_13%_15%] items-center';
+  'grid w-full min-w-0 grid-cols-[10%_27%_13%_22%_13%_15%] items-center';
 const LOG_CELL = 'px-4 sm:px-6 py-3 min-w-0';
 const LOG_HEAD =
   'text-[10px] uppercase text-muted-foreground font-bold whitespace-nowrap bg-slate-950';
@@ -129,9 +129,9 @@ const LOG_HEAD =
 function LogColumnHeader() {
   return (
     <div className={`${LOG_GRID} border-b border-slate-700/60 bg-slate-950`}>
-      <div className={`${LOG_CELL} ${LOG_HEAD}`}>Thời gian</div>
       <div className={`${LOG_CELL} ${LOG_HEAD}`}>Loại</div>
       <div className={`${LOG_CELL} ${LOG_HEAD}`}>Sự kiện</div>
+      <div className={`${LOG_CELL} ${LOG_HEAD}`}>Thời gian</div>
       <div className={`${LOG_CELL} ${LOG_HEAD} hidden sm:block`}>Chi tiết</div>
       <div className={`${LOG_CELL} ${LOG_HEAD} hidden sm:block`}>IP</div>
       <div className={`${LOG_CELL} ${LOG_HEAD}`}>Kết quả</div>
@@ -523,9 +523,6 @@ export function Logs() {
                     key={`t-${log.id}`}
                     className={`${LOG_GRID} border-b border-border/50 hover:bg-primary/5`}
                   >
-                    <div className={`${LOG_CELL} text-slate-400 font-mono text-xs whitespace-nowrap`}>
-                      {formatDbTimestamp(log.created_at)}
-                    </div>
                     <div className={LOG_CELL}>
                       <Badge className="bg-cyan-500/10 text-cyan-400 border-cyan-500/25 border text-[10px]">
                         Traffic
@@ -545,6 +542,9 @@ export function Logs() {
                       <p className="text-[10px] text-muted-foreground mt-1 font-mono">
                         {log.request_id}
                       </p>
+                    </div>
+                    <div className={`${LOG_CELL} text-slate-400 font-mono text-xs whitespace-nowrap`}>
+                      {formatDbTimestamp(log.created_at)}
                     </div>
                     <div className={`${LOG_CELL} hidden sm:block text-xs text-slate-400 min-w-0`}>
                       <p className="break-words">
@@ -615,9 +615,6 @@ export function Logs() {
                   key={`a-${log.id}`}
                   className={`${LOG_GRID} border-b border-border/50 hover:bg-primary/5`}
                 >
-                  <div className={`${LOG_CELL} text-slate-400 font-mono text-xs whitespace-nowrap`}>
-                    {formatDbTimestamp(log.created_at)}
-                  </div>
                   <div className={LOG_CELL}>
                     <Badge className="bg-violet-500/10 text-violet-400 border-violet-500/25 border text-[10px]">
                       Quản trị
@@ -626,6 +623,9 @@ export function Logs() {
                   <div className={LOG_CELL}>
                     <p className="font-mono text-xs text-primary">{log.action}</p>
                     <p className="text-xs text-slate-400 truncate max-w-[14rem]">{log.resource}</p>
+                  </div>
+                  <div className={`${LOG_CELL} text-slate-400 font-mono text-xs whitespace-nowrap`}>
+                    {formatDbTimestamp(log.created_at)}
                   </div>
                   <div className={`${LOG_CELL} hidden sm:block text-xs text-slate-400 min-w-0`}>
                     <p className="break-words">

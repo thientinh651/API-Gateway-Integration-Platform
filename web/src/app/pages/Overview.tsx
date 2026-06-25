@@ -27,6 +27,7 @@ import {
 import {
   Activity,
   AlertTriangle,
+  Info,
   Key,
   ListOrdered,
   RefreshCw,
@@ -38,8 +39,10 @@ import {
   ApiClientError,
   fetchDashboardStats,
   fetchGatewayRoutes,
+  countDlqByStatus,
   fetchProxyQueue,
   type DashboardStats,
+  type ProxyQueueItem,
 } from '../../lib/api';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import { canManageIntegrations } from '../../lib/rbac';
@@ -50,8 +53,11 @@ import { OverviewGuest } from './OverviewGuest';
 import { TechPageHeader } from '../components/tech/TechPageHeader';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
 
 const CHART_COLORS = ['#10b981', '#3b82f6', '#f97316', '#ef4444', '#a855f7', '#fb923c'];
+
+const SYNC_WORKER_CLIENT_NAME = 'avaso_pk_sync_worker';
 
 const AXIS_TICK = '#94a3b8';
 const GRID_STROKE = '#334155';
@@ -127,7 +133,7 @@ function OverviewAdmin() {
   const showIntegrations = canManageIntegrations(user);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [routes, setRoutes] = useState<GatewayRouteRow[]>([]);
-  const [proxyQueueLen, setProxyQueueLen] = useState(0);
+  const [proxyQueueItems, setProxyQueueItems] = useState<ProxyQueueItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -143,7 +149,7 @@ function OverviewAdmin() {
       ]);
       setStats(dash);
       setRoutes(routeRows);
-      setProxyQueueLen(queue.length);
+      setProxyQueueItems(queue);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setLoadError(msg);
@@ -227,14 +233,7 @@ function OverviewAdmin() {
     [stats],
   );
 
-  const integrationPieData = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const row of stats?.integrations ?? []) {
-      const label = INTEGRATION_STATUS_VI[row.status] ?? row.status;
-      map.set(label, (map.get(label) ?? 0) + 1);
-    }
-    return [...map.entries()].map(([name, count]) => ({ name, count }));
-  }, [stats]);
+  const dlqCounts = useMemo(() => countDlqByStatus(proxyQueueItems), [proxyQueueItems]);
 
   const successRate =
     traffic && traffic.total > 0 ? Math.round((traffic.success / traffic.total) * 100) : null;
@@ -295,24 +294,38 @@ function OverviewAdmin() {
           icon={<ListOrdered className="text-red-500" />}
           iconBg="bg-red-500/10"
           title="DLQ / Queue"
-          value={loading ? '…' : String((traffic?.queued ?? 0) + proxyQueueLen)}
+          value={loading ? '…' : String(dlqCounts.total || (traffic?.queued ?? 0))}
           badge={{
             text:
-              proxyQueueLen > 0
-                ? `${proxyQueueLen} chờ retry`
+              dlqCounts.total > 0
+                ? `${dlqCounts.pending} pending · ${dlqCounts.replayed} replayed`
                 : traffic?.queued
                   ? `${traffic.queued} queued 24h`
                   : 'Trống',
-            variant: proxyQueueLen > 0 || (traffic?.queued ?? 0) > 0 ? 'warning' : 'success',
+            variant: dlqCounts.pending > 0 || (traffic?.queued ?? 0) > 0 ? 'warning' : 'success',
           }}
         />
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <NavCard to="/logs?kind=traffic" className="p-4 bg-card/80 border-border" ariaLabel="Latency — xem log traffic">
-          <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
-            <Timer className="w-3.5 h-3.5" />
-            Latency TB
+        <NavCard to="/logs?kind=traffic" className="p-4 bg-card/80 border-border" ariaLabel="Latency gateway — xem log traffic">
+          <div className="flex items-center gap-1.5 text-muted-foreground text-xs uppercase tracking-wider mb-1">
+            <Timer className="w-3.5 h-3.5 shrink-0" />
+            <span>Latency gateway TB</span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="inline-flex text-muted-foreground/70 hover:text-muted-foreground"
+                  aria-label="Giải thích latency gateway"
+                >
+                  <Info className="w-3 h-3" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-[240px] text-xs">
+                Tính từ lúc nhận request đến khi trả response, bao gồm upstream.
+              </TooltipContent>
+            </Tooltip>
           </div>
           <p className="text-2xl font-bold text-white">
             {loading ? '…' : `${traffic?.avg_duration_ms ?? 0} ms`}
@@ -469,18 +482,35 @@ function OverviewAdmin() {
             </p>
           ) : (
             <ul className="space-y-2 text-xs">
-              {clientTrafficTop.map((c) => (
-                <li key={c.client_key_id} className="flex justify-between gap-2 text-slate-300">
-                  <Link
-                    to={`/logs?kind=traffic&client_key_id=${c.client_key_id}`}
-                    className="truncate hover:text-primary hover:underline"
-                    title={c.name}
-                  >
-                    {c.name}
-                  </Link>
-                  <span className="font-mono text-cyan-400 shrink-0">{c.total}</span>
-                </li>
-              ))}
+              {clientTrafficTop.map((c) => {
+                const isSyncWorker = c.name === SYNC_WORKER_CLIENT_NAME;
+                const pct =
+                  traffic && traffic.total > 0
+                    ? Math.round((c.total / traffic.total) * 100)
+                    : null;
+                return (
+                  <li key={c.client_key_id} className="flex justify-between gap-2 text-slate-300">
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <Link
+                        to={`/logs?kind=traffic&client_key_id=${c.client_key_id}`}
+                        className="truncate hover:text-primary hover:underline"
+                        title={c.name}
+                      >
+                        {c.name}
+                      </Link>
+                      {isSyncWorker ? (
+                        <Badge className="shrink-0 border border-violet-500/30 bg-violet-500/10 px-1.5 py-0 text-[10px] text-violet-300">
+                          Sync Worker
+                        </Badge>
+                      ) : null}
+                    </span>
+                    <span className="font-mono text-cyan-400 shrink-0">
+                      {c.total}
+                      {pct != null ? ` (${pct}%)` : ''}
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </NavCard>
@@ -615,32 +645,22 @@ function OverviewAdmin() {
               Tích hợp CRM — trạng thái
             </h3>
             <p className="text-xs text-muted-foreground mb-4">Salesforce / Zoho OAuth connection.</p>
-            {integrationPieData.length === 0 ? (
+            {(stats?.integrations ?? []).length === 0 ? (
               <p className="text-sm text-muted-foreground">Chưa cấu hình — bấm card để mở Tích hợp.</p>
-            ) : isMobile ? (
-              <MiniCountList rows={integrationPieData} />
             ) : (
-              <ChartContainer config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full">
-                <PieChart>
-                  <ChartTooltip content={<ChartTooltipContent nameKey="name" />} />
-                  <Pie
-                    data={integrationPieData}
-                    dataKey="count"
-                    nameKey="name"
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={55}
-                    outerRadius={90}
-                    paddingAngle={3}
-                    stroke="#0f172a"
-                    strokeWidth={2}
+              <div className="flex flex-wrap gap-3">
+                {(stats?.integrations ?? []).map((row) => (
+                  <div
+                    key={row.provider}
+                    className="flex items-center gap-2 rounded-lg border border-border bg-slate-900/40 px-3 py-2"
                   >
-                    {integrationPieData.map((_, i) => (
-                      <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-                    ))}
-                  </Pie>
-                </PieChart>
-              </ChartContainer>
+                    <span className="text-sm font-medium text-white">{row.label}</span>
+                    <Badge className={`${integrationStatusBadge(row.status)} border text-xs`}>
+                      {INTEGRATION_STATUS_VI[row.status] ?? row.status}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
             )}
           </NavCard>
         ) : null}
@@ -693,15 +713,19 @@ function OverviewAdmin() {
                 </div>
               ))}
               <p className="text-xs text-primary font-mono-tech">Quản lý tích hợp →</p>
-              {proxyQueueLen > 0 ? (
-                <p className="text-xs text-amber-300">DLQ: {proxyQueueLen} mục (xem Proxy Queue)</p>
+              {dlqCounts.total > 0 ? (
+                <p className="text-xs text-amber-300">
+                  DLQ: {dlqCounts.pending} pending · {dlqCounts.replayed} replayed →
+                </p>
               ) : null}
             </div>
           </NavCard>
-        ) : proxyQueueLen > 0 ? (
+        ) : dlqCounts.total > 0 ? (
           <NavCard to="/proxy-queue" className="rounded-2xl p-6 bg-card/80 border-border" ariaLabel="DLQ hàng đợi">
             <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">DLQ</h3>
-            <p className="text-sm text-amber-300">Hàng đợi ({proxyQueueLen}) →</p>
+            <p className="text-sm text-amber-300">
+              {dlqCounts.pending} pending · {dlqCounts.replayed} replayed →
+            </p>
           </NavCard>
         ) : null}
       </div>

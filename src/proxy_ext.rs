@@ -18,6 +18,10 @@ const RETRY_BACKOFF_MS: u64 = 150;
 const DLQ_WORKER_INTERVAL_SECS: u64 = 60;
 const DLQ_WORKER_BATCH: i64 = 10;
 const DLQ_WORKER_MAX_AUTO_ATTEMPTS: u32 = 5;
+
+pub const DLQ_STATUS_PENDING: &str = "pending";
+pub const DLQ_STATUS_REPLAYED: &str = "replayed";
+pub const DLQ_STATUS_FAILED_PERMANENT: &str = "failed_permanent";
 const DLQ_WORKER_DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -162,6 +166,8 @@ pub struct ProxyQueueItem {
     pub failure_reason: String,
     pub retry_attempts: u32,
     pub created_at_unix: u64,
+    pub status: String,
+    pub replayed_at: Option<String>,
 }
 
 mod base64_bytes {
@@ -190,6 +196,8 @@ type QueueRow = (
     String,
     i32,
     i64,
+    String,
+    Option<String>,
 );
 
 fn row_to_item(r: QueueRow) -> Option<ProxyQueueItem> {
@@ -207,8 +215,16 @@ fn row_to_item(r: QueueRow) -> Option<ProxyQueueItem> {
         failure_reason: r.8,
         retry_attempts: r.9.max(0) as u32,
         created_at_unix: r.10.max(0) as u64,
+        status: if r.11.is_empty() {
+            DLQ_STATUS_PENDING.into()
+        } else {
+            r.11
+        },
+        replayed_at: r.12,
     })
 }
+
+const QUEUE_SELECT: &str = "SELECT id, tenant_id, route_id, method, path, upstream_url, headers_json, body_b64, failure_reason, retry_attempts, created_at_unix, status, replayed_at::text";
 
 #[derive(Clone)]
 pub struct ProxyQueue {
@@ -224,8 +240,8 @@ impl ProxyQueue {
         let headers_json = serde_json::to_string(&item.headers).unwrap_or_else(|_| "{}".into());
         let body_b64 = STANDARD.encode(&item.body);
         if let Err(e) = sqlx::query(
-            "INSERT INTO gateway_proxy_queue (id, tenant_id, route_id, method, path, upstream_url, headers_json, body_b64, failure_reason, retry_attempts, created_at_unix)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+            "INSERT INTO gateway_proxy_queue (id, tenant_id, route_id, method, path, upstream_url, headers_json, body_b64, failure_reason, retry_attempts, created_at_unix, status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(&item.id)
         .bind(item.tenant_id)
@@ -238,6 +254,7 @@ impl ProxyQueue {
         .bind(&item.failure_reason)
         .bind(item.retry_attempts as i32)
         .bind(item.created_at_unix as i64)
+        .bind(DLQ_STATUS_PENDING)
         .execute(&self.pool)
         .await
         {
@@ -263,24 +280,36 @@ impl ProxyQueue {
     }
 
     pub async fn list(&self, tenant_id: i64) -> Vec<ProxyQueueItem> {
-        let rows = sqlx::query_as::<_, QueueRow>(
-            "SELECT id, tenant_id, route_id, method, path, upstream_url, headers_json, body_b64, failure_reason, retry_attempts, created_at_unix
-             FROM gateway_proxy_queue WHERE tenant_id = $1 ORDER BY created_at ASC",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
-        .await
-        .unwrap_or_default();
+        let sql = format!(
+            "{QUEUE_SELECT} FROM gateway_proxy_queue WHERE tenant_id = $1 ORDER BY created_at ASC"
+        );
+        let rows = sqlx::query_as::<_, QueueRow>(&sql)
+            .bind(tenant_id)
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
         rows.into_iter().filter_map(row_to_item).collect()
     }
 
+    pub async fn fetch_for_retry(&self, tenant_id: i64, id: &str) -> Option<ProxyQueueItem> {
+        let sql = format!(
+            "{QUEUE_SELECT} FROM gateway_proxy_queue WHERE tenant_id = $1 AND id = $2 AND status IN ('pending', 'failed_permanent')"
+        );
+        let row = sqlx::query_as::<_, QueueRow>(&sql)
+            .bind(tenant_id)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()?;
+        row_to_item(row)
+    }
+
     pub async fn take(&self, tenant_id: i64, id: &str) -> Option<ProxyQueueItem> {
-        let row = sqlx::query_as::<_, QueueRow>(
-            "DELETE FROM gateway_proxy_queue WHERE tenant_id = $1 AND id = $2
-             RETURNING id, tenant_id, route_id, method, path, upstream_url, headers_json, body_b64, failure_reason, retry_attempts, created_at_unix",
-        )
-        .bind(tenant_id)
-        .bind(id)
+        let sql = format!(
+            "DELETE FROM gateway_proxy_queue WHERE tenant_id = $1 AND id = $2 RETURNING id, tenant_id, route_id, method, path, upstream_url, headers_json, body_b64, failure_reason, retry_attempts, created_at_unix, status, replayed_at::text"
+        );
+        let row = sqlx::query_as::<_, QueueRow>(&sql)
         .fetch_optional(&self.pool)
         .await
         .ok()
@@ -311,26 +340,71 @@ impl ProxyQueue {
             .unwrap_or(0)
     }
 
-    /// Oldest items across tenants — for background DLQ worker.
+    /// Oldest pending items across tenants — for background DLQ worker.
     pub async fn list_oldest(&self, limit: i64) -> Vec<ProxyQueueItem> {
-        let rows = sqlx::query_as::<_, QueueRow>(
-            "SELECT id, tenant_id, route_id, method, path, upstream_url, headers_json, body_b64, failure_reason, retry_attempts, created_at_unix
-             FROM gateway_proxy_queue ORDER BY created_at ASC LIMIT $1",
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .unwrap_or_default();
+        let sql = format!(
+            "{QUEUE_SELECT} FROM gateway_proxy_queue WHERE status = 'pending' ORDER BY created_at ASC LIMIT $1"
+        );
+        let rows = sqlx::query_as::<_, QueueRow>(&sql)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
         rows.into_iter().filter_map(row_to_item).collect()
     }
 
     pub async fn update_attempts(&self, tenant_id: i64, id: &str, attempts: u32) -> bool {
         sqlx::query(
-            "UPDATE gateway_proxy_queue SET retry_attempts = $3 WHERE tenant_id = $1 AND id = $2",
+            "UPDATE gateway_proxy_queue SET retry_attempts = $3, status = 'pending' WHERE tenant_id = $1 AND id = $2",
         )
         .bind(tenant_id)
         .bind(id)
         .bind(attempts as i32)
+        .execute(&self.pool)
+        .await
+        .map(|r| r.rows_affected() > 0)
+        .unwrap_or(false)
+    }
+
+    pub async fn mark_replayed(&self, tenant_id: i64, id: &str) -> bool {
+        sqlx::query(
+            "UPDATE gateway_proxy_queue SET status = $3, replayed_at = NOW() WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant_id)
+        .bind(id)
+        .bind(DLQ_STATUS_REPLAYED)
+        .execute(&self.pool)
+        .await
+        .map(|r| r.rows_affected() > 0)
+        .unwrap_or(false)
+    }
+
+    pub async fn mark_failed_permanent(&self, tenant_id: i64, id: &str) -> bool {
+        sqlx::query(
+            "UPDATE gateway_proxy_queue SET status = $3 WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant_id)
+        .bind(id)
+        .bind(DLQ_STATUS_FAILED_PERMANENT)
+        .execute(&self.pool)
+        .await
+        .map(|r| r.rows_affected() > 0)
+        .unwrap_or(false)
+    }
+
+    pub async fn record_retry_failure(&self, tenant_id: i64, id: &str, attempts: u32) -> bool {
+        let status = if attempts >= DLQ_WORKER_MAX_AUTO_ATTEMPTS {
+            DLQ_STATUS_FAILED_PERMANENT
+        } else {
+            DLQ_STATUS_PENDING
+        };
+        sqlx::query(
+            "UPDATE gateway_proxy_queue SET retry_attempts = $3, status = $4 WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant_id)
+        .bind(id)
+        .bind(attempts as i32)
+        .bind(status)
         .execute(&self.pool)
         .await
         .map(|r| r.rows_affected() > 0)
@@ -466,6 +540,8 @@ pub async fn forward_with_policy(
                 failure_reason: last_reason.clone(),
                 retry_attempts: attempts,
                 created_at_unix: now_unix(),
+                status: DLQ_STATUS_PENDING.into(),
+                replayed_at: None,
             })
             .await;
         queued_id = Some(id);
@@ -545,17 +621,22 @@ pub fn spawn_dlq_replay_worker(pool: PgPool) {
             let items = queue.list_oldest(DLQ_WORKER_BATCH).await;
             for item in items {
                 if item.retry_attempts >= DLQ_WORKER_MAX_AUTO_ATTEMPTS {
+                    let _ = queue
+                        .mark_failed_permanent(item.tenant_id, &item.id)
+                        .await;
                     continue;
                 }
                 let timeout = route_timeout_secs(&pool, item.route_id).await;
                 match replay_queue_item(&http, &item, timeout).await {
                     Ok((status, _)) if status.is_success() => {
-                        let _ = queue.remove(item.tenant_id, &item.id).await;
+                        let _ = queue.mark_replayed(item.tenant_id, &item.id).await;
                         tracing::info!(queue_id = %item.id, "dlq_worker replay success");
                     }
                     Ok((status, _)) => {
                         let next = item.retry_attempts + 1;
-                        let _ = queue.update_attempts(item.tenant_id, &item.id, next).await;
+                        let _ = queue
+                            .record_retry_failure(item.tenant_id, &item.id, next)
+                            .await;
                         tracing::warn!(
                             queue_id = %item.id,
                             status = status.as_u16(),
@@ -565,7 +646,9 @@ pub fn spawn_dlq_replay_worker(pool: PgPool) {
                     }
                     Err(e) => {
                         let next = item.retry_attempts + 1;
-                        let _ = queue.update_attempts(item.tenant_id, &item.id, next).await;
+                        let _ = queue
+                            .record_retry_failure(item.tenant_id, &item.id, next)
+                            .await;
                         tracing::warn!(
                             queue_id = %item.id,
                             error = %e,

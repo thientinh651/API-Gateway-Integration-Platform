@@ -17,6 +17,7 @@ mod proxy_ext;
 mod rate_limit;
 mod route_match;
 mod session;
+mod sync_worker_gateway;
 mod transform;
 
 use admin_auth::{session_unavailable_response, write_audit, write_audit_event, write_audit_failure, AdminCtx};
@@ -26,6 +27,7 @@ use session::{SessionRecord, SessionStore, SessionStoreStatus};
 use axum::{
     body::Body,
     extract::{Extension, Form, Json, Path, Query},
+    extract::connect_info::ConnectInfo,
     http::{
         header::{AUTHORIZATION, COOKIE, CONTENT_TYPE, RETRY_AFTER, SET_COOKIE},
         HeaderMap, HeaderValue, Method, Request, StatusCode, Uri,
@@ -261,7 +263,7 @@ struct UpdateSettingsBody {
 }
 
 #[derive(Clone)]
-struct AppState {
+pub(crate) struct AppState {
     pool: PgPool,
     config: Arc<RwLock<AppConfig>>,
     http: reqwest::Client,
@@ -272,6 +274,8 @@ struct AppState {
     oauth_pending: Arc<DashMap<String, OAuthPending>>,
     proxy_queue: proxy_ext::ProxyQueue,
     gateway_metrics: Arc<metrics::GatewayMetrics>,
+    /// JWT loopback cho integration sync worker (`avaso_pk_sync_worker`).
+    worker_jwt: Arc<RwLock<sync_worker_gateway::WorkerJwtState>>,
 }
 
 static STATE: OnceLock<AppState> = OnceLock::new();
@@ -982,13 +986,21 @@ async fn main() {
         .await
         .expect("load config from database");
 
+    let worker_jwt_state = sync_worker_gateway::init_worker_jwt_state(&pool, 1)
+        .await
+        .expect("init sync worker JWT for gateway loopback");
+
+    let initial = build_app_config(&pool)
+        .await
+        .expect("reload config after sync worker client ensure");
+
     let session_store = session::init_session_store().await;
     let rate_limiter = Arc::new(rate_limit::RateLimiter::new(session_store.redis()));
     let proxy_queue = proxy_ext::ProxyQueue::new(pool.clone());
 
-    integrations::spawn_integration_sync_worker(pool.clone());
     proxy_ext::spawn_dlq_replay_worker(pool.clone());
 
+    let pool_worker = pool.clone();
     let state = AppState {
         pool,
         config: Arc::new(RwLock::new(initial)),
@@ -998,8 +1010,11 @@ async fn main() {
         oauth_pending: Arc::new(DashMap::new()),
         proxy_queue,
         gateway_metrics: Arc::new(metrics::GatewayMetrics::new()),
+        worker_jwt: Arc::new(RwLock::new(worker_jwt_state)),
     };
     let _ = STATE.set(state);
+
+    integrations::spawn_integration_sync_worker(pool_worker);
 
     let api_protected = Router::new()
         .route("/proxy", get(proxy_handler))
@@ -1168,6 +1183,7 @@ async fn main() {
 
     let app = Router::new()
         .layer(NormalizePathLayer::trim_trailing_slash())
+        .layer(middleware::from_fn(client_ip_middleware))
         .layer(middleware::from_fn(instance_label_middleware))
         .layer(cors)
         .route("/oauth/token", post(oauth_token_handler))
@@ -1323,6 +1339,17 @@ fn gateway_instance_name() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+async fn client_ip_middleware(mut req: Request<Body>, next: Next) -> Result<Response, Response> {
+    let peer = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0);
+    let ip = admin_auth::resolve_client_ip(req.headers(), peer);
+    req.extensions_mut()
+        .insert(admin_auth::ResolvedClientIp(ip));
+    Ok(next.run(req).await)
+}
+
 async fn instance_label_middleware(req: Request<Body>, next: Next) -> Result<Response, Response> {
     let mut res = next.run(req).await;
     if let Some(name) = gateway_instance_name() {
@@ -1338,9 +1365,12 @@ async fn instance_label_middleware(req: Request<Body>, next: Next) -> Result<Res
 
 async fn admin_auth_middleware(mut req: Request<Body>, next: Next) -> Result<Response, Response> {
     let path = req.uri().path().to_string();
-    let ip = admin_auth::client_ip(req.headers());
+    let ip = admin_auth::client_ip_from_extensions(req.headers(), req.extensions());
     match resolve_admin_ctx(req.headers()).await {
-        Ok(ctx) => {
+        Ok(mut ctx) => {
+            if ctx.client_ip.is_none() {
+                ctx.client_ip = ip.clone();
+            }
             req.extensions_mut().insert(ctx);
             Ok(next.run(req).await)
         }
@@ -1386,7 +1416,7 @@ async fn rbac_middleware(req: Request<Body>, next: Next) -> Result<Response, Res
                 &ctx,
                 "rbac_denied",
                 &resource,
-                admin_auth::client_ip(req.headers()).as_deref(),
+                ctx.client_ip.as_deref(),
                 Some("insufficient_permissions"),
             )
             .await;
@@ -1404,10 +1434,11 @@ struct LoginBody {
 
 async fn establish_admin_session(
     headers: &HeaderMap,
+    resolved_ip: Option<String>,
     admin: &db::AdminUserRow,
     audit_action: &str,
 ) -> Response {
-    let ip = admin_auth::client_ip(headers);
+    let ip = resolved_ip.or_else(|| admin_auth::client_ip(headers));
     let Some(st) = STATE.get() else {
         return json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1417,7 +1448,8 @@ async fn establish_admin_session(
     };
 
     if admin.is_active == 0 {
-        let ctx = AdminCtx::from_user(admin);
+        let mut ctx = AdminCtx::from_user(admin);
+        ctx.client_ip = ip.clone();
         write_audit_failure(
             &st.pool,
             &ctx,
@@ -1435,7 +1467,8 @@ async fn establish_admin_session(
     }
 
     let username = admin.username.clone();
-    let ctx = AdminCtx::from_user(admin);
+    let mut ctx = AdminCtx::from_user(admin);
+    ctx.client_ip = ip.clone();
     let sid = uuid::Uuid::new_v4().to_string();
     let record = SessionRecord {
         user_id: ctx.user_id,
@@ -1651,10 +1684,14 @@ async fn oauth_consent_handler(
     oauth_handlers::oauth_consent_post(&oauth_handler_state(st), form, headers).await
 }
 
-async fn admin_login(headers: HeaderMap, Json(body): Json<LoginBody>) -> impl IntoResponse {
+async fn admin_login(
+    Extension(admin_auth::ResolvedClientIp(resolved_ip)): Extension<admin_auth::ResolvedClientIp>,
+    headers: HeaderMap,
+    Json(body): Json<LoginBody>,
+) -> impl IntoResponse {
     let user = body.username.trim();
     let pass = body.password.as_str();
-    let ip = admin_auth::client_ip(&headers);
+    let ip = resolved_ip.clone();
     let mut fields = serde_json::Map::new();
     if user.is_empty() {
         fields.insert(
@@ -1759,7 +1796,7 @@ async fn admin_login(headers: HeaderMap, Json(body): Json<LoginBody>) -> impl In
         );
     }
 
-    establish_admin_session(&headers, &admin, "login").await
+    establish_admin_session(&headers, ip, &admin, "login").await
 }
 
 #[derive(Debug, Deserialize)]
@@ -1769,8 +1806,12 @@ struct RegisterViewerBody {
     email: String,
 }
 
-async fn api_register_viewer(headers: HeaderMap, Json(body): Json<RegisterViewerBody>) -> impl IntoResponse {
-    let ip = admin_auth::client_ip(&headers);
+async fn api_register_viewer(
+    Extension(admin_auth::ResolvedClientIp(resolved_ip)): Extension<admin_auth::ResolvedClientIp>,
+    headers: HeaderMap,
+    Json(body): Json<RegisterViewerBody>,
+) -> impl IntoResponse {
+    let ip = resolved_ip.clone();
     if !admin_auth::viewer_registration_enabled() {
         return json_error(
             StatusCode::FORBIDDEN,
@@ -1914,7 +1955,7 @@ async fn api_register_viewer(headers: HeaderMap, Json(body): Json<RegisterViewer
             .await;
             match db::fetch_admin_user_by_id(&st.pool, id, tenant_id).await {
                 Ok(Some(row)) => {
-                    let mut res = establish_admin_session(&headers, &row, "register").await;
+                    let mut res = establish_admin_session(&headers, ip.clone(), &row, "register").await;
                     if res.status() == StatusCode::OK {
                         *res.status_mut() = StatusCode::CREATED;
                     }
@@ -5038,10 +5079,10 @@ async fn api_retry_proxy_queue(
         )
             .into_response();
     };
-    let Some(item) = st.proxy_queue.take(ctx.tenant_id, &id).await else {
+    let Some(item) = st.proxy_queue.fetch_for_retry(ctx.tenant_id, &id).await else {
         return (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "not_found", "message": "Queue item không tồn tại" })),
+            Json(serde_json::json!({ "error": "not_found", "message": "Queue item không tồn tại hoặc đã replay" })),
         )
             .into_response();
     };
@@ -5057,7 +5098,8 @@ async fn api_retry_proxy_queue(
     };
     let timeout = route.timeout_secs.max(1) as u64;
     match proxy_ext::replay_queue_item(&st.http, &item, timeout).await {
-        Ok((status, body)) => {
+        Ok((status, body)) if status.is_success() => {
+            st.proxy_queue.mark_replayed(ctx.tenant_id, &id).await;
             write_audit(
                 &st.pool,
                 &ctx,
@@ -5078,8 +5120,36 @@ async fn api_retry_proxy_queue(
             )
                 .into_response()
         }
+        Ok((status, body)) => {
+            let next = item.retry_attempts + 1;
+            st.proxy_queue
+                .record_retry_failure(ctx.tenant_id, &id, next)
+                .await;
+            write_audit(
+                &st.pool,
+                &ctx,
+                "proxy_queue_retry",
+                &item.path,
+                "failure",
+                None,
+                Some(&format!("status={}", status.as_u16())),
+            )
+            .await;
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "error": "retry_failed",
+                    "message": format!("upstream HTTP {}", status.as_u16()),
+                    "body_preview": String::from_utf8_lossy(&body[..body.len().min(500)]),
+                })),
+            )
+                .into_response()
+        }
         Err(e) => {
-            st.proxy_queue.push(item).await;
+            let next = item.retry_attempts + 1;
+            st.proxy_queue
+                .record_retry_failure(ctx.tenant_id, &id, next)
+                .await;
             (
                 StatusCode::BAD_GATEWAY,
                 Json(serde_json::json!({ "error": "retry_failed", "message": e })),
@@ -5289,7 +5359,7 @@ async fn audit_admin_denied(ctx: &AdminCtx, resource: &str) -> Response {
             ctx,
             "admin_only",
             resource,
-            None,
+            ctx.client_ip.as_deref(),
             Some("forbidden"),
         )
         .await;
@@ -5708,7 +5778,7 @@ async fn handle_data_plane_request(
     let method = req.method().as_str().to_string();
     let bearer = jwt_auth::bearer_from_headers(req.headers()).unwrap_or_default();
     let (parts, body) = req.into_parts();
-    let client_ip = admin_auth::client_ip(&parts.headers);
+    let client_ip = admin_auth::client_ip_from_extensions(&parts.headers, &parts.extensions);
     let body_bytes = match axum::body::to_bytes(body, MAX_DATA_PLANE_BODY).await {
         Ok(b) => b,
         Err(_) => {
@@ -6021,7 +6091,7 @@ async fn do_proxy(
 
     let cfg = state.config.read().await.clone();
     let subject = verified.subject.clone();
-    let client_ip = admin_auth::client_ip(&parts.headers);
+    let client_ip = admin_auth::client_ip_from_extensions(&parts.headers, &parts.extensions);
 
     let body_bytes = axum::body::to_bytes(body, MAX_DATA_PLANE_BODY)
         .await

@@ -16,8 +16,35 @@ import {
 import { toastApiError } from '../../lib/apiClientError';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import { canMutateProxyQueue } from '../../lib/rbac';
-import { formatUnixTimestamp } from '../../lib/formatDbTimestamp';
+import { formatUnixTimestamp, formatDbTimestamp } from '../../lib/formatDbTimestamp';
 import { AdminOnly } from '../components/auth/AdminOnly';
+
+const queueCheckboxClass =
+  'size-4 border-slate-600/45 bg-slate-900/60 shadow-none hover:border-slate-500/70 data-[state=checked]:bg-primary/85 data-[state=checked]:border-primary/50';
+
+function dlqStatusBadge(status: string) {
+  switch (status) {
+    case 'replayed':
+      return {
+        label: 'replayed',
+        className: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30',
+      };
+    case 'failed_permanent':
+      return {
+        label: 'failed',
+        className: 'bg-red-500/10 text-red-300 border-red-500/30',
+      };
+    default:
+      return {
+        label: 'pending',
+        className: 'bg-amber-500/10 text-amber-300 border-amber-500/30',
+      };
+  }
+}
+
+function canRetryDlq(status: string) {
+  return status === 'pending' || status === 'failed_permanent';
+}
 
 function ProxyQueueAdmin() {
   const { user } = useAdminAuth();
@@ -97,10 +124,10 @@ function ProxyQueueAdmin() {
         </Button>
       </div>
 
-      <Card className="rounded-2xl overflow-hidden bg-card/80 border-border">
+      <Card className="rounded-2xl overflow-hidden bg-card/80 border border-border/70 ring-1 ring-white/5">
         {canMutate ? (
           <div
-            className={`px-4 sm:px-6 border-b border-border bg-slate-950/50 flex flex-wrap items-center gap-2 min-h-[52px] transition-opacity ${
+            className={`px-4 sm:px-6 border-b border-border/50 bg-slate-950/40 flex flex-wrap items-center gap-2 min-h-[52px] transition-opacity ${
               someSelected ? 'opacity-100' : 'opacity-0 pointer-events-none'
             }`}
             aria-hidden={!someSelected}
@@ -132,13 +159,14 @@ function ProxyQueueAdmin() {
           </div>
         ) : null}
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-slate-900/50 text-[10px] uppercase text-muted-foreground font-bold">
+          <table className="w-full text-left text-sm border-collapse">
+            <thead className="bg-slate-900/60 text-[10px] uppercase text-muted-foreground font-bold border-b border-border/50">
               <tr>
                 {canMutate ? (
-                  <th className="px-3 py-3 w-10">
+                  <th className="px-3 py-3 w-11 border-r border-border/35 bg-slate-950/30">
                     <Checkbox
                       aria-label="Chọn tất cả"
+                      className={queueCheckboxClass}
                       checked={allSelected ? true : someSelected ? 'indeterminate' : false}
                       onCheckedChange={() => toggleAll()}
                       disabled={loading || items.length === 0 || bulkBusy}
@@ -156,12 +184,20 @@ function ProxyQueueAdmin() {
               </tr>
             </thead>
             <tbody>
-              {items.map((item) => (
-                <tr key={item.id} className="border-t border-border/50 hover:bg-primary/5">
+              {items.map((item) => {
+                const isSelected = selected.has(item.id);
+                return (
+                <tr
+                  key={item.id}
+                  className={`border-t border-border/40 hover:bg-primary/5 ${
+                    isSelected ? 'bg-primary/[0.07] ring-1 ring-inset ring-primary/15' : ''
+                  }`}
+                >
                   {canMutate ? (
-                    <td className="px-3 py-3 w-10 align-middle">
+                    <td className="px-3 py-3 w-11 align-middle border-r border-border/30 bg-slate-950/20">
                       <Checkbox
-                        checked={selected.has(item.id)}
+                        className={queueCheckboxClass}
+                        checked={isSelected}
                         onCheckedChange={() => toggleOne(item.id)}
                         aria-label={`Chọn ${item.method} ${item.path}`}
                         disabled={bulkBusy || busyId === item.id}
@@ -173,9 +209,21 @@ function ProxyQueueAdmin() {
                     {formatUnixTimestamp(item.created_at_unix)}
                   </td>
                   <td className="px-4 py-3">
-                    <Badge className="bg-amber-500/10 text-amber-300 border-amber-500/30 border text-[10px]">
-                      pending
-                    </Badge>
+                    {(() => {
+                      const badge = dlqStatusBadge(item.status);
+                      return (
+                        <div className="space-y-0.5">
+                          <Badge className={`${badge.className} border text-[10px]`}>
+                            {badge.label}
+                          </Badge>
+                          {item.status === 'replayed' && item.replayed_at ? (
+                            <p className="text-[10px] text-slate-500 font-mono">
+                              {formatDbTimestamp(item.replayed_at)}
+                            </p>
+                          ) : null}
+                        </div>
+                      );
+                    })()}
                   </td>
                   <td className="px-4 py-3">
                     <Badge variant="outline" className="font-mono">{item.method}</Badge>
@@ -197,7 +245,8 @@ function ProxyQueueAdmin() {
                           size="sm"
                           variant="outline"
                           className="border-border"
-                          disabled={busyId === item.id || bulkBusy}
+                          disabled={busyId === item.id || bulkBusy || !canRetryDlq(item.status)}
+                          title={!canRetryDlq(item.status) ? 'Đã replay — không retry lại' : undefined}
                           onClick={async () => {
                             setBusyId(item.id);
                             try {
@@ -255,7 +304,8 @@ function ProxyQueueAdmin() {
                     )}
                   </td>
                 </tr>
-              ))}
+              );
+              })}
               {!loading && items.length === 0 && (
                 <tr>
                   <td colSpan={colSpan} className="px-4 py-8 text-center text-muted-foreground text-sm max-w-lg mx-auto">

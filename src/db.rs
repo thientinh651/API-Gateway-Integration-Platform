@@ -1808,6 +1808,88 @@ pub fn random_secret_key() -> String {
 }
 
 /// OAuth2 client_id (public) + client_secret (encrypted at rest).
+pub const SYNC_WORKER_API_KEY: &str = "avaso_pk_sync_worker";
+
+/// OAuth client cố định cho sync worker loopback — rate limit cao, empty ACL (= mọi data-plane path).
+pub async fn ensure_sync_worker_client_key(
+    pool: &PgPool,
+    tenant_id: i64,
+) -> Result<OAuthClientKey, sqlx::Error> {
+    let rate_limit = std::env::var("SYNC_WORKER_RATE_LIMIT_PER_MIN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(10_000);
+
+    type Row = (i64, String, String, i64, i32, i32);
+    if let Some((id, api_key, secret_enc, tid, _rl, tv)) = sqlx::query_as::<_, Row>(
+        "SELECT id, api_key, secret_encrypted, tenant_id, rate_limit_per_min, COALESCE(token_version, 0)
+         FROM gateway_client_keys WHERE api_key = $1 AND tenant_id = $2",
+    )
+    .bind(SYNC_WORKER_API_KEY)
+    .bind(tenant_id)
+    .fetch_optional(pool)
+    .await?
+    {
+        let secret = crypto::decrypt_secret(&secret_enc).map_err(|e| {
+            sqlx::Error::Configuration(format!("decrypt sync worker secret: {e}").into())
+        })?;
+        sqlx::query(
+            "UPDATE gateway_client_keys
+             SET name = $1, rate_limit_per_min = $2, status = 'active', integration_type = 'salesforce'
+             WHERE id = $3",
+        )
+        .bind("sync-worker")
+        .bind(rate_limit)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        return Ok(OAuthClientKey {
+            id,
+            client_id: api_key,
+            secret,
+            tenant_id: tid,
+            rate_limit_per_min: rate_limit,
+            allowed_route_ids: vec![],
+            token_version: tv,
+        });
+    }
+
+    let owner_user_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM dashboard_users WHERE is_active = 1 ORDER BY id LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or(1);
+
+    let secret = random_secret_key();
+    let id = insert_oauth_client(
+        pool,
+        "sync-worker",
+        SYNC_WORKER_API_KEY,
+        &secret,
+        tenant_id,
+        "salesforce",
+        owner_user_id,
+        rate_limit,
+    )
+    .await?;
+    tracing::info!(
+        client_id = SYNC_WORKER_API_KEY,
+        rate_limit_per_min = rate_limit,
+        "created sync worker OAuth client for gateway loopback"
+    );
+    Ok(OAuthClientKey {
+        id,
+        client_id: SYNC_WORKER_API_KEY.into(),
+        secret,
+        tenant_id,
+        rate_limit_per_min: rate_limit,
+        allowed_route_ids: vec![],
+        token_version: 0,
+    })
+}
+
 pub async fn insert_oauth_client(
     pool: &PgPool,
     name: &str,

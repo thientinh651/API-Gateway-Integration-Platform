@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Tạo Client API Key loại salesforce (data plane /v1/api/sf/* + /v1/api/zoho/*).
+# Sync worker dùng client cố định avaso_pk_sync_worker — gateway tự tạo lúc startup.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

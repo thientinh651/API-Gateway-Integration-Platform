@@ -164,7 +164,7 @@ fn zoho_projects_api_base(accounts_url: &str) -> String {
     }
 }
 
-fn compact_zoho_api_error(status: reqwest::StatusCode, body: &str) -> String {
+pub(crate) fn compact_zoho_api_error(status: reqwest::StatusCode, body: &str) -> String {
     if body.trim_start().starts_with('<') {
         if let Some(start) = body.find("crmErrorPgErrText2") {
             if let Some(p) = body[start..].find('>') {
@@ -557,6 +557,7 @@ pub async fn api_salesforce_callback(
         tenant_id: pending.tenant_id,
         role: pending.role.clone(),
         via_api_key: false,
+        client_ip: crate::admin_auth::client_ip(&headers),
     };
     write_audit(
         &st.pool,
@@ -564,7 +565,7 @@ pub async fn api_salesforce_callback(
         "integration.connect",
         SF_PROVIDER,
         "success",
-        crate::admin_auth::client_ip(&headers).as_deref(),
+        None,
         Some(&token.instance_url),
     )
     .await;
@@ -1282,7 +1283,7 @@ pub async fn sync_salesforce_snapshots(pool: &PgPool, tenant_id: i64) -> Result<
     ensure_integration_connected(pool, tenant_id, SF_PROVIDER).await?;
     let opp_soql = sf_opportunity_soql();
     let opp_q = urlencoding::encode(&opp_soql);
-    let (opp_raw, _) = sf_get_with_refresh(pool, tenant_id, &format!("/query?q={opp_q}")).await?;
+    let opp_raw = crate::sync_worker_gateway::sf_get_via_gateway(&format!("/query?q={opp_q}")).await?;
     let opp_records = opp_raw
         .get("records")
         .and_then(|v| v.as_array())
@@ -1294,7 +1295,7 @@ pub async fn sync_salesforce_snapshots(pool: &PgPool, tenant_id: i64) -> Result<
     let acc_q = urlencoding::encode(
         "SELECT Id,Name,Industry,CreatedDate,LastModifiedDate FROM Account LIMIT 200",
     );
-    let (acc_raw, _) = sf_get_with_refresh(pool, tenant_id, &format!("/query?q={acc_q}")).await?;
+    let acc_raw = crate::sync_worker_gateway::sf_get_via_gateway(&format!("/query?q={acc_q}")).await?;
     let acc_records = acc_raw
         .get("records")
         .and_then(|v| v.as_array())
@@ -1306,8 +1307,8 @@ pub async fn sync_salesforce_snapshots(pool: &PgPool, tenant_id: i64) -> Result<
     let contact_q = urlencoding::encode(
         "SELECT Id,Name,Email,AccountId,CreatedDate,LastModifiedDate FROM Contact LIMIT 200",
     );
-    let (contact_raw, _) =
-        sf_get_with_refresh(pool, tenant_id, &format!("/query?q={contact_q}")).await?;
+    let contact_raw =
+        crate::sync_worker_gateway::sf_get_via_gateway(&format!("/query?q={contact_q}")).await?;
     let contact_records = contact_raw
         .get("records")
         .and_then(|v| v.as_array())
@@ -1335,10 +1336,13 @@ pub async fn sync_zoho_snapshots(pool: &PgPool, tenant_id: i64) -> Result<serde_
         reject_integration_demo_token(token.demo)?;
     }
     ensure_integration_connected(pool, tenant_id, ZOHO_PROVIDER).await?;
-    let portal_id = ensure_zoho_portal_id(pool, tenant_id).await?;
+    let portal_id = ensure_zoho_portal_id_sync(pool, tenant_id).await?;
 
-    let (projects_raw, _) =
-        zoho_get_with_refresh(pool, tenant_id, &format!("/api/v3/portal/{portal_id}/projects")).await?;
+    let projects_raw = crate::sync_worker_gateway::zoho_get_via_gateway(
+        &format!("/api/v3/portal/{portal_id}/projects"),
+        None,
+    )
+    .await?;
     let project_items = extract_zoho_array(&projects_raw, &["projects"]);
     let projects_mapped = map_zoho_projects(&project_items);
     let project_count =
@@ -1348,10 +1352,9 @@ pub async fn sync_zoho_snapshots(pool: &PgPool, tenant_id: i64) -> Result<serde_
     if let Some(first) = project_items.first() {
         let project_id = zoho_id_str(first);
         if !project_id.is_empty() {
-            let (tasks_raw, _) = zoho_get_with_refresh(
-                pool,
-                tenant_id,
+            let tasks_raw = crate::sync_worker_gateway::zoho_get_via_gateway(
                 &format!("/api/v3/portal/{portal_id}/projects/{project_id}/tasks"),
+                None,
             )
             .await?;
             let task_items = extract_zoho_array(&tasks_raw, &["tasks"]);
@@ -1796,6 +1799,7 @@ pub async fn api_zoho_callback(
         tenant_id: pending.tenant_id,
         role: pending.role.clone(),
         via_api_key: false,
+        client_ip: crate::admin_auth::client_ip(&headers),
     };
     write_audit(
         &st.pool,
@@ -1803,7 +1807,7 @@ pub async fn api_zoho_callback(
         "integration.connect",
         ZOHO_PROVIDER,
         "success",
-        crate::admin_auth::client_ip(&headers).as_deref(),
+        None,
         Some(token.api_domain.as_str()),
     )
     .await;
@@ -1849,6 +1853,21 @@ async fn ensure_zoho_portal_id(pool: &PgPool, tenant_id: i64) -> Result<String, 
     }
     let (portals, refreshed) = zoho_get_with_refresh(pool, tenant_id, "/api/v3/portals").await?;
     token = refreshed;
+    let portal_id = extract_first_zoho_portal_id(&portals)
+        .ok_or_else(|| "Không tìm thấy portal Zoho Projects trong tài khoản".to_string())?;
+    token.portal_id = Some(portal_id.clone());
+    persist_zoho_token(pool, tenant_id, &token).await?;
+    Ok(portal_id)
+}
+
+/// Portal id cho sync/push — list portals qua gateway loopback.
+async fn ensure_zoho_portal_id_sync(pool: &PgPool, tenant_id: i64) -> Result<String, String> {
+    let mut token = load_zoho_token(pool, tenant_id).await?;
+    if let Some(pid) = token.portal_id.as_ref().filter(|s| !s.is_empty()) {
+        return Ok(pid.clone());
+    }
+    let portals =
+        crate::sync_worker_gateway::zoho_get_via_gateway("/api/v3/portals", None).await?;
     let portal_id = extract_first_zoho_portal_id(&portals)
         .ok_or_else(|| "Không tìm thấy portal Zoho Projects trong tài khoản".to_string())?;
     token.portal_id = Some(portal_id.clone());
@@ -3362,22 +3381,8 @@ async fn zoho_post_json(
     path: &str,
     body: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let payload = serde_json::to_vec(body).map_err(|e| format!("serialize: {e}"))?;
-    let (status, bytes, _) = zoho_request_raw_with_refresh(
-        pool,
-        tenant_id,
-        "POST",
-        path,
-        None,
-        Some(&payload),
-        Some("application/json"),
-    )
-    .await?;
-    let text = String::from_utf8_lossy(&bytes).to_string();
-    if !status.is_success() {
-        return Err(compact_zoho_api_error(status, &text));
-    }
-    serde_json::from_str(&text).map_err(|e| format!("json: {e} — body: {text}"))
+    let _ = (pool, tenant_id);
+    crate::sync_worker_gateway::zoho_post_via_gateway(path, body).await
 }
 
 async fn zoho_put_json(
@@ -3386,25 +3391,8 @@ async fn zoho_put_json(
     path: &str,
     body: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let payload = serde_json::to_vec(body).map_err(|e| format!("serialize: {e}"))?;
-    let (status, bytes, _) = zoho_request_raw_with_refresh(
-        pool,
-        tenant_id,
-        "PUT",
-        path,
-        None,
-        Some(&payload),
-        Some("application/json"),
-    )
-    .await?;
-    let text = String::from_utf8_lossy(&bytes).to_string();
-    if !status.is_success() {
-        return Err(compact_zoho_api_error(status, &text));
-    }
-    if text.trim().is_empty() {
-        return Ok(serde_json::json!({}));
-    }
-    serde_json::from_str(&text).map_err(|e| format!("json: {e} — body: {text}"))
+    let _ = (pool, tenant_id);
+    crate::sync_worker_gateway::zoho_put_via_gateway(path, body).await
 }
 
 async fn zoho_post_json_with_retry(
@@ -3459,8 +3447,12 @@ async fn list_zoho_project_names(
     tenant_id: i64,
     portal_id: &str,
 ) -> Result<Vec<(String, String)>, String> {
-    let (raw, _) =
-        zoho_get_with_refresh(pool, tenant_id, &format!("/api/v3/portal/{portal_id}/projects")).await?;
+    let _ = (pool, tenant_id);
+    let raw = crate::sync_worker_gateway::zoho_get_via_gateway(
+        &format!("/api/v3/portal/{portal_id}/projects"),
+        None,
+    )
+    .await?;
     let items = extract_zoho_array(&raw, &["projects"]);
     Ok(items
         .iter()
@@ -3843,7 +3835,7 @@ pub async fn push_salesforce_to_zoho(
         }));
     }
 
-    let portal_id = ensure_zoho_portal_id(pool, tenant_id).await?;
+    let portal_id = ensure_zoho_portal_id_sync(pool, tenant_id).await?;
 
     let existing = list_zoho_project_names(pool, tenant_id, &portal_id).await?;
     let mut created = 0_i64;

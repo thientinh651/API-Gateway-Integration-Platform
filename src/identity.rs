@@ -195,8 +195,15 @@ pub fn issue_client_token(client: &OAuthClientKey) -> Result<TokenResponse, Stri
 }
 
 pub fn issue_client_token_with_version(client: &OAuthClientKey) -> Result<IssuedToken, String> {
+    issue_client_token_with_expires_secs(client, jwt_expires_secs())
+}
+
+pub fn issue_client_token_with_expires_secs(
+    client: &OAuthClientKey,
+    expires_secs: u64,
+) -> Result<IssuedToken, String> {
     let now = now_unix();
-    let exp = now + jwt_expires_secs() as usize;
+    let exp = now + expires_secs as usize;
     let claims = GatewayClaims {
         sub: format!("client:{}", client.client_id),
         iss: jwt_issuer(),
@@ -213,9 +220,9 @@ pub fn issue_client_token_with_version(client: &OAuthClientKey) -> Result<Issued
     let access_token = encode_claims(&claims)?;
     Ok(IssuedToken {
         response: TokenResponse {
-            access_token,
+            access_token: access_token.clone(),
             token_type: TOKEN_TYPE_BEARER,
-            expires_in: jwt_expires_secs(),
+            expires_in: expires_secs,
         },
         claims,
         grant_type: "client_credentials",

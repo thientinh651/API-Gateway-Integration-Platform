@@ -1,11 +1,16 @@
 //! Admin session context, RBAC, tenant isolation, and audit helpers.
 
 use axum::http::{HeaderMap, Method, StatusCode};
+use std::net::SocketAddr;
 use sqlx::PgPool;
 
 use crate::db::{self, AdminUserRow};
 use crate::json_error;
 use crate::session::{self, SessionError, SessionStore};
+
+/// Resolved client IP for current request (set by middleware).
+#[derive(Clone, Debug)]
+pub struct ResolvedClientIp(pub Option<String>);
 
 #[derive(Clone, Debug)]
 pub struct AdminCtx {
@@ -15,6 +20,7 @@ pub struct AdminCtx {
     pub tenant_id: i64,
     pub role: String,
     pub via_api_key: bool,
+    pub client_ip: Option<String>,
 }
 
 impl AdminCtx {
@@ -27,6 +33,7 @@ impl AdminCtx {
             tenant_id: home,
             role: row.role.clone(),
             via_api_key: false,
+            client_ip: None,
         }
     }
 
@@ -51,6 +58,7 @@ impl AdminCtx {
             tenant_id: 1,
             role: "admin".into(),
             via_api_key: true,
+            client_ip: None,
         }
     }
 }
@@ -240,7 +248,7 @@ fn first_ip_from_list(value: &str) -> String {
     value.split(',').next().unwrap_or(value).trim().to_string()
 }
 
-pub fn client_ip(headers: &HeaderMap) -> Option<String> {
+pub fn client_ip_from_proxy_headers(headers: &HeaderMap) -> Option<String> {
     if let Some(v) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
         let ip = first_ip_from_list(v);
         if !ip.is_empty() {
@@ -271,6 +279,28 @@ pub fn client_ip(headers: &HeaderMap) -> Option<String> {
         }
     }
     None
+}
+
+/// Proxy headers first; optional TCP peer when headers missing (direct / dev).
+pub fn resolve_client_ip(headers: &HeaderMap, peer: Option<SocketAddr>) -> Option<String> {
+    if let Some(ip) = client_ip_from_proxy_headers(headers) {
+        return Some(ip);
+    }
+    peer.map(|addr| addr.ip().to_string())
+}
+
+pub fn client_ip(headers: &HeaderMap) -> Option<String> {
+    client_ip_from_proxy_headers(headers)
+}
+
+pub fn client_ip_from_extensions(
+    headers: &HeaderMap,
+    extensions: &axum::http::Extensions,
+) -> Option<String> {
+    extensions
+        .get::<ResolvedClientIp>()
+        .and_then(|r| r.0.clone())
+        .or_else(|| client_ip_from_proxy_headers(headers))
 }
 
 pub async fn write_audit_event(
@@ -310,6 +340,7 @@ pub async fn write_audit(
     source_ip: Option<&str>,
     details: Option<&str>,
 ) {
+    let ip = source_ip.or(ctx.client_ip.as_deref());
     write_audit_event(
         pool,
         ctx.tenant_id,
@@ -318,7 +349,7 @@ pub async fn write_audit(
         action,
         resource,
         result,
-        source_ip,
+        ip,
         details,
     )
     .await;
@@ -393,6 +424,7 @@ pub async fn resolve_session_ctx(
         tenant_id: rec.tenant_id,
         role: rec.role,
         via_api_key: false,
+        client_ip: None,
     }))
 }
 
@@ -475,6 +507,16 @@ mod tests {
     fn client_ip_from_forwarded() {
         let mut h = HeaderMap::new();
         h.insert("x-forwarded-for", "203.0.113.1, 10.0.0.1".parse().unwrap());
-        assert_eq!(client_ip(&h).as_deref(), Some("203.0.113.1"));
+        assert_eq!(client_ip_from_proxy_headers(&h).as_deref(), Some("203.0.113.1"));
+    }
+
+    #[test]
+    fn resolve_client_ip_peer_fallback() {
+        let h = HeaderMap::new();
+        let peer: SocketAddr = "198.51.100.9:54321".parse().unwrap();
+        assert_eq!(
+            resolve_client_ip(&h, Some(peer)).as_deref(),
+            Some("198.51.100.9")
+        );
     }
 }

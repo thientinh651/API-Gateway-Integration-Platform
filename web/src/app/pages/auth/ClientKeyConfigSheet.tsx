@@ -410,7 +410,7 @@ export function ClientKeyConfigSheet({
               disabled={saving}
               onClick={() => void handleSave()}
             >
-              {saving ? 'Đang lưu…' : 'Lưu chính sách'}
+              {saving ? 'Đang lưu…' : 'Lưu'}
             </Button>
             <Button variant="outline" className="border-border" onClick={() => onOpenChange(false)}>
               Hủy

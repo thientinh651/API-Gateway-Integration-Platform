@@ -513,6 +513,8 @@ export type GatewaySettingsWriteBody = {
   queue_enabled?: boolean;
 };
 
+export type DlqItemStatus = 'pending' | 'replayed' | 'failed_permanent';
+
 export type ProxyQueueItem = {
   id: string;
   tenant_id: number;
@@ -523,7 +525,29 @@ export type ProxyQueueItem = {
   failure_reason: string;
   retry_attempts: number;
   created_at_unix: number;
+  /** Backend `GET /api/proxy-queue` luôn trả — thiếu thì coi pending. */
+  status: DlqItemStatus;
+  replayed_at?: string | null;
 };
+
+/** Chuẩn hóa status DLQ khi response cũ/thiếu field. */
+export function normalizeDlqStatus(status: string | undefined | null): DlqItemStatus {
+  if (status === 'replayed' || status === 'failed_permanent') return status;
+  return 'pending';
+}
+
+export function countDlqByStatus(items: ReadonlyArray<{ status?: string | null }>) {
+  let pending = 0;
+  let replayed = 0;
+  let failedPermanent = 0;
+  for (const item of items) {
+    const s = normalizeDlqStatus(item.status);
+    if (s === 'replayed') replayed += 1;
+    else if (s === 'failed_permanent') failedPermanent += 1;
+    else pending += 1;
+  }
+  return { pending, replayed, failedPermanent, total: items.length };
+}
 
 export function fetchProxyQueue(): Promise<ProxyQueueItem[]> {
   return fetchJson<ProxyQueueItem[]>('/api/proxy-queue');
