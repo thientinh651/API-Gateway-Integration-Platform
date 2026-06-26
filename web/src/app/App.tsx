@@ -13,6 +13,7 @@ import { Logs } from './pages/Logs';
 import { Integrations } from './pages/Integrations';
 import { ProxyTry } from './pages/ProxyTry';
 import { ProxyQueuePage } from './pages/ProxyQueue';
+import { OAuthDemoCallback } from './pages/oauth/OAuthDemoCallback';
 import { LoginPage } from './pages/login/LoginPage';
 import { ForgotPassword } from './pages/ForgotPassword';
 import { Register } from './pages/Register';
@@ -35,6 +36,7 @@ export default function App() {
         />
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/oauth/demo-callback" element={<OAuthDemoCallback />} />
           <Route path="/register" element={<Register />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/" element={<MainLayout />}>

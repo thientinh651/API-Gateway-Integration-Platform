@@ -50,7 +50,8 @@ Longest prefix, `{id}`, method filter, header transform, timeout, upstream proxy
 
 ### 4.2 Client Registry (OAuth2 — KHÔNG phải HMAC mọi request)
 - **Client ID** (`avaso_pk_…`) + **Client Secret** (`avaso_sk_…`) — prefix quy ước, không phải RSA key pair
-- Secret **AES-256-GCM** at rest (`secret_encrypted`); key master từ env `CLIENT_KEY_MASTER_KEY`
+- Secret **Argon2id one-way** at rest (`secret_hash`); plaintext chỉ lúc tạo/rotate client
+- Integration connector config vẫn **AES-256-GCM** (`config_encrypted`)
 - ACL: `gateway_client_key_routes` — rỗng = full tenant
 - Tùy chọn: đăng ký qua RSA envelope (`POST /api/client-keys/encrypted`) — bổ sung, không thay JWT data plane
 
@@ -66,15 +67,14 @@ Longest prefix, `{id}`, method filter, header transform, timeout, upstream proxy
 
 **Đã có (code chạy được):**
 - Đăng ký app bên thứ 3: `POST /api/oauth/apps`
-- `GET /oauth/authorize?client_id&redirect_uri&response_type=code&scope&state`
+- `GET /oauth/authorize?client_id&redirect_uri&response_type=code&scope&state&code_challenge&code_challenge_method=S256`
 - Consent HTML + `POST /oauth/consent` (approve/deny)
-- Lưu consent `oauth_user_consents`; phát `authorization_code` → redirect
-- Đổi code: `POST /api/oauth/token` `grant_type=authorization_code`
-- UI: tab **App bên thứ 3** + nút **Thử authorize**
+- Lưu consent `oauth_user_consents`; phát `authorization_code` + PKCE challenge → redirect
+- Đổi code: `POST /api/oauth/token` `grant_type=authorization_code` + `code_verifier` (RFC 7636)
+- UI: tab **App bên thứ 3** + **Thử authorize (PKCE)** + `/oauth/demo-callback`
 
 **Giới hạn / không phải OAuth provider production:**
 - User phải **đã login dashboard** (cookie `gw_sid`) — không có login page OAuth riêng cho end-user bên thứ 3
-- **Không PKCE**
 - App bên thứ 3 **tách** khỏi machine client (Client Registry)
 - Token nhận được là **user JWT**, không phải client_credentials machine token
 
@@ -173,7 +173,7 @@ Công cụ: `test_jwt_auth.py`, `smoke-test.sh`, k6, `rbac.test.ts`
 | Ưu tiên | Việc |
 |---------|------|
 | **Ngày 1** | Chạy k6 `SCENARIO=jwt`, bảng 3 cột, overhead ms |
-| **Ngày 2** | Báo cáo: DLQ trade-off, RBAC 2 lớp, secret reversible, burst=3 lý do |
+| **Ngày 2** | Báo cáo: DLQ persist PG, RBAC 2 lớp, Argon2id secret, burst=3 lý do |
 | **Ngày 3** | (Tuỳ chọn) counter rate_limit trong metrics; TC_04 script Retry-After |
 
 ---
@@ -181,8 +181,8 @@ Công cụ: `test_jwt_auth.py`, `smoke-test.sh`, k6, `rbac.test.ts`
 ## 10. Hướng phát triển (chưa bắt buộc)
 
 - Sliding window Redis
-- PKCE + OAuth login page riêng cho third-party
-- Hash one-way client_secret
+- OAuth login page riêng cho third-party
+- Vault/KMS cho integration credentials
 - Abuse auto-disable sau N×429
 - WAL/Kafka cho DLQ
 - Grafana stack đầy đủ

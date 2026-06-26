@@ -263,6 +263,39 @@ pub struct AuthorizeQuery {
     pub response_type: String,
     pub scope: Option<String>,
     pub state: Option<String>,
+    pub code_challenge: String,
+    pub code_challenge_method: Option<String>,
+}
+
+fn validate_pkce_authorize(q: &AuthorizeQuery) -> Result<(), Response> {
+    let challenge = q.code_challenge.trim();
+    if challenge.is_empty() {
+        return Err(json_err(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "code_challenge required (PKCE S256)",
+        ));
+    }
+    let method = q
+        .code_challenge_method
+        .as_deref()
+        .unwrap_or(crate::pkce::METHOD_S256)
+        .trim();
+    if method != crate::pkce::METHOD_S256 {
+        return Err(json_err(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Only code_challenge_method=S256 is supported",
+        ));
+    }
+    if !crate::pkce::valid_challenge(challenge) {
+        return Err(json_err(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "code_challenge must be 43-char base64url (S256)",
+        ));
+    }
+    Ok(())
 }
 
 pub async fn oauth_authorize_get(st: &OAuthHandlerState, headers: HeaderMap, q: AuthorizeQuery) -> Response {
@@ -272,6 +305,9 @@ pub async fn oauth_authorize_get(st: &OAuthHandlerState, headers: HeaderMap, q: 
             "unsupported_response_type",
             "Only response_type=code supported",
         );
+    }
+    if let Err(resp) = validate_pkce_authorize(&q) {
+        return resp;
     }
     let Some(sid) = session::sid_from_cookie(&headers) else {
         return Redirect::to("/login.html").into_response();
@@ -316,6 +352,8 @@ pub struct ConsentForm {
     pub redirect_uri: String,
     pub scope: String,
     pub state: Option<String>,
+    pub code_challenge: String,
+    pub code_challenge_method: Option<String>,
     pub action: String,
 }
 
@@ -341,20 +379,26 @@ pub async fn oauth_consent_post(st: &OAuthHandlerState, form: ConsentForm, heade
         }
         return Redirect::to(&url).into_response();
     }
-    let _ = oauth_authorize::save_user_consent(
-        &st.pool,
-        ctx.user_id,
-        &app.client_id,
-        form.scope.trim(),
-    )
-    .await;
+    let scope = form.scope.trim().to_string();
     let q = AuthorizeQuery {
         client_id: form.client_id,
         redirect_uri: form.redirect_uri,
         response_type: "code".into(),
-        scope: Some(form.scope),
+        scope: Some(scope.clone()),
         state: form.state,
+        code_challenge: form.code_challenge,
+        code_challenge_method: form.code_challenge_method,
     };
+    if let Err(resp) = validate_pkce_authorize(&q) {
+        return resp;
+    }
+    let _ = oauth_authorize::save_user_consent(
+        &st.pool,
+        ctx.user_id,
+        &app.client_id,
+        scope.trim(),
+    )
+    .await;
     issue_code_redirect(&st.pool, &app, ctx.user_id, ctx.tenant_id, &q).await
 }
 
@@ -377,6 +421,10 @@ async fn issue_code_redirect(
         user_id,
         q.redirect_uri.trim(),
         scope,
+        q.code_challenge.trim(),
+        q.code_challenge_method
+            .as_deref()
+            .unwrap_or(crate::pkce::METHOD_S256),
     )
     .await
     {
@@ -405,6 +453,10 @@ fn consent_html(app: &ThirdPartyApp, q: &AuthorizeQuery, username: &str) -> Stri
         .filter(|s| !s.is_empty())
         .unwrap_or(app.scopes.as_str());
     let state = q.state.as_deref().unwrap_or("");
+    let challenge_method = q
+        .code_challenge_method
+        .as_deref()
+        .unwrap_or(crate::pkce::METHOD_S256);
     format!(
         r#"<!DOCTYPE html><html lang="vi"><head><meta charset="utf-8"/><title>Ủy quyền OAuth</title>
 <style>body{{font-family:system-ui;background:#0f172a;color:#e2e8f0;display:flex;min-height:100vh;align-items:center;justify-content:center}}
@@ -413,11 +465,14 @@ button{{padding:.6rem 1rem;border-radius:8px;border:none;cursor:pointer;margin-r
 .approve{{background:#f97316;color:#fff}}.deny{{background:#475569;color:#fff}}</style></head>
 <body><div class="card"><h1>Cho phép truy cập?</h1>
 <p><strong>{name}</strong> muốn quyền <code>{scope}</code> thay mặt <strong>{username}</strong>.</p>
+<p class="text-xs" style="font-size:12px;color:#94a3b8">PKCE <code>{pkce_method}</code> — code challenge đã xác thực.</p>
 <form method="post" action="/oauth/consent">
 <input type="hidden" name="client_id" value="{cid}"/>
 <input type="hidden" name="redirect_uri" value="{uri}"/>
 <input type="hidden" name="scope" value="{scope}"/>
 <input type="hidden" name="state" value="{state}"/>
+<input type="hidden" name="code_challenge" value="{challenge}"/>
+<input type="hidden" name="code_challenge_method" value="{pkce_method}"/>
 <button class="approve" name="action" value="approve">Cho phép</button>
 <button class="deny" name="action" value="deny">Từ chối</button>
 </form></div></body></html>"#,
@@ -427,6 +482,8 @@ button{{padding:.6rem 1rem;border-radius:8px;border:none;cursor:pointer;margin-r
         cid = html_escape(&app.client_id),
         uri = html_escape(q.redirect_uri.trim()),
         state = html_escape(state),
+        challenge = html_escape(q.code_challenge.trim()),
+        pkce_method = html_escape(challenge_method),
     )
 }
 

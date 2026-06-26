@@ -230,11 +230,6 @@ function UsersAdmin() {
       <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Quản lý Users</h1>
-          <p className="text-sm text-muted-foreground mb-4 max-w-2xl">
-            Triển khai <strong className="text-slate-300">on-prem</strong> — một tổ chức, một gateway.
-            Admin thêm thành viên nội bộ (Admin / Operator / Viewer). Không đăng ký công khai; không
-            workspace riêng per user.
-          </p>
         </div>
         <Dialog open={isOpen} onOpenChange={handleDialogClose}>
           <DialogTrigger asChild>

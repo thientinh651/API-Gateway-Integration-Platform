@@ -243,7 +243,6 @@ function OverviewAdmin() {
       <TechPageHeader
         codeLine="// dashboard · traffic · 24h"
         title="Tổng quan"
-        description="Kết nối API qua gateway: số lượng, HTTP status, từ chối/lỗi upstream, tích hợp CRM."
         actions={
           <Button variant="outline" className="border-border font-mono-tech text-xs" onClick={() => void load()} disabled={loading}>
             <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />

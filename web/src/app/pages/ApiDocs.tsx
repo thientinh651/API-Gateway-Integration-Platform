@@ -190,7 +190,7 @@ export function ApiDocs() {
     { method: 'POST', path: '/api/oauth/logout', description: 'Thu hồi Bearer token đang gửi', auth: 'Bearer JWT', body: null },
     { method: 'GET', path: '/api/oauth/apps', description: 'App OAuth bên thứ 3 (Authorization Code)', auth: 'Operator+', body: null },
     { method: 'POST', path: '/api/oauth/apps', description: 'Đăng ký app + redirect_uris', auth: 'Admin', body: '{"name":"Partner","redirect_uris":["https://..."],"with_secret":true}' },
-    { method: 'GET', path: '/oauth/authorize', description: 'Consent + authorization code redirect', auth: 'Session dashboard', body: '?client_id&redirect_uri&response_type=code' },
+    { method: 'GET', path: '/oauth/authorize', description: 'Consent + authorization code (PKCE S256 required)', auth: 'Session dashboard', body: '?client_id&redirect_uri&response_type=code&code_challenge&code_challenge_method=S256&state' },
     { method: 'POST', path: '/api/client-keys/encrypted', description: 'Đăng ký qua RSA envelope', auth: 'Operator+', body: 'CryptoEnvelope JSON' },
     { method: 'DELETE', path: '/api/client-keys/{id}', description: 'Xóa client khỏi registry', auth: 'Operator+', body: null },
     { method: 'GET', path: '/api/users', description: 'Danh sách admin users', auth: 'Admin', body: null },

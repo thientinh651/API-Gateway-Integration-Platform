@@ -254,7 +254,7 @@ avaso-gateway/
 └── .env.example
 ```
 
-**Không sửa tay `web/dist/`** — luôn `npm run build` sau khi đổi UI.
+** `web/dist/`** — luôn `npm run build` sau khi đổi UI.
 
 ---
 

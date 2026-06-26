@@ -34,7 +34,8 @@ pub struct DisabledClientKey {
 pub struct OAuthClientKey {
     pub id: i64,
     pub client_id: String,
-    pub secret: String,
+    /// Argon2id PHC string — verify at token endpoint; never store plaintext.
+    pub secret_hash: String,
     pub tenant_id: i64,
     pub rate_limit_per_min: i32,
     pub allowed_route_ids: Vec<i64>,
@@ -60,6 +61,15 @@ pub fn verify_password(password: &str, password_hash: &str) -> bool {
     Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
         .is_ok()
+}
+
+/// Argon2id one-way hash for OAuth2 `client_secret` (at rest only).
+pub fn hash_client_secret(secret: &str) -> Result<String, argon2::password_hash::Error> {
+    hash_password(secret)
+}
+
+pub fn verify_client_secret(secret: &str, secret_hash: &str) -> bool {
+    verify_password(secret, secret_hash)
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -1368,7 +1378,8 @@ pub async fn list_client_keys_scoped(
     if admin_sees_all || owner_user_id.is_none() {
         sqlx::query_as::<_, ClientKeyMeta>(
             "SELECT k.id, k.name, k.api_key,
-                    CASE WHEN k.secret_encrypted IS NOT NULL AND k.secret_encrypted != '' THEN 'oauth_client'
+                    CASE WHEN (k.secret_hash IS NOT NULL AND k.secret_hash != '')
+                              OR (k.secret_encrypted IS NOT NULL AND k.secret_encrypted != '') THEN 'oauth_client'
                          ELSE 'legacy' END AS auth_mode,
                     COALESCE(k.integration_type, 'app') AS integration_type,
                     k.tenant_id,
@@ -1389,7 +1400,8 @@ pub async fn list_client_keys_scoped(
         let uid = owner_user_id.unwrap_or(0);
         sqlx::query_as::<_, ClientKeyMeta>(
             "SELECT k.id, k.name, k.api_key,
-                    CASE WHEN k.secret_encrypted IS NOT NULL AND k.secret_encrypted != '' THEN 'oauth_client'
+                    CASE WHEN (k.secret_hash IS NOT NULL AND k.secret_hash != '')
+                              OR (k.secret_encrypted IS NOT NULL AND k.secret_encrypted != '') THEN 'oauth_client'
                          ELSE 'legacy' END AS auth_mode,
                     COALESCE(k.integration_type, 'app') AS integration_type,
                     k.tenant_id,
@@ -1424,6 +1436,40 @@ pub async fn fetch_client_key_owner(
     .await
 }
 
+pub async fn backfill_client_secret_hashes(pool: &PgPool) -> Result<u64, sqlx::Error> {
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id, secret_encrypted FROM gateway_client_keys
+         WHERE secret_encrypted IS NOT NULL AND secret_encrypted != ''
+           AND (secret_hash IS NULL OR secret_hash = '')",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut migrated = 0u64;
+    for (id, enc) in rows {
+        let Ok(plain) = crypto::decrypt_secret(&enc) else {
+            tracing::error!(client_key_id = id, "skip secret backfill: decrypt failed");
+            continue;
+        };
+        match hash_client_secret(&plain) {
+            Ok(hash) => {
+                sqlx::query(
+                    "UPDATE gateway_client_keys SET secret_hash = $1, secret_encrypted = NULL WHERE id = $2",
+                )
+                .bind(&hash)
+                .bind(id)
+                .execute(pool)
+                .await?;
+                migrated += 1;
+            }
+            Err(e) => tracing::error!(client_key_id = id, error = %e, "hash client secret backfill failed"),
+        }
+    }
+    if migrated > 0 {
+        tracing::info!(count = migrated, "migrated OAuth client secrets to Argon2id");
+    }
+    Ok(migrated)
+}
+
 pub async fn load_client_credentials(pool: &PgPool) -> Result<ClientCredentials, sqlx::Error> {
     let rows: Vec<(
         i64,
@@ -1435,7 +1481,7 @@ pub async fn load_client_credentials(pool: &PgPool) -> Result<ClientCredentials,
         i32,
         i32,
     )> = sqlx::query_as(
-        "SELECT id, api_key, secret_encrypted, secret_sha256_hex, tenant_id,
+        "SELECT id, api_key, secret_encrypted, secret_hash, tenant_id,
                 COALESCE(status, 'active'), COALESCE(rate_limit_per_min, 0), COALESCE(token_version, 0)
          FROM gateway_client_keys ORDER BY id",
     )
@@ -1447,7 +1493,7 @@ pub async fn load_client_credentials(pool: &PgPool) -> Result<ClientCredentials,
 
     let mut creds = ClientCredentials::default();
     creds.user_token_versions = user_token_versions;
-    for (id, api_key, secret_enc, _legacy_hash, tenant_id, status, rate_limit_per_min, token_version) in rows {
+    for (id, api_key, secret_enc, secret_hash, tenant_id, status, rate_limit_per_min, token_version) in rows {
         let allowed_route_ids = allowlists.get(&id).cloned().unwrap_or_default();
         if status != "active" {
             if let Some(k) = api_key.filter(|s| !s.is_empty()) {
@@ -1459,22 +1505,49 @@ pub async fn load_client_credentials(pool: &PgPool) -> Result<ClientCredentials,
             }
             continue;
         }
-        if let Some(enc) = secret_enc.filter(|s| !s.is_empty()) {
-            if let Some(client_id) = api_key.filter(|s| !s.is_empty()) {
-                match crypto::decrypt_secret(&enc) {
-                    Ok(secret) => creds.oauth_clients.push(OAuthClientKey {
-                        id,
-                        client_id,
-                        secret,
-                        tenant_id,
-                        rate_limit_per_min,
-                        allowed_route_ids,
-                        token_version,
-                    }),
-                    Err(e) => tracing::error!(client_id = %client_id, error = %e, "skip oauth client: decrypt failed"),
+        let Some(client_id) = api_key.filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let resolved_hash = if let Some(h) = secret_hash.filter(|s| !s.is_empty()) {
+            h
+        } else if let Some(enc) = secret_enc.filter(|s| !s.is_empty()) {
+            match crypto::decrypt_secret(&enc) {
+                Ok(plain) => match hash_client_secret(&plain) {
+                    Ok(h) => {
+                        if let Err(e) = sqlx::query(
+                            "UPDATE gateway_client_keys SET secret_hash = $1, secret_encrypted = NULL WHERE id = $2",
+                        )
+                        .bind(&h)
+                        .bind(id)
+                        .execute(pool)
+                        .await
+                        {
+                            tracing::error!(client_id = %client_id, error = %e, "inline secret hash migration failed");
+                        }
+                        h
+                    }
+                    Err(e) => {
+                        tracing::error!(client_id = %client_id, error = %e, "skip oauth client: hash failed");
+                        continue;
+                    }
+                },
+                Err(e) => {
+                    tracing::error!(client_id = %client_id, error = %e, "skip oauth client: decrypt failed");
+                    continue;
                 }
             }
-        }
+        } else {
+            continue;
+        };
+        creds.oauth_clients.push(OAuthClientKey {
+            id,
+            client_id,
+            secret_hash: resolved_hash,
+            tenant_id,
+            rate_limit_per_min,
+            allowed_route_ids,
+            token_version,
+        });
     }
     Ok(creds)
 }
@@ -1604,19 +1677,20 @@ pub async fn rotate_client_key_secret(
     tenant_id: i64,
     new_secret: &str,
 ) -> Result<Option<String>, sqlx::Error> {
-    let enc = crypto::encrypt_secret(new_secret).map_err(|e| {
-        sqlx::Error::Configuration(format!("encrypt secret: {e}").into())
+    let hash = hash_client_secret(new_secret).map_err(|e| {
+        sqlx::Error::Configuration(format!("hash client secret: {e}").into())
     })?;
     sqlx::query_scalar(
-        "UPDATE gateway_client_keys SET secret_encrypted = $3
+        "UPDATE gateway_client_keys SET secret_hash = $3, secret_encrypted = NULL
          WHERE id = $1 AND tenant_id = $2
            AND api_key IS NOT NULL
-           AND secret_encrypted IS NOT NULL AND secret_encrypted != ''
+           AND (secret_hash IS NOT NULL AND secret_hash != ''
+                OR secret_encrypted IS NOT NULL AND secret_encrypted != '')
          RETURNING api_key",
     )
     .bind(id)
     .bind(tenant_id)
-    .bind(&enc)
+    .bind(&hash)
     .fetch_optional(pool)
     .await
 }
@@ -1802,7 +1876,7 @@ pub fn random_api_key_id() -> String {
     random_token("avaso_pk_", 24)
 }
 
-/// OAuth2 `client_secret` — prefix `avaso_sk_` (shared secret, mã hóa AES at rest).
+/// OAuth2 `client_secret` — prefix `avaso_sk_`; stored as Argon2id hash only.
 pub fn random_secret_key() -> String {
     random_token("avaso_sk_", 40)
 }
@@ -1821,9 +1895,9 @@ pub async fn ensure_sync_worker_client_key(
         .filter(|&n| n > 0)
         .unwrap_or(10_000);
 
-    type Row = (i64, String, String, i64, i32, i32);
-    if let Some((id, api_key, secret_enc, tid, _rl, tv)) = sqlx::query_as::<_, Row>(
-        "SELECT id, api_key, secret_encrypted, tenant_id, rate_limit_per_min, COALESCE(token_version, 0)
+    type Row = (i64, String, Option<String>, i64, i32, i32);
+    if let Some((id, api_key, secret_hash, tid, _rl, tv)) = sqlx::query_as::<_, Row>(
+        "SELECT id, api_key, secret_hash, tenant_id, rate_limit_per_min, COALESCE(token_version, 0)
          FROM gateway_client_keys WHERE api_key = $1 AND tenant_id = $2",
     )
     .bind(SYNC_WORKER_API_KEY)
@@ -1831,9 +1905,13 @@ pub async fn ensure_sync_worker_client_key(
     .fetch_optional(pool)
     .await?
     {
-        let secret = crypto::decrypt_secret(&secret_enc).map_err(|e| {
-            sqlx::Error::Configuration(format!("decrypt sync worker secret: {e}").into())
-        })?;
+        let hash = if let Some(h) = secret_hash.filter(|s| !s.is_empty()) {
+            h
+        } else {
+            return Err(sqlx::Error::Configuration(
+                "sync worker client missing secret_hash — restart gateway to run migration".into(),
+            ));
+        };
         sqlx::query(
             "UPDATE gateway_client_keys
              SET name = $1, rate_limit_per_min = $2, status = 'active', integration_type = 'salesforce'
@@ -1847,7 +1925,7 @@ pub async fn ensure_sync_worker_client_key(
         return Ok(OAuthClientKey {
             id,
             client_id: api_key,
-            secret,
+            secret_hash: hash,
             tenant_id: tid,
             rate_limit_per_min: rate_limit,
             allowed_route_ids: vec![],
@@ -1874,6 +1952,12 @@ pub async fn ensure_sync_worker_client_key(
         rate_limit,
     )
     .await?;
+    let secret_hash = sqlx::query_scalar::<_, String>(
+        "SELECT secret_hash FROM gateway_client_keys WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await?;
     tracing::info!(
         client_id = SYNC_WORKER_API_KEY,
         rate_limit_per_min = rate_limit,
@@ -1882,7 +1966,7 @@ pub async fn ensure_sync_worker_client_key(
     Ok(OAuthClientKey {
         id,
         client_id: SYNC_WORKER_API_KEY.into(),
-        secret,
+        secret_hash,
         tenant_id,
         rate_limit_per_min: rate_limit,
         allowed_route_ids: vec![],
@@ -1900,18 +1984,18 @@ pub async fn insert_oauth_client(
     owner_user_id: i64,
     rate_limit_per_min: i32,
 ) -> Result<i64, sqlx::Error> {
-    let enc = crypto::encrypt_secret(secret_key).map_err(|e| {
-        sqlx::Error::Configuration(format!("encrypt secret: {e}").into())
+    let hash = hash_client_secret(secret_key).map_err(|e| {
+        sqlx::Error::Configuration(format!("hash client secret: {e}").into())
     })?;
-    let sha_placeholder = format!("oauth:{}", sha256_hex(api_key));
+    let unique_row = format!("argon2id:{}", sha256_hex(api_key));
     sqlx::query_scalar(
-        "INSERT INTO gateway_client_keys (name, api_key, secret_encrypted, secret_sha256_hex, tenant_id, integration_type, owner_user_id, status, rate_limit_per_min)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8) RETURNING id",
+        "INSERT INTO gateway_client_keys (name, api_key, secret_encrypted, secret_hash, secret_sha256_hex, tenant_id, integration_type, owner_user_id, status, rate_limit_per_min)
+         VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, 'active', $8) RETURNING id",
     )
     .bind(name)
     .bind(api_key)
-    .bind(&enc)
-    .bind(&sha_placeholder)
+    .bind(&hash)
+    .bind(&unique_row)
     .bind(tenant_id)
     .bind(integration_type)
     .bind(owner_user_id)
@@ -3046,10 +3130,10 @@ mod tests {
     }
 
     #[test]
-    fn password_hash_and_verify() {
-        let hash = hash_password("Str0ng!Pass").expect("hash");
+    fn client_secret_hash_and_verify() {
+        let hash = hash_client_secret("avaso_sk_demo_secret_value").expect("hash");
         assert!(hash.starts_with("$argon2"));
-        assert!(verify_password("Str0ng!Pass", &hash));
-        assert!(!verify_password("wrong", &hash));
+        assert!(verify_client_secret("avaso_sk_demo_secret_value", &hash));
+        assert!(!verify_client_secret("wrong", &hash));
     }
 }

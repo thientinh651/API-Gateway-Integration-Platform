@@ -1,0 +1,38 @@
+# Prometheus + Grafana — chạy cạnh gateway (dev/demo bảo vệ)
+#
+#   docker compose -f docker-compose.observability.yml up -d
+#   Grafana: http://127.0.0.1:3001  (admin / admin — đổi pass lần đầu)
+#   Prometheus: http://127.0.0.1:9090
+#
+# Gateway phải listen trên host :3000 (cargo hoặc compose gateway).
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    ports:
+      - "127.0.0.1:3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:

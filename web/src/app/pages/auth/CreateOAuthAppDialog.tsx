@@ -14,6 +14,7 @@ import {
   DialogTrigger,
 } from '../../components/ui/dialog';
 import { Checkbox } from '../../components/ui/checkbox';
+import { defaultOAuthDemoRedirectUri } from '../../../lib/pkce';
 
 type Props = {
   onCreated: () => void;
@@ -22,7 +23,7 @@ type Props = {
 export function CreateOAuthAppDialog({ onCreated }: Props) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
-  const [urisText, setUrisText] = useState('https://example.com/oauth/callback');
+  const [urisText, setUrisText] = useState(() => defaultOAuthDemoRedirectUri());
   const [withSecret, setWithSecret] = useState(true);
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<{
@@ -32,7 +33,7 @@ export function CreateOAuthAppDialog({ onCreated }: Props) {
 
   const reset = () => {
     setName('');
-    setUrisText('https://example.com/oauth/callback');
+    setUrisText(defaultOAuthDemoRedirectUri());
     setWithSecret(true);
     setResult(null);
     setPending(false);
@@ -118,9 +119,13 @@ export function CreateOAuthAppDialog({ onCreated }: Props) {
               </Button>
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Luồng: user đăng nhập dashboard →{' '}
-              <code className="text-slate-400">GET /oauth/authorize?client_id=…&response_type=code</code> → đổi
-              code tại <code className="text-slate-400">POST /api/oauth/token</code>.
+              Luồng PKCE: user đăng nhập dashboard →{' '}
+              <code className="text-slate-400">
+                GET /oauth/authorize?…&code_challenge=…&code_challenge_method=S256
+              </code>{' '}
+              → redirect <code className="text-slate-400">code</code> → đổi tại{' '}
+              <code className="text-slate-400">POST /api/oauth/token</code> kèm{' '}
+              <code className="text-slate-400">code_verifier</code>.
             </p>
           </div>
         ) : (

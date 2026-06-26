@@ -54,6 +54,7 @@ pub struct OAuthTokenForm {
     pub client_secret: Option<String>,
     pub code: Option<String>,
     pub redirect_uri: Option<String>,
+    pub code_verifier: Option<String>,
 }
 
 #[derive(Debug)]
@@ -292,9 +293,24 @@ async fn authorization_code_grant(
         .filter(|s| !s.is_empty())
         .ok_or(OAuthTokenError::InvalidRequest("redirect_uri required"))?;
     let client_secret = form.client_secret.as_deref().unwrap_or("");
+    let code_verifier = form
+        .code_verifier
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or(OAuthTokenError::InvalidRequest("code_verifier required (PKCE)"))?;
+    if !crate::pkce::valid_verifier(code_verifier) {
+        return Err(OAuthTokenError::InvalidRequest("invalid code_verifier"));
+    }
 
-    let (response, claims) =
-        crate::oauth_authorize::exchange_authorization_code(pool, code, client_id, client_secret, redirect_uri)
+    let (response, claims) = crate::oauth_authorize::exchange_authorization_code(
+        pool,
+        code,
+        client_id,
+        client_secret,
+        redirect_uri,
+        code_verifier,
+    )
             .await?;
     Ok(IssuedToken {
         response,
@@ -353,7 +369,7 @@ fn client_credentials_grant(
     let client = creds
         .oauth_clients
         .iter()
-        .find(|c| c.client_id == client_id && c.secret == client_secret)
+        .find(|c| c.client_id == client_id && db::verify_client_secret(client_secret, &c.secret_hash))
         .ok_or(OAuthTokenError::InvalidClient)?;
 
     issue_client_token_with_version(client).map_err(OAuthTokenError::Internal)
@@ -384,10 +400,11 @@ mod tests {
 
     #[test]
     fn client_token_roundtrip() {
+        let hash = db::hash_client_secret("avaso_sk_test").expect("hash");
         let client = OAuthClientKey {
             id: 7,
             client_id: "avaso_pk_test".into(),
-            secret: "avaso_sk_test".into(),
+            secret_hash: hash,
             tenant_id: 1,
             rate_limit_per_min: 100,
             allowed_route_ids: vec![1, 2],

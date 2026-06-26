@@ -10,6 +10,7 @@ mod integrations;
 mod jwt_auth;
 mod metrics;
 mod oauth_authorize;
+mod pkce;
 mod oauth_handlers;
 mod oauth_tokens;
 mod password_reset;
@@ -975,6 +976,9 @@ async fn main() {
     db::purge_expired_oauth_pending(&pool)
         .await
         .expect("purge expired oauth pending");
+    db::backfill_client_secret_hashes(&pool)
+        .await
+        .expect("backfill client secret Argon2id");
     gateway_rsa::ensure_gateway_rsa_keys(&pool)
         .await
         .expect("ensure gateway RSA keypair");

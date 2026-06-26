@@ -151,12 +151,14 @@ pub async fn create_authorization_code(
     user_id: i64,
     redirect_uri: &str,
     scope: &str,
+    code_challenge: &str,
+    code_challenge_method: &str,
 ) -> Result<String, sqlx::Error> {
     let code = format!("ac_{}", uuid::Uuid::new_v4());
     let expires = Utc::now() + Duration::minutes(10);
     sqlx::query(
-        "INSERT INTO oauth_authorization_codes (code, app_client_id, user_id, tenant_id, redirect_uri, scope, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "INSERT INTO oauth_authorization_codes (code, app_client_id, user_id, tenant_id, redirect_uri, scope, expires_at, code_challenge, code_challenge_method)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(&code)
     .bind(app_client_id)
@@ -165,6 +167,8 @@ pub async fn create_authorization_code(
     .bind(redirect_uri)
     .bind(scope)
     .bind(expires)
+    .bind(code_challenge)
+    .bind(code_challenge_method)
     .execute(pool)
     .await?;
     Ok(code)
@@ -176,6 +180,9 @@ struct AuthCodeRow {
     tenant_id: i64,
     redirect_uri: String,
     scope: String,
+    code_challenge: String,
+    code_challenge_method: String,
+    expires_at: chrono::DateTime<chrono::Utc>,
 }
 
 pub async fn consume_authorization_code(
@@ -184,20 +191,48 @@ pub async fn consume_authorization_code(
     client_id: &str,
     redirect_uri: &str,
 ) -> Result<AuthCodeRow, OAuthTokenError> {
-    let row: Option<(String, i64, i64, String, String, Option<chrono::DateTime<chrono::Utc>>)> =
-        sqlx::query_as(
-            "SELECT app_client_id, user_id, tenant_id, redirect_uri, scope, used_at
-             FROM oauth_authorization_codes WHERE code = $1 LIMIT 1",
-        )
-        .bind(code)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| OAuthTokenError::Internal(format!("{e}")))?;
+    let row: Option<(
+        String,
+        i64,
+        i64,
+        String,
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<String>,
+        String,
+        chrono::DateTime<chrono::Utc>,
+    )> = sqlx::query_as(
+        "SELECT app_client_id, user_id, tenant_id, redirect_uri, scope, used_at,
+                code_challenge, COALESCE(code_challenge_method, 'S256'), expires_at
+         FROM oauth_authorization_codes WHERE code = $1 LIMIT 1",
+    )
+    .bind(code)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| OAuthTokenError::Internal(format!("{e}")))?;
 
-    let Some((app_client_id, user_id, tenant_id, stored_uri, scope, used_at)) = row else {
+    let Some((
+        app_client_id,
+        user_id,
+        tenant_id,
+        stored_uri,
+        scope,
+        used_at,
+        code_challenge,
+        code_challenge_method,
+        expires_at,
+    )) = row
+    else {
         return Err(OAuthTokenError::InvalidGrant);
     };
     if used_at.is_some() {
+        return Err(OAuthTokenError::InvalidGrant);
+    }
+    if expires_at < Utc::now() {
+        return Err(OAuthTokenError::InvalidGrant);
+    }
+    let code_challenge = code_challenge.unwrap_or_default();
+    if code_challenge.is_empty() {
         return Err(OAuthTokenError::InvalidGrant);
     }
     if app_client_id != client_id {
@@ -219,6 +254,9 @@ pub async fn consume_authorization_code(
         tenant_id,
         redirect_uri: stored_uri,
         scope,
+        code_challenge,
+        code_challenge_method,
+        expires_at,
     })
 }
 
@@ -228,6 +266,7 @@ pub async fn exchange_authorization_code(
     client_id: &str,
     client_secret: &str,
     redirect_uri: &str,
+    code_verifier: &str,
 ) -> Result<(TokenResponse, GatewayClaims), OAuthTokenError> {
     let app = fetch_third_party_app(pool, client_id)
         .await
@@ -244,6 +283,13 @@ pub async fn exchange_authorization_code(
     }
 
     let consumed = consume_authorization_code(pool, code, client_id, redirect_uri).await?;
+
+    if consumed.code_challenge_method != crate::pkce::METHOD_S256 {
+        return Err(OAuthTokenError::InvalidGrant);
+    }
+    if !crate::pkce::verify_s256(code_verifier, &consumed.code_challenge) {
+        return Err(OAuthTokenError::InvalidGrant);
+    }
 
     let user = db::fetch_admin_user_by_id_any(pool, consumed.user_id)
         .await

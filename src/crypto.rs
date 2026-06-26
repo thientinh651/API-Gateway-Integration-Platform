@@ -1,5 +1,5 @@
-//! AES-256-GCM at rest for client secrets and integration configs.
-//! Argon2 is for dashboard passwords only.
+//! AES-256-GCM at rest for integration configs.
+//! OAuth2 client_secret uses Argon2id one-way hash in `db::hash_client_secret`.
 
 use aes_gcm::{
     aead::{Aead, KeyInit},
