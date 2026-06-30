@@ -12,18 +12,6 @@ type Rule = {
 
 const RULES: Rule[] = [
   {
-    test: (p) => p.includes('/integrations/transform'),
-    target: { route: '/integrations', sectionId: 'section-transform-engine', label: 'Transform Engine' },
-  },
-  {
-    test: (p) => p.includes('/integrations/bridge'),
-    target: { route: '/integrations', sectionId: 'section-integration-bridge', label: 'Bridge mapping' },
-  },
-  {
-    test: (p) => p.includes('/integrations/office') || p.includes('/integrations/documents'),
-    target: { route: '/integrations', sectionId: 'section-integration-office', label: 'Office / PDF' },
-  },
-  {
     test: (p) => p.includes('/integrations/salesforce'),
     target: { route: '/integrations', sectionId: 'section-salesforce', label: 'Salesforce' },
   },

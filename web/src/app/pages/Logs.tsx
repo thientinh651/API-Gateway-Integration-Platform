@@ -472,12 +472,6 @@ export function Logs() {
           <p className="text-xs text-muted-foreground">
             Lọc HTTP: {HTTP_STATUS_FILTER_HINT[statusFilter]}
           </p>
-        ) : showMethodStatusFilters ? (
-          <p className="text-xs text-muted-foreground">
-            HTTP: <strong className="text-slate-300">2xx</strong> = OK ·{' '}
-            <strong className="text-slate-300">4xx</strong> = client (401/404/429) ·{' '}
-            <strong className="text-slate-300">5xx</strong> = upstream/server
-          </p>
         ) : null}
         {clientKeyFilter != null ? (
           <p className="text-xs text-cyan-400/90 flex flex-wrap items-center gap-2">

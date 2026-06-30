@@ -11,6 +11,8 @@ import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import { adminMe, updateAdminProfile } from '../../lib/api';
 import { roleBadgeClass, roleDescription, roleLabel } from '../../lib/rbac';
 import { TechPageHeader } from '../components/tech/TechPageHeader';
+import { WorkspaceMembersPanel } from '../components/workspace/WorkspaceMembersPanel';
+import { isSaasMode } from '../../lib/deployment';
 import { FieldError } from '../components/forms/FieldError';
 import {
   clearOneFieldError,
@@ -149,9 +151,12 @@ export function Profile() {
         </Card>
 
         <Tabs defaultValue="info" className="w-full">
-          <TabsList className="grid w-full grid-cols-2 mb-4">
+          <TabsList className={`grid w-full mb-4 ${isSaasMode(user.deployment_mode) ? 'grid-cols-3' : 'grid-cols-2'}`}>
             <TabsTrigger value="info">Thông tin</TabsTrigger>
             <TabsTrigger value="password">Mật khẩu</TabsTrigger>
+            {isSaasMode(user.deployment_mode) ? (
+              <TabsTrigger value="workspace">Workspace</TabsTrigger>
+            ) : null}
           </TabsList>
 
           <TabsContent value="info">
@@ -278,6 +283,12 @@ export function Profile() {
               </form>
             </Card>
           </TabsContent>
+
+          {isSaasMode(user.deployment_mode) ? (
+            <TabsContent value="workspace">
+              <WorkspaceMembersPanel />
+            </TabsContent>
+          ) : null}
         </Tabs>
       </div>
     </>

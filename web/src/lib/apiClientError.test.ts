@@ -8,7 +8,7 @@ describe('apiClientError', () => {
       'not_found',
       'Admin API is mounted at /api/*; use a valid path and admin X-API-Key',
       undefined,
-      '/api/integrations/transform/profile',
+      '/api/integrations/sync-now',
     );
     expect(isMissingBackendApi(e)).toBe(true);
     expect(formatApiErrorToast(e)).toContain('deploy');

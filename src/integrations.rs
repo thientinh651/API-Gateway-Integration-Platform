@@ -16,15 +16,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use sha2::{Digest, Sha256};
 
-use crate::integration_office::{
-    document_download_url, generate_contract_for_deal, office_integration_configured,
-    DealDocumentContext, ZOHO_OFFICE_PROVIDER,
-};
-
 const SF_PROVIDER: &str = "salesforce";
 const ZOHO_PROVIDER: &str = "zoho_projects";
-const BRIDGE_PROVIDER: &str = "bridge";
-const OPP_TEMPLATE_PROVIDER: &str = "sales_to_delivery_templates";
 const OAUTH_STATE_TTL: Duration = Duration::from_secs(600);
 
 #[derive(Clone)]
@@ -309,7 +302,7 @@ fn api_version() -> &'static str {
 }
 
 pub async fn ensure_integration_rows(pool: &PgPool, tenant_id: i64) -> Result<(), sqlx::Error> {
-    for provider in [SF_PROVIDER, ZOHO_PROVIDER, ZOHO_OFFICE_PROVIDER] {
+    for provider in [SF_PROVIDER, ZOHO_PROVIDER] {
         sqlx::query(
             "INSERT INTO integrations (tenant_id, provider, status) VALUES ($1, $2, 'disconnected') ON CONFLICT (tenant_id, provider) DO NOTHING",
         )
@@ -325,7 +318,6 @@ pub fn list_with_stubs(rows: Vec<IntegrationPublic>) -> Vec<IntegrationPublic> {
     let mut out = rows;
     let has_sf = out.iter().any(|r| r.provider == SF_PROVIDER);
     let has_zoho = out.iter().any(|r| r.provider == ZOHO_PROVIDER);
-    let has_office = out.iter().any(|r| r.provider == ZOHO_OFFICE_PROVIDER);
     if !has_sf {
         out.push(IntegrationPublic {
             id: 0,
@@ -352,28 +344,11 @@ pub fn list_with_stubs(rows: Vec<IntegrationPublic>) -> Vec<IntegrationPublic> {
             is_demo: false,
         });
     }
-    if !has_office {
-        out.push(IntegrationPublic {
-            id: 0,
-            provider: ZOHO_OFFICE_PROVIDER.into(),
-            status: "disconnected".into(),
-            last_sync_at: None,
-            last_error: Some(
-                "Chưa cấu hình — nhập API key Zoho Office Integrator trên Dashboard".into(),
-            ),
-            updated_at: String::new(),
-            label: "Zoho Office Integrator".into(),
-            available: false,
-            is_demo: false,
-        });
-    }
     for r in &mut out {
         if r.provider == SF_PROVIDER {
             r.label = "Salesforce".into();
         } else if r.provider == ZOHO_PROVIDER {
             r.label = "Zoho Projects".into();
-        } else if r.provider == ZOHO_OFFICE_PROVIDER {
-            r.label = "Zoho Office Integrator".into();
         }
     }
     out.sort_by(|a, b| a.provider.cmp(&b.provider));
@@ -394,18 +369,8 @@ pub async fn api_list_integrations(ctx: &AdminCtx) -> Response {
             let mut out = list_with_stubs(public);
             let zoho_cfg = zoho_provider_config(&st.pool, ctx.tenant_id).await.is_some();
             let sf_cfg = salesforce_provider_config(&st.pool, ctx.tenant_id).await.is_some();
-            let office_cfg = office_integration_configured(&st.pool, ctx.tenant_id).await;
             for r in &mut out {
-                if r.provider == ZOHO_OFFICE_PROVIDER {
-                    r.available = office_cfg;
-                    if !r.available {
-                        r.last_error = Some(
-                            "Nhập API key tại Zoho Office Integrator — merge hợp đồng PDF".into(),
-                        );
-                    } else if r.status == "disconnected" {
-                        r.status = "connected".into();
-                    }
-                } else if r.provider == ZOHO_PROVIDER {
+                if r.provider == ZOHO_PROVIDER {
                     r.available = zoho_cfg;
                     r.is_demo = load_zoho_token(&st.pool, ctx.tenant_id)
                         .await
@@ -1178,22 +1143,6 @@ fn map_sf_accounts(records: &[serde_json::Value]) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn map_sf_contacts(records: &[serde_json::Value]) -> Vec<serde_json::Value> {
-    records
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "id": sf_field_str(r, "Id"),
-                "name": sf_field_str(r, "Name"),
-                "email": sf_field_str(r, "Email"),
-                "account_id": sf_field_str(r, "AccountId"),
-                "created_date": sf_field_str(r, "CreatedDate"),
-                "last_modified_date": sf_field_str(r, "LastModifiedDate"),
-            })
-        })
-        .collect()
-}
-
 fn zoho_id_str(v: &serde_json::Value) -> String {
     v.get("id_string")
         .or_else(|| v.get("id"))
@@ -1304,20 +1253,6 @@ pub async fn sync_salesforce_snapshots(pool: &PgPool, tenant_id: i64) -> Result<
     let acc_mapped = map_sf_accounts(&acc_records);
     let acc_count = save_snapshot(pool, tenant_id, SF_PROVIDER, "account", &acc_mapped).await?;
 
-    let contact_q = urlencoding::encode(
-        "SELECT Id,Name,Email,AccountId,CreatedDate,LastModifiedDate FROM Contact LIMIT 200",
-    );
-    let contact_raw =
-        crate::sync_worker_gateway::sf_get_via_gateway(&format!("/query?q={contact_q}")).await?;
-    let contact_records = contact_raw
-        .get("records")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let contact_mapped = map_sf_contacts(&contact_records);
-    let contact_count =
-        save_snapshot(pool, tenant_id, SF_PROVIDER, "contact", &contact_mapped).await?;
-
     db::touch_integration_last_sync(pool, tenant_id, SF_PROVIDER)
         .await
         .map_err(|e| format!("db touch sync: {e}"))?;
@@ -1327,7 +1262,6 @@ pub async fn sync_salesforce_snapshots(pool: &PgPool, tenant_id: i64) -> Result<
         "provider": SF_PROVIDER,
         "opportunity": opp_count,
         "account": acc_count,
-        "contact": contact_count,
     }))
 }
 
@@ -1396,10 +1330,9 @@ pub async fn api_salesforce_sync(ctx: &AdminCtx) -> Response {
                 Some("snapshot"),
             )
             .await;
-            let bridge = try_run_integration_bridge(&st.pool, ctx.tenant_id).await;
             (
                 StatusCode::OK,
-                axum::Json(serde_json::json!({ "status": "ok", "summary": summary, "bridge": bridge })),
+                axum::Json(serde_json::json!({ "status": "ok", "summary": summary })),
             )
                 .into_response()
         }
@@ -1442,10 +1375,9 @@ pub async fn api_zoho_sync(ctx: &AdminCtx) -> Response {
                 Some("snapshot"),
             )
             .await;
-            let bridge = try_run_integration_bridge(&st.pool, ctx.tenant_id).await;
             (
                 StatusCode::OK,
-                axum::Json(serde_json::json!({ "status": "ok", "summary": summary, "bridge": bridge })),
+                axum::Json(serde_json::json!({ "status": "ok", "summary": summary })),
             )
                 .into_response()
         }
@@ -1492,14 +1424,6 @@ pub async fn api_list_snapshots(ctx: &AdminCtx, query: SnapshotsQuery) -> Respon
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct SnapshotRecordsQuery {
-    pub provider: Option<String>,
-    pub entity_type: Option<String>,
-    #[serde(default = "snapshot_records_default_limit")]
-    pub limit: usize,
-}
-
 fn snapshot_records_default_limit() -> usize {
     50
 }
@@ -1511,107 +1435,6 @@ fn salesforce_contact_record_url(instance_url: &str, contact_id: &str) -> String
     }
     let lightning = base.replace(".my.salesforce.com", ".lightning.force.com");
     format!("{lightning}/lightning/r/Contact/{contact_id}/view")
-}
-
-pub async fn api_list_snapshot_records(ctx: &AdminCtx, query: SnapshotRecordsQuery) -> Response {
-    let Some(st) = STATE.get() else {
-        return json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal_error",
-            "state not initialized",
-        );
-    };
-    let provider = query
-        .provider
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(SF_PROVIDER);
-    let entity_type = query
-        .entity_type
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("contact");
-    let limit = query.limit.clamp(1, 200);
-
-    let snap = match db::fetch_latest_integration_snapshot(
-        &st.pool,
-        ctx.tenant_id,
-        provider,
-        entity_type,
-    )
-    .await
-    {
-        Ok(Some(row)) => row,
-        Ok(None) => {
-            return (
-                StatusCode::OK,
-                axum::Json(serde_json::json!({
-                    "provider": provider,
-                    "entity_type": entity_type,
-                    "fetched_at": null,
-                    "record_count": 0,
-                    "records": [],
-                    "hint": "Chưa có snapshot — trên card Salesforce bấm «Đồng bộ snapshot» trước.",
-                })),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({ "error": format!("{e}") })),
-            )
-                .into_response();
-        }
-    };
-
-    let records: Vec<serde_json::Value> =
-        serde_json::from_str(&snap.payload_json).unwrap_or_default();
-    let sf_instance = if provider == SF_PROVIDER {
-        load_sf_token(&st.pool, ctx.tenant_id)
-            .await
-            .ok()
-            .map(|t| t.instance_url)
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-
-    let mut out = Vec::new();
-    for r in records.into_iter().take(limit) {
-        let id = r
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-        if id.is_empty() {
-            continue;
-        }
-        let mut row = r.clone();
-        if provider == SF_PROVIDER && entity_type == "contact" && !sf_instance.is_empty() {
-            if let Some(obj) = row.as_object_mut() {
-                obj.insert(
-                    "url".into(),
-                    serde_json::Value::String(salesforce_contact_record_url(&sf_instance, &id)),
-                );
-            }
-        }
-        out.push(row);
-    }
-
-    (
-        StatusCode::OK,
-        axum::Json(serde_json::json!({
-            "provider": provider,
-            "entity_type": entity_type,
-            "fetched_at": snap.fetched_at,
-            "record_count": out.len(),
-            "records": out,
-        })),
-    )
-        .into_response()
 }
 
 pub async fn api_salesforce_test(ctx: &AdminCtx) -> Response {
@@ -2714,165 +2537,25 @@ pub async fn api_salesforce_disconnect(ctx: &AdminCtx) -> Response {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BridgeFieldMapping {
-    pub id: String,
-    pub source_entity: String,
-    pub source_field: String,
-    pub target_entity: String,
-    pub target_field: String,
-    pub enabled: bool,
-    pub label: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IntegrationBridgePublic {
-    pub enabled: bool,
-    pub direction: String,
-    pub mappings: Vec<BridgeFieldMapping>,
-    pub both_connected: bool,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct IntegrationBridgeWrite {
-    pub enabled: bool,
-    pub direction: String,
-    pub mappings: Vec<BridgeFieldMapping>,
-}
-
-pub fn default_bridge_mappings() -> Vec<BridgeFieldMapping> {
-    vec![
-        BridgeFieldMapping {
-            id: "opp_name".into(),
-            source_entity: "opportunity".into(),
-            source_field: "name".into(),
-            target_entity: "project".into(),
-            target_field: "name".into(),
-            enabled: true,
-            label: "Tên Opportunity (CRM) → tên Project (PM)".into(),
-        },
-        BridgeFieldMapping {
-            id: "stage_status".into(),
-            source_entity: "opportunity".into(),
-            source_field: "stage".into(),
-            target_entity: "project".into(),
-            target_field: "status".into(),
-            enabled: false,
-            label: "Giai đoạn bán (Stage) → trạng thái dự án (tắt — Zoho cần object, không nhận chuỗi SF)".into(),
-        },
-        BridgeFieldMapping {
-            id: "close_due".into(),
-            source_entity: "opportunity".into(),
-            source_field: "close_date".into(),
-            target_entity: "task".into(),
-            target_field: "due_date".into(),
-            enabled: true,
-            label: "Ngày chốt deal → deadline task giao hàng".into(),
-        },
-        BridgeFieldMapping {
-            id: "account_owner".into(),
-            source_entity: "account".into(),
-            source_field: "name".into(),
-            target_entity: "project".into(),
-            target_field: "owner".into(),
-            enabled: false,
-            label: "Tên Account (khách) → owner/context dự án".into(),
-        },
-    ]
+async fn integration_connection_flags(pool: &PgPool, tenant_id: i64) -> (bool, bool, bool) {
+    let rows = db::list_integrations(pool, tenant_id).await.unwrap_or_default();
+    let sf = rows
+        .iter()
+        .find(|r| r.provider == SF_PROVIDER)
+        .map(|r| r.status.as_str() == "connected")
+        .unwrap_or(false);
+    let zoho = rows
+        .iter()
+        .find(|r| r.provider == ZOHO_PROVIDER)
+        .map(|r| r.status.as_str() == "connected")
+        .unwrap_or(false);
+    (sf, zoho, sf && zoho)
 }
 
 async fn integration_both_connected(pool: &PgPool, tenant_id: i64) -> bool {
-    let rows = db::list_integrations(pool, tenant_id).await.unwrap_or_default();
-    let sf = rows.iter().find(|r| r.provider == SF_PROVIDER);
-    let zoho = rows.iter().find(|r| r.provider == ZOHO_PROVIDER);
-    sf.map(|r| r.status.as_str()) == Some("connected")
-        && zoho.map(|r| r.status.as_str()) == Some("connected")
-}
-
-pub async fn api_get_integration_bridge(ctx: &AdminCtx) -> Response {
-    let Some(st) = STATE.get() else {
-        return json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal_error",
-            "state not initialized",
-        );
-    };
-    let both = integration_both_connected(&st.pool, ctx.tenant_id).await;
-    let row = db::fetch_integration_bridge(&st.pool, ctx.tenant_id)
+    integration_connection_flags(pool, tenant_id)
         .await
-        .ok()
-        .flatten();
-    let (enabled, direction, mappings) = match row {
-        Some(r) => {
-            let mappings: Vec<BridgeFieldMapping> =
-                serde_json::from_str(&r.mappings_json).unwrap_or_else(|_| default_bridge_mappings());
-            (r.enabled != 0, r.direction, mappings)
-        }
-        None => (false, "salesforce_to_zoho".to_string(), default_bridge_mappings()),
-    };
-    (
-        StatusCode::OK,
-        axum::Json(IntegrationBridgePublic {
-            enabled,
-            direction,
-            mappings,
-            both_connected: both,
-        }),
-    )
-        .into_response()
-}
-
-pub async fn api_put_integration_bridge(ctx: &AdminCtx, body: IntegrationBridgeWrite) -> Response {
-    let Some(st) = STATE.get() else {
-        return json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal_error",
-            "state not initialized",
-        );
-    };
-    let direction = if body.direction.is_empty() {
-        "salesforce_to_zoho".to_string()
-    } else {
-        body.direction.clone()
-    };
-    let mappings_json = match serde_json::to_string(&body.mappings) {
-        Ok(j) => j,
-        Err(e) => {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                "bad_request",
-                &format!("invalid mappings: {e}"),
-            );
-        }
-    };
-    match db::upsert_integration_bridge(
-        &st.pool,
-        ctx.tenant_id,
-        body.enabled,
-        &direction,
-        &mappings_json,
-    )
-    .await
-    {
-        Ok(_) => {
-            write_audit(
-                &st.pool,
-                ctx,
-                "integration.bridge.update",
-                "salesforce↔zoho",
-                "success",
-                None,
-                Some(&format!("enabled={} mappings={}", body.enabled, body.mappings.len())),
-            )
-            .await;
-            api_get_integration_bridge(ctx).await
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(serde_json::json!({ "error": format!("{e}") })),
-        )
-            .into_response(),
-    }
+        .2
 }
 
 fn bridge_field_str(v: &serde_json::Value, field: &str) -> Option<String> {
@@ -2884,250 +2567,10 @@ fn bridge_field_str(v: &serde_json::Value, field: &str) -> Option<String> {
     })
 }
 
-fn apply_bridge_mappings_for_opp(
-    opp: &serde_json::Value,
-    account: Option<&serde_json::Value>,
-    mappings: &[BridgeFieldMapping],
-) -> serde_json::Value {
-    let mut project = serde_json::Map::new();
-    let mut task = serde_json::Map::new();
-    let mut mapping_ids = Vec::new();
-    for m in mappings.iter().filter(|m| m.enabled) {
-        let source = match m.source_entity.as_str() {
-            "account" => account,
-            "opportunity" => Some(opp),
-            _ => None,
-        };
-        let Some(src) = source else { continue };
-        let Some(val) = bridge_field_str(src, &m.source_field) else {
-            continue;
-        };
-        mapping_ids.push(m.id.clone());
-        match m.target_entity.as_str() {
-            "project" => {
-                project.insert(m.target_field.clone(), serde_json::Value::String(val));
-            }
-            "task" => {
-                task.insert(m.target_field.clone(), serde_json::Value::String(val));
-            }
-            _ => {}
-        }
-    }
-    serde_json::json!({
-        "sf_opportunity_id": opp.get("id").cloned().unwrap_or(serde_json::Value::Null),
-        "sf_opportunity_name": opp.get("name").cloned().unwrap_or(serde_json::Value::Null),
-        "mapped_project": serde_json::Value::Object(project),
-        "mapped_task": serde_json::Value::Object(task),
-        "mapping_ids": mapping_ids,
-    })
-}
-
-pub async fn run_integration_bridge(pool: &PgPool, tenant_id: i64) -> Result<serde_json::Value, String> {
-    if !integration_both_connected(pool, tenant_id).await {
-        return Err("Cần connected cả Salesforce và Zoho".into());
-    }
-    let row = db::fetch_integration_bridge(pool, tenant_id)
-        .await
-        .map_err(|e| format!("db: {e}"))?
-        .ok_or_else(|| "Chưa lưu cấu hình bridge".to_string())?;
-    if row.enabled == 0 {
-        return Err("Bridge chưa bật — tick \"Bật bridge\" rồi Lưu".into());
-    }
-    let mappings: Vec<BridgeFieldMapping> =
-        serde_json::from_str(&row.mappings_json).unwrap_or_else(|_| default_bridge_mappings());
-    let enabled_count = mappings.iter().filter(|m| m.enabled).count();
-    if enabled_count == 0 {
-        return Err("Chưa chọn field map nào".into());
-    }
-
-    let opp_snap = db::fetch_latest_integration_snapshot(pool, tenant_id, SF_PROVIDER, "opportunity")
-        .await
-        .map_err(|e| format!("db: {e}"))?
-        .ok_or_else(|| "Chưa có snapshot Opportunity — Đồng bộ snapshot Salesforce trước".to_string())?;
-    let opps: Vec<serde_json::Value> = serde_json::from_str(&opp_snap.payload_json)
-        .map_err(|e| format!("parse opportunity snapshot: {e}"))?;
-    if opps.is_empty() {
-        return Err("Snapshot Opportunity rỗng".into());
-    }
-
-    let acc_snap = db::fetch_latest_integration_snapshot(pool, tenant_id, SF_PROVIDER, "account")
-        .await
-        .ok()
-        .flatten();
-    let accounts: Vec<serde_json::Value> = acc_snap
-        .as_ref()
-        .and_then(|s| serde_json::from_str(&s.payload_json).ok())
-        .unwrap_or_default();
-    let default_acc = accounts.first();
-
-    let mapped: Vec<serde_json::Value> = opps
-        .iter()
-        .map(|opp| apply_bridge_mappings_for_opp(opp, default_acc, &mappings))
-        .collect();
-    let count = save_snapshot(pool, tenant_id, BRIDGE_PROVIDER, "mapped_deals", &mapped).await?;
-
-    Ok(serde_json::json!({
-        "status": "ok",
-        "provider": BRIDGE_PROVIDER,
-        "entity_type": "mapped_deals",
-        "records": count,
-        "sf_opportunities": count,
-        "direction": row.direction,
-        "mappings_enabled": enabled_count,
-        "note": "Đếm Opportunity trong snapshot Salesforce — không phải số dự án Zoho",
-    }))
-}
-
-async fn try_run_integration_bridge(pool: &PgPool, tenant_id: i64) -> serde_json::Value {
-    match run_integration_bridge(pool, tenant_id).await {
-        Ok(v) => v,
-        Err(e) => serde_json::json!({ "status": "skipped", "reason": e }),
-    }
-}
-
-pub async fn api_run_integration_bridge(ctx: &AdminCtx) -> Response {
-    let Some(st) = STATE.get() else {
-        return json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal_error",
-            "state not initialized",
-        );
-    };
-    match run_integration_bridge(&st.pool, ctx.tenant_id).await {
-        Ok(summary) => {
-            write_audit(
-                &st.pool,
-                ctx,
-                "integration.bridge.run",
-                "salesforce↔zoho",
-                "success",
-                None,
-                Some(&format!(
-                    "records={}",
-                    summary.get("records").and_then(|v| v.as_i64()).unwrap_or(0)
-                )),
-            )
-            .await;
-            (StatusCode::OK, axum::Json(summary)).into_response()
-        }
-        Err(e) => {
-            write_audit_failure(
-                &st.pool,
-                ctx,
-                "integration.bridge.run",
-                "salesforce↔zoho",
-                None,
-                Some(&e),
-            )
-            .await;
-            (
-                StatusCode::BAD_REQUEST,
-                axum::Json(serde_json::json!({ "error": "bridge_failed", "message": e })),
-            )
-                .into_response()
-        }
-    }
-}
-
-const DEFAULT_ZOHO_ONBOARDING_TASKS: &[&str] = &["Họp triển khai", "Khai báo hạ tầng"];
-const TASK_TEMPLATE_MOBILE: &[&str] = &[
-    "Thiết kế UI/UX App",
-    "Code Flutter",
-    "Đẩy lên App Store",
-];
-const TASK_TEMPLATE_WEB: &[&str] = &[
-    "Thiết kế Database",
-    "Cấu hình Docker/Droplet",
-    "Cài đặt SSL thientinh.io.vn",
-];
 const SYNC_LOG_RETAIN: i64 = 200;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OpportunityTemplateRule {
-    pub id: String,
-    pub label: String,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub keywords: Vec<String>,
-    #[serde(default)]
-    pub tasks: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct OpportunityTemplateConfigStore {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub rules: Vec<OpportunityTemplateRule>,
-    #[serde(default)]
-    pub fallback_tasks: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OpportunityTemplateConfigPublic {
-    pub enabled: bool,
-    pub rules: Vec<OpportunityTemplateRule>,
-    pub fallback_tasks: Vec<String>,
-    pub updated_by: Option<String>,
-    pub updated_at: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct OpportunityTemplateConfigWriteBody {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub rules: Vec<OpportunityTemplateRule>,
-    #[serde(default)]
-    pub fallback_tasks: Vec<String>,
-}
 
 fn default_true() -> bool {
     true
-}
-
-fn default_opportunity_template_config() -> OpportunityTemplateConfigStore {
-    OpportunityTemplateConfigStore {
-        enabled: true,
-        rules: vec![
-            OpportunityTemplateRule {
-                id: "website_development".into(),
-                label: "Website Development".into(),
-                enabled: true,
-                keywords: vec![
-                    "website".into(),
-                    "web".into(),
-                    "frontend".into(),
-                    "backend".into(),
-                ],
-                tasks: vec![
-                    "Analysis".into(),
-                    "Design".into(),
-                    "Frontend".into(),
-                    "Backend".into(),
-                    "Testing".into(),
-                    "Deployment".into(),
-                ],
-            },
-            OpportunityTemplateRule {
-                id: "erp_consulting".into(),
-                label: "ERP Consulting".into(),
-                enabled: true,
-                keywords: vec!["erp".into(), "consulting".into(), "tư vấn".into()],
-                tasks: vec![
-                    "Kickoff".into(),
-                    "Requirement".into(),
-                    "Training".into(),
-                    "Go-live".into(),
-                ],
-            },
-        ],
-        fallback_tasks: DEFAULT_ZOHO_ONBOARDING_TASKS
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect(),
-    }
 }
 
 fn normalize_lines(lines: &[String]) -> Vec<String> {
@@ -3137,65 +2580,6 @@ fn normalize_lines(lines: &[String]) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .collect()
-}
-
-fn normalize_template_store(mut raw: OpportunityTemplateConfigStore) -> OpportunityTemplateConfigStore {
-    raw.rules = raw
-        .rules
-        .into_iter()
-        .enumerate()
-        .filter_map(|(idx, mut r)| {
-            let fallback_id = format!("rule_{}", idx + 1);
-            r.id = if r.id.trim().is_empty() {
-                fallback_id
-            } else {
-                r.id.trim().to_string()
-            };
-            r.label = if r.label.trim().is_empty() {
-                format!("Rule {}", idx + 1)
-            } else {
-                r.label.trim().to_string()
-            };
-            r.keywords = normalize_lines(&r.keywords)
-                .into_iter()
-                .map(|s| s.to_ascii_lowercase())
-                .collect();
-            r.tasks = normalize_lines(&r.tasks);
-            if r.tasks.is_empty() || r.keywords.is_empty() {
-                return None;
-            }
-            Some(r)
-        })
-        .collect();
-    raw.fallback_tasks = normalize_lines(&raw.fallback_tasks);
-    if raw.fallback_tasks.is_empty() {
-        raw.fallback_tasks = DEFAULT_ZOHO_ONBOARDING_TASKS
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect();
-    }
-    raw
-}
-
-async fn load_opportunity_template_config(
-    pool: &PgPool,
-    tenant_id: i64,
-) -> OpportunityTemplateConfigStore {
-    let default_cfg = default_opportunity_template_config();
-    let row = db::fetch_integration_provider_config(pool, tenant_id, OPP_TEMPLATE_PROVIDER)
-        .await
-        .ok()
-        .flatten();
-    let Some(r) = row else {
-        return default_cfg;
-    };
-    let Ok(json) = decrypt_integration_config(&r.config_encrypted) else {
-        return default_cfg;
-    };
-    let Ok(raw) = serde_json::from_str::<OpportunityTemplateConfigStore>(&json) else {
-        return default_cfg;
-    };
-    normalize_template_store(raw)
 }
 
 fn min_deal_amount_vnd() -> f64 {
@@ -3272,19 +2656,6 @@ fn title_case_token(token: &str) -> String {
 }
 
 /// Chuẩn hóa tên khách hàng Salesforce trước khi map sang Zoho Projects.
-fn normalize_sf_customer_name(raw: &str) -> String {
-    let cleaned = strip_salesforce_name_noise(raw);
-    if cleaned.is_empty() {
-        return String::new();
-    }
-    cleaned
-        .split_whitespace()
-        .map(title_case_token)
-        .filter(|w| !w.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 fn project_duration_days(amount: f64) -> i64 {
     if amount >= 100_000_000.0 {
         60
@@ -3315,53 +2686,6 @@ fn zoho_project_date_range(close_date: Option<&str>, amount: f64) -> (String, St
         start.format("%Y-%m-%d").to_string(),
         end.format("%Y-%m-%d").to_string(),
     )
-}
-
-fn infer_task_template(
-    name: &str,
-    description: &str,
-    product_type: &str,
-    cfg: &OpportunityTemplateConfigStore,
-) -> Vec<String> {
-    if cfg.enabled {
-        let hay = format!("{name} {description} {product_type}").to_ascii_lowercase();
-        for rule in cfg.rules.iter().filter(|r| r.enabled) {
-            if rule
-                .keywords
-                .iter()
-                .any(|kw| !kw.is_empty() && hay.contains(kw))
-            {
-                return rule.tasks.clone();
-            }
-        }
-        return cfg.fallback_tasks.clone();
-    }
-    let hay = format!("{name} {description} {product_type}").to_ascii_lowercase();
-    let template = if hay.contains("mobile")
-        || hay.contains("flutter")
-        || hay.contains("app store")
-        || hay.contains("ios")
-        || hay.contains("android")
-        || hay.contains("di động")
-        || hay.contains("di dong")
-    {
-        TASK_TEMPLATE_MOBILE
-    } else if hay.contains("web")
-        || hay.contains("website")
-        || hay.contains("hạ tầng")
-        || hay.contains("ha tang")
-        || hay.contains("infrastructure")
-        || hay.contains("backend")
-        || hay.contains("api")
-        || hay.contains("docker")
-        || hay.contains("droplet")
-        || hay.contains("ssl")
-    {
-        TASK_TEMPLATE_WEB
-    } else {
-        DEFAULT_ZOHO_ONBOARDING_TASKS
-    };
-    template.iter().map(|s| (*s).to_string()).collect()
 }
 
 fn zoho_error_retryable(err: &str) -> bool {
@@ -3461,6 +2785,47 @@ async fn list_zoho_project_names(
         .collect())
 }
 
+/// Xóa entity link khi project Zoho đã bị xóa thủ công — tránh UI/sync hiển thị dữ liệu ma.
+pub async fn reconcile_entity_links_with_zoho(pool: &PgPool, tenant_id: i64) -> Result<i64, String> {
+    if !integration_both_connected(pool, tenant_id).await {
+        return Ok(0);
+    }
+    let portal_id = ensure_zoho_portal_id_sync(pool, tenant_id).await?;
+    let projects = list_zoho_project_names(pool, tenant_id, &portal_id).await?;
+    let valid: std::collections::HashSet<String> = projects.into_iter().map(|(id, _)| id).collect();
+
+    let links = db::list_entity_links(pool, tenant_id)
+        .await
+        .map_err(|e| format!("db list links: {e}"))?;
+    let mut deleted = 0_i64;
+    for link in links {
+        if link.zoho_id.starts_with("DEMO-") {
+            continue;
+        }
+        if valid.contains(&link.zoho_id) {
+            continue;
+        }
+        db::delete_entity_link(pool, tenant_id, &link.sf_entity_type, &link.sf_id)
+            .await
+            .map_err(|e| format!("db delete link: {e}"))?;
+        log_sync(
+            pool,
+            tenant_id,
+            "SKIPPED",
+            &format!(
+                "Đã xóa entity link cũ: {} → \"{}\" (Zoho id {} không còn trên portal)",
+                link.sf_id,
+                link.zoho_name.as_deref().unwrap_or("—"),
+                link.zoho_id,
+            ),
+            None,
+        )
+        .await;
+        deleted += 1;
+    }
+    Ok(deleted)
+}
+
 async fn create_zoho_project(
     pool: &PgPool,
     tenant_id: i64,
@@ -3470,7 +2835,6 @@ async fn create_zoho_project(
     end_date: &str,
     sf_opportunity_id: &str,
     amount_vnd: f64,
-    bridge_project: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<String, String> {
     let mut body = serde_json::Map::new();
     body.insert("name".into(), name.into());
@@ -3483,8 +2847,6 @@ async fn create_zoho_project(
     );
     body.insert("start_date".into(), start_date.into());
     body.insert("end_date".into(), end_date.into());
-    // Zoho owner/status cần object — bỏ qua string từ bridge SF.
-    merge_bridge_fields(&mut body, bridge_project, &["name", "owner", "status"]);
     let raw = zoho_post_json_with_retry(
         pool,
         tenant_id,
@@ -3518,7 +2880,6 @@ async fn create_zoho_tasks_for_project(
     project_id: &str,
     task_names: &[String],
     end_date: Option<&str>,
-    bridge_task: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<i64, String> {
     let mut created = 0_i64;
     for name in task_names {
@@ -3527,7 +2888,6 @@ async fn create_zoho_tasks_for_project(
         if let Some(ed) = end_date {
             body.insert("end_date".into(), ed.into());
         }
-        merge_bridge_fields(&mut body, bridge_task, &["name", "status", "owner"]);
         zoho_post_json_with_retry(
             pool,
             tenant_id,
@@ -3566,8 +2926,6 @@ struct PushItem {
     start_date: Option<String>,
     end_date: Option<String>,
     tasks: Vec<String>,
-    bridge_project: serde_json::Map<String, serde_json::Value>,
-    bridge_task: serde_json::Map<String, serde_json::Value>,
 }
 
 async fn load_snapshot_rows(
@@ -3583,148 +2941,21 @@ async fn load_snapshot_rows(
     serde_json::from_str(&snap.payload_json).unwrap_or_default()
 }
 
-async fn build_deal_document_context(
-    pool: &PgPool,
-    tenant_id: i64,
-    item: &PushItem,
-    zoho_project_id: &str,
-) -> DealDocumentContext {
-    let opps = load_snapshot_rows(pool, tenant_id, "opportunity").await;
-    let accounts = load_snapshot_rows(pool, tenant_id, "account").await;
-    let contacts = load_snapshot_rows(pool, tenant_id, "contact").await;
-
-    let account_id = item.account_id.clone().or_else(|| {
-        opps.iter()
-            .find(|o| bridge_field_str(o, "id").as_deref() == Some(item.sf_id.as_str()))
-            .and_then(|o| bridge_field_str(o, "account_id"))
-    });
-
-    let account = account_id.as_ref().and_then(|aid| {
-        accounts
-            .iter()
-            .find(|a| bridge_field_str(a, "id").as_deref() == Some(aid.as_str()))
-    });
-
-    let contact = account_id.as_ref().and_then(|aid| {
-        contacts.iter().find(|c| {
-            bridge_field_str(c, "account_id").as_deref() == Some(aid.as_str())
-        })
-    });
-
-    let customer_name = account
-        .and_then(|a| bridge_field_str(a, "name"))
-        .map(|n| normalize_sf_customer_name(&n))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| item.opportunity_name.clone());
-
-    DealDocumentContext {
-        sf_id: item.sf_id.clone(),
-        opportunity_name: item.opportunity_name.clone(),
-        customer_name,
-        amount: item.amount,
-        close_date: item.close_date.clone(),
-        contact_name: contact
-            .and_then(|c| bridge_field_str(c, "name"))
-            .unwrap_or_default(),
-        contact_email: contact
-            .and_then(|c| bridge_field_str(c, "email"))
-            .unwrap_or_default(),
-        industry: account
-            .and_then(|a| bridge_field_str(a, "industry"))
-            .unwrap_or_default(),
-        product_type: item.product_type.clone(),
-        zoho_project_id: zoho_project_id.to_string(),
-    }
-}
-
-async fn attach_document_to_zoho_project(
-    pool: &PgPool,
-    tenant_id: i64,
-    portal_id: &str,
-    project_id: &str,
-    project_name: &str,
-    doc_id: i64,
-) {
-    let doc_url = document_download_url(doc_id);
-    let description = format!(
-        "Đồng bộ từ Salesforce CRM\n\nHợp đồng PDF: {doc_url}"
-    );
-    let body = serde_json::json!({
-        "name": project_name,
-        "description": description,
-    });
-    if let Err(e) = zoho_put_json(
-        pool,
-        tenant_id,
-        &format!("/api/v3/portal/{portal_id}/projects/{project_id}"),
-        &body,
-    )
-    .await
-    {
-        tracing::warn!(project_id, error = %e, "zoho project description update failed");
-    }
-}
-
-async fn load_bridge_mapped_by_opp_id(
-    pool: &PgPool,
-    tenant_id: i64,
-) -> Result<std::collections::HashMap<String, (serde_json::Map<String, serde_json::Value>, serde_json::Map<String, serde_json::Value>)>, String> {
-    let mut out = std::collections::HashMap::new();
-    let snap = db::fetch_latest_integration_snapshot(pool, tenant_id, BRIDGE_PROVIDER, "mapped_deals")
-        .await
-        .map_err(|e| format!("db: {e}"))?;
-    let Some(snap) = snap else {
-        return Ok(out);
-    };
-    let deals: Vec<serde_json::Value> =
-        serde_json::from_str(&snap.payload_json).unwrap_or_default();
-    for deal in deals {
-        let sf_id = deal
-            .get("sf_opportunity_id")
-            .and_then(|v| v.as_str().map(String::from).or_else(|| v.as_i64().map(|n| n.to_string())))
-            .unwrap_or_default();
-        if sf_id.is_empty() {
-            continue;
-        }
-        let project = deal
-            .get("mapped_project")
-            .and_then(|v| v.as_object())
-            .cloned()
-            .unwrap_or_default();
-        let task = deal
-            .get("mapped_task")
-            .and_then(|v| v.as_object())
-            .cloned()
-            .unwrap_or_default();
-        out.insert(sf_id, (project, task));
-    }
-    Ok(out)
-}
-
-fn merge_bridge_fields(
-    body: &mut serde_json::Map<String, serde_json::Value>,
-    bridge: &serde_json::Map<String, serde_json::Value>,
-    skip: &[&str],
-) {
-    for (k, v) in bridge {
-        if skip.contains(&k.as_str()) {
-            continue;
-        }
-        if v.is_null() {
-            continue;
-        }
-        if v.as_str().is_some_and(|s| s.is_empty()) {
-            continue;
-        }
-        body.insert(k.clone(), v.clone());
-    }
+/// Task mặc định khi tạo Project triển khai —Sales-to-Delivery automation.
+fn default_delivery_tasks() -> Vec<String> {
+    vec![
+        "Họp kickoff".into(),
+        "Phân tích yêu cầu".into(),
+        "Thiết kế giải pháp".into(),
+        "Phát triển / Cấu hình".into(),
+        "Kiểm thử".into(),
+        "Triển khai & Bàn giao".into(),
+    ]
 }
 
 async fn collect_push_items(pool: &PgPool, tenant_id: i64) -> Result<Vec<PushItem>, String> {
     let min_amount = min_deal_amount_vnd();
     let mut items = Vec::new();
-    let bridge_mapped = load_bridge_mapped_by_opp_id(pool, tenant_id).await.unwrap_or_default();
-    let template_cfg = load_opportunity_template_config(pool, tenant_id).await;
 
     let opp_snap = db::fetch_latest_integration_snapshot(pool, tenant_id, SF_PROVIDER, "opportunity")
         .await
@@ -3770,14 +3001,9 @@ async fn collect_push_items(pool: &PgPool, tenant_id: i64) -> Result<Vec<PushIte
         }
         let close_date = bridge_field_str(&opp, "close_date");
         let account_id = bridge_field_str(&opp, "account_id");
-        let description = bridge_field_str(&opp, "description").unwrap_or_default();
         let product_type = bridge_field_str(&opp, "product_type").unwrap_or_default();
         let (start_date, end_date) = zoho_project_date_range(close_date.as_deref(), amount);
-        let tasks = infer_task_template(&name, &description, &product_type, &template_cfg);
-        let (bridge_project, bridge_task) = bridge_mapped
-            .get(&sf_id)
-            .cloned()
-            .unwrap_or_default();
+        let tasks = default_delivery_tasks();
         items.push(PushItem {
             sf_entity_type: "opportunity",
             sf_id,
@@ -3790,8 +3016,6 @@ async fn collect_push_items(pool: &PgPool, tenant_id: i64) -> Result<Vec<PushIte
             start_date: Some(start_date),
             end_date: Some(end_date),
             tasks,
-            bridge_project,
-            bridge_task,
         });
     }
 
@@ -3837,12 +3061,14 @@ pub async fn push_salesforce_to_zoho(
 
     let portal_id = ensure_zoho_portal_id_sync(pool, tenant_id).await?;
 
+    let _ = reconcile_entity_links_with_zoho(pool, tenant_id).await;
+
     let existing = list_zoho_project_names(pool, tenant_id, &portal_id).await?;
+    let live_zoho_ids: std::collections::HashSet<String> =
+        existing.iter().map(|(id, _)| id.clone()).collect();
     let mut created = 0_i64;
     let mut skipped = 0_i64;
     let mut tasks_created = 0_i64;
-    let mut documents_created = 0_i64;
-    let office_on = office_integration_configured(pool, tenant_id).await;
 
     for item in items {
         if let Some(link) = db::fetch_entity_link(pool, tenant_id, item.sf_entity_type, &item.sf_id)
@@ -3850,7 +3076,23 @@ pub async fn push_salesforce_to_zoho(
             .map_err(|e| format!("db: {e}"))?
         {
             let stale_demo = link.zoho_id.starts_with("DEMO-");
-            if !stale_demo {
+            let stale_missing = !live_zoho_ids.contains(&link.zoho_id);
+            if stale_demo || stale_missing {
+                let _ = db::delete_entity_link(pool, tenant_id, item.sf_entity_type, &item.sf_id).await;
+                if stale_missing && !stale_demo {
+                    log_sync(
+                        pool,
+                        tenant_id,
+                        "SKIPPED",
+                        &format!(
+                            "Entity link hết hạn: {} — Zoho id {} không tồn tại, sẽ đồng bộ lại",
+                            item.sf_id, link.zoho_id
+                        ),
+                        None,
+                    )
+                    .await;
+                }
+            } else {
                 skipped += 1;
                 log_sync(
                     pool,
@@ -3886,7 +3128,6 @@ pub async fn push_salesforce_to_zoho(
                 ed,
                 &item.sf_id,
                 item.amount,
-                &item.bridge_project,
             )
             .await
             {
@@ -3913,7 +3154,6 @@ pub async fn push_salesforce_to_zoho(
             &project_id,
             &item.tasks,
             item.end_date.as_deref(),
-            &item.bridge_task,
         )
         .await
         {
@@ -3941,61 +3181,15 @@ pub async fn push_salesforce_to_zoho(
         .await
         .map_err(|e| format!("db link: {e}"))?;
 
-        let mut doc_note = String::new();
-        if office_on {
-            let doc_ctx = build_deal_document_context(pool, tenant_id, &item, &project_id).await;
-            match generate_contract_for_deal(pool, tenant_id, &doc_ctx).await {
-                Ok(doc_id) => {
-                    documents_created += 1;
-                    attach_document_to_zoho_project(
-                        pool,
-                        tenant_id,
-                        &portal_id,
-                        &project_id,
-                        &item.project_name,
-                        doc_id,
-                    )
-                    .await;
-                    doc_note = format!(" + PDF #{doc_id}");
-                    log_sync(
-                        pool,
-                        tenant_id,
-                        "SUCCESS",
-                        &format!(
-                            "Document merge: Opp {} → hợp đồng PDF (#{doc_id})",
-                            item.sf_id
-                        ),
-                        None,
-                    )
-                    .await;
-                }
-                Err(e) => {
-                    log_sync(
-                        pool,
-                        tenant_id,
-                        "FAILED",
-                        &format!("Document merge Opp {} thất bại", item.sf_id),
-                        Some(&e),
-                    )
-                    .await;
-                }
-            }
-        }
-
         created += 1;
         log_sync(
             pool,
             tenant_id,
             "SUCCESS",
             &format!(
-                "Middleware: \"{}\" → Zoho \"{}\" (SP: {}, {:.0} VNĐ, end {}) + {} task{doc_note}",
+                "Middleware: \"{}\" → Zoho \"{}\" ({:.0} VNĐ, end {}) + {} task",
                 item.sf_id,
                 item.project_name,
-                if item.product_type.is_empty() {
-                    "—".to_string()
-                } else {
-                    item.product_type.clone()
-                },
                 item.amount,
                 item.end_date.as_deref().unwrap_or("—"),
                 item_tasks
@@ -4014,8 +3208,6 @@ pub async fn push_salesforce_to_zoho(
         "created": created,
         "skipped": skipped,
         "tasks_created": tasks_created,
-        "documents_created": documents_created,
-        "office_integrator": office_on,
         "portal_id": portal_id,
         "middleware": {
             "min_deal_amount_vnd": min_deal_amount_vnd(),
@@ -4026,15 +3218,13 @@ pub async fn push_salesforce_to_zoho(
     }))
 }
 
-/// Full pipeline: pull SF → bridge map → push Zoho Projects + tasks.
+/// Full pipeline: pull SF → lọc Closed Won → push Zoho Projects + tasks.
 pub async fn run_full_sync_pipeline(pool: &PgPool, tenant_id: i64) -> Result<serde_json::Value, String> {
     let sf = sync_salesforce_snapshots(pool, tenant_id).await?;
-    let bridge = try_run_integration_bridge(pool, tenant_id).await;
     if !integration_both_connected(pool, tenant_id).await {
         return Ok(serde_json::json!({
             "status": "ok",
             "salesforce": sf,
-            "bridge": bridge,
             "push": {
                 "status": "skipped",
                 "reason": "need_both_connected",
@@ -4046,7 +3236,6 @@ pub async fn run_full_sync_pipeline(pool: &PgPool, tenant_id: i64) -> Result<ser
     Ok(serde_json::json!({
         "status": "ok",
         "salesforce": sf,
-        "bridge": bridge,
         "push": push,
     }))
 }
@@ -4060,7 +3249,7 @@ pub async fn api_sync_now(ctx: &AdminCtx) -> Response {
         );
     };
     match run_full_sync_pipeline(&st.pool, ctx.tenant_id).await {
-        Ok(summary) => {
+        Ok(mut summary) => {
             write_audit(
                 &st.pool,
                 ctx,
@@ -4071,6 +3260,23 @@ pub async fn api_sync_now(ctx: &AdminCtx) -> Response {
                 Some("full pipeline"),
             )
             .await;
+            let logs = db::list_sync_logs(&st.pool, ctx.tenant_id, 50)
+                .await
+                .unwrap_or_default();
+            let (sf_connected, zoho_connected, both_connected) =
+                integration_connection_flags(&st.pool, ctx.tenant_id).await;
+            let steps = build_pipeline_from_run(&summary, &logs);
+            if let serde_json::Value::Object(ref mut map) = summary {
+                map.insert(
+                    "pipeline".to_string(),
+                    serde_json::json!({
+                        "sf_connected": sf_connected,
+                        "zoho_connected": zoho_connected,
+                        "both_connected": both_connected,
+                        "steps": steps,
+                    }),
+                );
+            }
             (StatusCode::OK, axum::Json(summary)).into_response()
         }
         Err(e) => {
@@ -4102,10 +3308,6 @@ pub async fn api_reset_integration_sync(ctx: &AdminCtx) -> Response {
     };
     match db::delete_integration_entity_links(&st.pool, ctx.tenant_id).await {
         Ok(deleted) => {
-            let docs_deleted =
-                crate::integration_office::delete_tenant_documents(&st.pool, ctx.tenant_id)
-                    .await
-                    .unwrap_or(0);
             write_audit(
                 &st.pool,
                 ctx,
@@ -4113,7 +3315,7 @@ pub async fn api_reset_integration_sync(ctx: &AdminCtx) -> Response {
                 "entity_links",
                 "success",
                 None,
-                Some(&format!("deleted={deleted}, docs={docs_deleted}")),
+                Some(&format!("deleted={deleted}")),
             )
             .await;
             (
@@ -4121,7 +3323,6 @@ pub async fn api_reset_integration_sync(ctx: &AdminCtx) -> Response {
                 axum::Json(serde_json::json!({
                     "status": "ok",
                     "entity_links_deleted": deleted,
-                    "documents_deleted": docs_deleted,
                 })),
             )
                 .into_response()
@@ -4132,6 +3333,309 @@ pub async fn api_reset_integration_sync(ctx: &AdminCtx) -> Response {
         )
             .into_response(),
     }
+}
+
+pub async fn api_list_entity_links(ctx: &AdminCtx) -> Response {
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "state not initialized",
+        );
+    };
+    if let Ok(n) = reconcile_entity_links_with_zoho(&st.pool, ctx.tenant_id).await {
+        if n > 0 {
+            tracing::info!(tenant_id = ctx.tenant_id, deleted = n, "reconciled orphan entity links");
+        }
+    }
+    match db::list_entity_links_public(&st.pool, ctx.tenant_id).await {
+        Ok(rows) => (StatusCode::OK, axum::Json(rows)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct IntegrationPipelineStep {
+    pub key: String,
+    pub label: String,
+    pub status: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct IntegrationPipelineStatus {
+    pub sf_connected: bool,
+    pub zoho_connected: bool,
+    pub both_connected: bool,
+    pub steps: Vec<IntegrationPipelineStep>,
+}
+
+fn count_sync_logs_status(logs: &[db::SyncLogRow], status: &str) -> usize {
+    logs.iter().filter(|l| l.status == status).count()
+}
+
+fn count_sync_logs_msg(logs: &[db::SyncLogRow], status: &str, needle: &str) -> usize {
+    logs
+        .iter()
+        .filter(|l| l.status == status && l.message.contains(needle))
+        .count()
+}
+
+fn build_step_sync_log(logs: &[db::SyncLogRow], empty_summary: &str) -> IntegrationPipelineStep {
+    let success = count_sync_logs_status(logs, "SUCCESS");
+    let skipped = count_sync_logs_status(logs, "SKIPPED");
+    let failed = count_sync_logs_status(logs, "FAILED");
+    let summary = if logs.is_empty() {
+        empty_summary.to_string()
+    } else {
+        format!("{success} OK · {skipped} SKIPPED · {failed} FAILED")
+    };
+    IntegrationPipelineStep {
+        key: "log".into(),
+        label: "Sync Log".into(),
+        status: if logs.is_empty() {
+            "idle".into()
+        } else {
+            "ok".into()
+        },
+        summary,
+    }
+}
+
+fn build_pipeline_from_run(
+    summary: &serde_json::Value,
+    logs: &[db::SyncLogRow],
+) -> Vec<IntegrationPipelineStep> {
+    let sf = summary.get("salesforce").and_then(|v| v.as_object());
+    let opp = sf
+        .and_then(|o| o.get("opportunity"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let acc = sf
+        .and_then(|o| o.get("account"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let push = summary.get("push").and_then(|v| v.as_object());
+    let reason = push
+        .and_then(|p| p.get("reason"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let created = push
+        .and_then(|p| p.get("created"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let skipped_push = push
+        .and_then(|p| p.get("skipped"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let tasks_created = push
+        .and_then(|p| p.get("tasks_created"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    let step1 = IntegrationPipelineStep {
+        key: "snapshot".into(),
+        label: "Snapshot SF".into(),
+        status: if opp > 0 { "ok" } else { "skipped" }.into(),
+        summary: if opp > 0 {
+            format!("{opp} Opportunity · {acc} Account — pull qua gateway loopback")
+        } else {
+            "Snapshot rỗng — kiểm tra kết nối Salesforce".into()
+        },
+    };
+
+    let (filter_status, filter_summary) = match reason {
+        "no_items" => (
+            "skipped",
+            "Không có deal đạt điều kiện — xem Sync Log (SKIPPED)".to_string(),
+        ),
+        "need_both_connected" => (
+            "skipped",
+            "Chỉ pull SF — chưa kết nối Zoho để push".to_string(),
+        ),
+        _ => {
+            let sum = format!(
+                "Sau lọc: {created} đẩy mới · {skipped_push} bỏ qua (đã link / không đạt)"
+            );
+            let st = if created == 0 && skipped_push == 0 {
+                "skipped"
+            } else {
+                "ok"
+            };
+            (st, sum)
+        }
+    };
+    let step2 = IntegrationPipelineStep {
+        key: "filter".into(),
+        label: "Lọc Closed Won".into(),
+        status: filter_status.into(),
+        summary: filter_summary,
+    };
+
+    let failed = count_sync_logs_status(logs, "FAILED");
+    let (push_status, push_summary) = match reason {
+        "need_both_connected" => ("skipped", "Bỏ qua — cần Zoho connected".to_string()),
+        "no_items" => ("skipped", "Không có deal để đẩy".to_string()),
+        _ if failed > 0 && created == 0 => (
+            "failed",
+            format!("{failed} deal FAILED — xem Sync Log"),
+        ),
+        _ if created > 0 => (
+            "ok",
+            format!("Tạo {created} dự án · {tasks_created} task"),
+        ),
+        _ if skipped_push > 0 => (
+            "skipped",
+            format!("{skipped_push} deal đã đồng bộ trước đó (idempotent)"),
+        ),
+        _ => ("ok", "Push hoàn tất — không có deal mới".to_string()),
+    };
+    let step3 = IntegrationPipelineStep {
+        key: "push".into(),
+        label: "Push Zoho".into(),
+        status: push_status.into(),
+        summary: push_summary,
+    };
+
+    vec![
+        step1,
+        step2,
+        step3,
+        build_step_sync_log(logs, "Chưa có log — chạy Sync Now"),
+    ]
+}
+
+fn build_pipeline_from_db(
+    opp_count: i64,
+    logs: &[db::SyncLogRow],
+    sf_connected: bool,
+    zoho_connected: bool,
+) -> Vec<IntegrationPipelineStep> {
+    let step1 = IntegrationPipelineStep {
+        key: "snapshot".into(),
+        label: "Snapshot SF".into(),
+        status: if !sf_connected {
+            "idle".into()
+        } else if opp_count > 0 {
+            "ok".into()
+        } else {
+            "skipped".into()
+        },
+        summary: if !sf_connected {
+            "Kết nối Salesforce trước".into()
+        } else if opp_count > 0 {
+            format!("{opp_count} Opportunity trong snapshot mới nhất")
+        } else {
+            "Chưa có snapshot — bấm Sync Now".into()
+        },
+    };
+
+    let router_skipped = count_sync_logs_msg(logs, "SKIPPED", "Middleware router");
+    let amount_skipped = count_sync_logs_msg(logs, "SKIPPED", "Amount");
+    let success_push = count_sync_logs_msg(logs, "SUCCESS", "→ Zoho");
+    let idempotent_skipped = count_sync_logs_msg(logs, "SKIPPED", "Đã đồng bộ");
+    let failed_push = count_sync_logs_status(logs, "FAILED");
+
+    let (filter_status, filter_summary) = if logs.is_empty() {
+        ("idle", "Chờ pipeline chạy".to_string())
+    } else if success_push > 0 || idempotent_skipped > 0 || failed_push > 0 {
+        (
+            "ok",
+            format!(
+                "Đã lọc — {} deal bị loại trước push",
+                router_skipped + amount_skipped
+            ),
+        )
+    } else if router_skipped > 0 || amount_skipped > 0 {
+        (
+            "skipped",
+            format!(
+                "{} deal SKIPPED (stage/amount)",
+                router_skipped + amount_skipped
+            ),
+        )
+    } else {
+        (
+            "skipped",
+            "Chưa có deal đạt Closed Won + ngưỡng".to_string(),
+        )
+    };
+    let step2 = IntegrationPipelineStep {
+        key: "filter".into(),
+        label: "Lọc Closed Won".into(),
+        status: filter_status.into(),
+        summary: filter_summary,
+    };
+
+    let (push_status, push_summary) = if !zoho_connected {
+        ("idle", "Kết nối Zoho Projects".to_string())
+    } else if logs.is_empty() {
+        ("idle", "Chờ Sync Now".to_string())
+    } else if failed_push > 0 && success_push == 0 {
+        ("failed", format!("{failed_push} deal FAILED"))
+    } else if success_push > 0 {
+        ("ok", format!("{success_push} deal đã push lên Zoho"))
+    } else if idempotent_skipped > 0 {
+        (
+            "skipped",
+            format!("{idempotent_skipped} deal đã có entity link"),
+        )
+    } else {
+        ("skipped", "Chưa push deal mới".to_string())
+    };
+    let step3 = IntegrationPipelineStep {
+        key: "push".into(),
+        label: "Push Zoho".into(),
+        status: push_status.into(),
+        summary: push_summary,
+    };
+
+    vec![
+        step1,
+        step2,
+        step3,
+        build_step_sync_log(logs, "Chưa có bản ghi"),
+    ]
+}
+
+async fn fetch_integration_pipeline_status(
+    pool: &PgPool,
+    tenant_id: i64,
+) -> IntegrationPipelineStatus {
+    let (sf_connected, zoho_connected, both_connected) =
+        integration_connection_flags(pool, tenant_id).await;
+    let opp_count = db::fetch_latest_integration_snapshot(pool, tenant_id, SF_PROVIDER, "opportunity")
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.record_count)
+        .unwrap_or(0);
+    let logs = db::list_sync_logs(pool, tenant_id, 50)
+        .await
+        .unwrap_or_default();
+    let steps = build_pipeline_from_db(opp_count, &logs, sf_connected, zoho_connected);
+    IntegrationPipelineStatus {
+        sf_connected,
+        zoho_connected,
+        both_connected,
+        steps,
+    }
+}
+
+pub async fn api_integration_pipeline_status(ctx: &AdminCtx) -> Response {
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "state not initialized",
+        );
+    };
+    let status = fetch_integration_pipeline_status(&st.pool, ctx.tenant_id).await;
+    (StatusCode::OK, axum::Json(status)).into_response()
 }
 
 pub async fn api_list_sync_logs(ctx: &AdminCtx) -> Response {
@@ -4206,7 +3710,7 @@ async fn maybe_refresh_integration_tokens(pool: &PgPool, tenant_id: i64) {
     }
 }
 
-// --- Transformation Engine (Integration Platform) ---
+// --- Transformation Engine (canonical data plane proxy) ---
 
 pub async fn list_zoho_tasks_as_canonical_contacts(
     pool: &PgPool,
@@ -4279,326 +3783,6 @@ pub async fn create_zoho_task_from_canonical_contact(
     .map_err(|e| format!("serialize: {e}"))
 }
 
-/// Salesforce Contact → canonical → Zoho Projects task (demo câu hỏi hội đồng).
-pub async fn sync_salesforce_contact_to_zoho(
-    pool: &PgPool,
-    tenant_id: i64,
-    salesforce_contact_id: &str,
-    zoho_project_id: Option<&str>,
-) -> Result<serde_json::Value, String> {
-    if !integration_both_connected(pool, tenant_id).await {
-        return Err("Cần Salesforce + Zoho connected".into());
-    }
-    let contact_id = salesforce_contact_id.trim();
-    if !contact_id.starts_with("003") {
-        return Err("Salesforce Contact Id phải bắt đầu bằng 003".into());
-    }
-    let sf_path = format!("/sobjects/Contact/{contact_id}");
-    let (sf_status, bytes, _) = sf_request_raw_with_refresh(pool, tenant_id, "GET", &sf_path, None, None, None)
-        .await?;
-    let sf_record: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|e| format!("parse sf contact: {e}"))?;
-    if !sf_status.is_success() {
-        let code = sf_record
-            .get(0)
-            .and_then(|v| v.get("errorCode"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("SF_ERROR");
-        let message = sf_record
-            .get(0)
-            .and_then(|v| v.get("message"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("Salesforce API failed");
-        return Err(format!("{code}: {message}"));
-    }
-    let canonical = crate::transform::salesforce_to_canonical_contact(&sf_record);
-    let zoho_body = crate::transform::canonical_to_zoho_projects_task(&canonical);
-
-    let portal_id = ensure_zoho_portal_id(pool, tenant_id).await?;
-    let project_id = if let Some(pid) = zoho_project_id.filter(|s| !s.is_empty()) {
-        pid.to_string()
-    } else {
-        let (projects_raw, _) = zoho_get_with_refresh(
-            pool,
-            tenant_id,
-            &format!("/api/v3/portal/{portal_id}/projects"),
-        )
-        .await?;
-        let projects = extract_zoho_array(&projects_raw, &["projects"]);
-        projects
-            .first()
-            .map(|p| zoho_id_str(p))
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| "Chưa có project Zoho — chỉ định zoho_project_id".to_string())?
-    };
-
-    let zoho_resp = zoho_post_json(
-        pool,
-        tenant_id,
-        &format!("/api/v3/portal/{portal_id}/projects/{project_id}/tasks"),
-        &zoho_body,
-    )
-    .await?;
-
-    Ok(serde_json::json!({
-        "status": "synced",
-        "pipeline": ["salesforce_contact", "canonical", "zoho_projects_task"],
-        "salesforce": {
-            "id": salesforce_contact_id,
-            "raw": sf_record
-        },
-        "canonical": canonical,
-        "zoho": {
-            "project_id": project_id,
-            "request": zoho_body,
-            "response": zoho_resp
-        }
-    }))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TransformPreviewBody {
-    pub provider: String,
-    pub entity: String,
-    pub payload: serde_json::Value,
-}
-
-pub async fn api_get_transform_profile(_ctx: &AdminCtx) -> Response {
-    (
-        StatusCode::OK,
-        axum::Json(crate::transform::transform_profile()),
-    )
-        .into_response()
-}
-
-pub async fn api_post_transform_preview(
-    _ctx: &AdminCtx,
-    body: TransformPreviewBody,
-) -> Response {
-    let provider = match body.provider.to_ascii_lowercase().as_str() {
-        "sf" | "salesforce" => crate::transform::TransformProvider::Salesforce,
-        "zoho" | "zoho_projects" => crate::transform::TransformProvider::ZohoProjects,
-        _ => {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                "bad_request",
-                "provider must be salesforce or zoho_projects",
-            );
-        }
-    };
-    let entity = match body.entity.to_ascii_lowercase().as_str() {
-        "contact" | "contacts" => crate::transform::TransformEntity::Contact,
-        _ => {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                "bad_request",
-                "entity must be contact",
-            );
-        }
-    };
-    match crate::transform::preview_transform(provider, entity, &body.payload) {
-        Ok(canonical) => (
-            StatusCode::OK,
-            axum::Json(serde_json::json!({
-                "canonical": canonical,
-                "profile": crate::transform::transform_profile()
-            })),
-        )
-            .into_response(),
-        Err(e) => json_error(StatusCode::BAD_REQUEST, "transform_failed", &e),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SyncContactBody {
-    pub salesforce_contact_id: String,
-    pub zoho_project_id: Option<String>,
-}
-
-pub async fn api_sync_contact_sf_to_zoho(ctx: &AdminCtx, body: SyncContactBody) -> Response {
-    let Some(st) = STATE.get() else {
-        return json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal_error",
-            "state not initialized",
-        );
-    };
-    if body.salesforce_contact_id.trim().is_empty() {
-        return json_error(
-            StatusCode::BAD_REQUEST,
-            "bad_request",
-            "salesforce_contact_id required",
-        );
-    }
-    match sync_salesforce_contact_to_zoho(
-        &st.pool,
-        ctx.tenant_id,
-        body.salesforce_contact_id.trim(),
-        body.zoho_project_id.as_deref(),
-    )
-    .await
-    {
-        Ok(result) => {
-            write_audit(
-                &st.pool,
-                ctx,
-                "integration.transform.sync_contact",
-                &body.salesforce_contact_id,
-                "success",
-                None,
-                Some("sf→canonical→zoho"),
-            )
-            .await;
-            (StatusCode::OK, axum::Json(result)).into_response()
-        }
-        Err(e) => {
-            write_audit_failure(
-                &st.pool,
-                ctx,
-                "integration.transform.sync_contact",
-                &body.salesforce_contact_id,
-                None,
-                Some(&e),
-            )
-            .await;
-            json_error(StatusCode::BAD_GATEWAY, "sync_failed", &e)
-        }
-    }
-}
-
-fn template_config_public(
-    cfg: OpportunityTemplateConfigStore,
-    updated_by: Option<String>,
-    updated_at: Option<String>,
-) -> OpportunityTemplateConfigPublic {
-    OpportunityTemplateConfigPublic {
-        enabled: cfg.enabled,
-        rules: cfg.rules,
-        fallback_tasks: cfg.fallback_tasks,
-        updated_by,
-        updated_at,
-    }
-}
-
-pub async fn api_get_opportunity_templates(ctx: &AdminCtx) -> Response {
-    let Some(st) = STATE.get() else {
-        return json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal_error",
-            "state not initialized",
-        );
-    };
-    let row = db::fetch_integration_provider_config(&st.pool, ctx.tenant_id, OPP_TEMPLATE_PROVIDER)
-        .await
-        .ok()
-        .flatten();
-    let cfg = load_opportunity_template_config(&st.pool, ctx.tenant_id).await;
-    let (updated_by, updated_at) = row
-        .map(|r| (Some(r.updated_by), Some(r.updated_at)))
-        .unwrap_or((None, None));
-    (StatusCode::OK, axum::Json(template_config_public(cfg, updated_by, updated_at))).into_response()
-}
-
-fn template_validation_fields(body: &OpportunityTemplateConfigWriteBody) -> serde_json::Map<String, serde_json::Value> {
-    let mut fields = serde_json::Map::new();
-    if body.rules.is_empty() {
-        fields.insert(
-            "rules".into(),
-            serde_json::Value::String("Cần ít nhất 1 project template".into()),
-        );
-    }
-    for (idx, rule) in body.rules.iter().enumerate() {
-        if normalize_lines(&rule.keywords).is_empty() {
-            fields.insert(
-                format!("rules.{idx}.keywords"),
-                serde_json::Value::String("Thiếu từ khóa match".into()),
-            );
-        }
-        if normalize_lines(&rule.tasks).is_empty() {
-            fields.insert(
-                format!("rules.{idx}.tasks"),
-                serde_json::Value::String("Thiếu danh sách task".into()),
-            );
-        }
-    }
-    if normalize_lines(&body.fallback_tasks).is_empty() {
-        fields.insert(
-            "fallback_tasks".into(),
-            serde_json::Value::String("Thiếu task fallback".into()),
-        );
-    }
-    fields
-}
-
-pub async fn api_put_opportunity_templates(
-    ctx: &AdminCtx,
-    body: OpportunityTemplateConfigWriteBody,
-) -> Response {
-    let Some(st) = STATE.get() else {
-        return json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal_error",
-            "state not initialized",
-        );
-    };
-    let fields = template_validation_fields(&body);
-    if !fields.is_empty() {
-        return json_error_fields(
-            StatusCode::BAD_REQUEST,
-            "validation_failed",
-            "Kiểm tra template được đánh dấu",
-            fields,
-        );
-    }
-    let store = normalize_template_store(OpportunityTemplateConfigStore {
-        enabled: body.enabled,
-        rules: body.rules,
-        fallback_tasks: body.fallback_tasks,
-    });
-    let json = match serde_json::to_string(&store) {
-        Ok(j) => j,
-        Err(e) => {
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "serialize_failed",
-                &format!("{e}"),
-            );
-        }
-    };
-    let enc = match encrypt_integration_config(&json) {
-        Ok(e) => e,
-        Err(e) => {
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "encrypt_failed",
-                &format!("{e}"),
-            );
-        }
-    };
-    if let Err(e) = db::upsert_integration_provider_config(
-        &st.pool,
-        ctx.tenant_id,
-        OPP_TEMPLATE_PROVIDER,
-        &enc,
-        &ctx.username,
-    )
-    .await
-    {
-        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "db_failed", &format!("{e}"));
-    }
-    write_audit(
-        &st.pool,
-        ctx,
-        "integration.opportunity_templates.update",
-        OPP_TEMPLATE_PROVIDER,
-        "success",
-        None,
-        Some("template_config"),
-    )
-    .await;
-    api_get_opportunity_templates(ctx).await
-}
-
 /// Background worker: refresh tokens + full sync every N minutes (default 15).
 pub fn spawn_integration_sync_worker(pool: PgPool) {
     let interval_mins: u64 = std::env::var("INTEGRATION_SYNC_INTERVAL_MINS")
@@ -4654,43 +3838,11 @@ mod middleware_tests {
     use super::*;
 
     #[test]
-    fn normalize_strips_chot_and_title_cases() {
-        let s = normalize_sf_customer_name("cty tnhh nguyen van a - CHOT");
-        assert!(s.contains("Công ty"));
-        assert!(s.contains("TNHH"));
-        assert!(!s.to_ascii_lowercase().contains("chốt"));
-    }
-
-    #[test]
     fn project_name_uses_opportunity_name() {
         let name = zoho_project_name_from_opportunity(
             "Triển khai giải pháp ERP cho Công ty ABC",
         );
         assert_eq!(name, "Triển khai giải pháp ERP cho Công ty ABC");
         assert!(!name.contains("VIP"));
-    }
-
-    #[test]
-    fn task_template_mobile_from_product_type() {
-        let cfg = OpportunityTemplateConfigStore {
-            enabled: false,
-            rules: vec![],
-            fallback_tasks: vec![],
-        };
-        let tasks = infer_task_template("", "", "Gói Mobile App Flutter", &cfg);
-        assert_eq!(tasks.len(), TASK_TEMPLATE_MOBILE.len());
-        assert!(tasks[0].contains("UI/UX"));
-    }
-
-    #[test]
-    fn task_template_web_from_product_type() {
-        let cfg = OpportunityTemplateConfigStore {
-            enabled: false,
-            rules: vec![],
-            fallback_tasks: vec![],
-        };
-        let tasks = infer_task_template("", "", "Website / Hạ tầng", &cfg);
-        assert_eq!(tasks.len(), TASK_TEMPLATE_WEB.len());
-        assert!(tasks.iter().any(|t| t.contains("Docker")));
     }
 }

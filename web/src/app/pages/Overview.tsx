@@ -637,35 +637,9 @@ function OverviewAdmin() {
             </ChartContainer>
           )}
         </NavCard>
-
-        {showIntegrations ? (
-          <NavCard to="/integrations" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Tích hợp CRM">
-            <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
-              Tích hợp CRM — trạng thái
-            </h3>
-            <p className="text-xs text-muted-foreground mb-4">Salesforce / Zoho OAuth connection.</p>
-            {(stats?.integrations ?? []).length === 0 ? (
-              <p className="text-sm text-muted-foreground">Chưa cấu hình — bấm card để mở Tích hợp.</p>
-            ) : (
-              <div className="flex flex-wrap gap-3">
-                {(stats?.integrations ?? []).map((row) => (
-                  <div
-                    key={row.provider}
-                    className="flex items-center gap-2 rounded-lg border border-border bg-slate-900/40 px-3 py-2"
-                  >
-                    <span className="text-sm font-medium text-white">{row.label}</span>
-                    <Badge className={`${integrationStatusBadge(row.status)} border text-xs`}>
-                      {INTEGRATION_STATUS_VI[row.status] ?? row.status}
-                    </Badge>
-                  </div>
-                ))}
-              </div>
-            )}
-          </NavCard>
-        ) : null}
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 lg:gap-8">
         <div className="xl:col-span-2">
           <NavCard to="/routes" className="rounded-2xl overflow-hidden bg-card/80 border-border" ariaLabel="Danh sách routes">
             <div className="p-6 border-b border-border flex justify-between items-center">
@@ -694,30 +668,56 @@ function OverviewAdmin() {
         </div>
 
         {showIntegrations ? (
-          <NavCard to="/integrations" className="rounded-2xl p-6 bg-card/80 border-border" ariaLabel="Chi tiết tích hợp">
-            <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">Tích hợp</h3>
-            <p className="text-xs text-muted-foreground mb-4">Chi tiết kết nối OAuth.</p>
-            <div className="space-y-4">
-              {(stats?.integrations ?? []).map((row) => (
-                <div key={row.provider} className="border border-border rounded-lg p-3">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="font-medium text-white text-sm">{row.label}</span>
-                    <Badge className={`${integrationStatusBadge(row.status)} border text-xs`}>{row.status}</Badge>
-                  </div>
-                  {row.last_sync_at ? (
-                    <p className="text-xs text-muted-foreground">Sync: {formatDbTimestamp(row.last_sync_at)}</p>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">Chưa sync</p>
-                  )}
-                </div>
-              ))}
-              <p className="text-xs text-primary font-mono-tech">Quản lý tích hợp →</p>
-              {dlqCounts.total > 0 ? (
-                <p className="text-xs text-amber-300">
-                  DLQ: {dlqCounts.pending} pending · {dlqCounts.replayed} replayed →
-                </p>
-              ) : null}
+          <NavCard to="/integrations" className="rounded-2xl p-5 sm:p-6 bg-card/80 border-border" ariaLabel="Tích hợp CRM">
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div>
+                <h3 className="font-bold text-white text-sm uppercase tracking-wider">Tích hợp CRM</h3>
+                <p className="text-xs text-muted-foreground mt-1">Salesforce · Zoho Projects · pipeline sync</p>
+              </div>
+              <span className="text-xs text-primary font-mono-tech shrink-0">Mở →</span>
             </div>
+            {(stats?.integrations ?? []).length === 0 ? (
+              <p className="text-sm text-muted-foreground">Chưa kết nối provider — cấu hình OAuth tại trang Tích hợp.</p>
+            ) : (
+              <div className="space-y-3">
+                {(stats?.integrations ?? []).map((row) => {
+                  const snapshots = (stats?.snapshot_entities ?? []).filter((s) => s.provider === row.provider);
+                  return (
+                    <div key={row.provider} className="rounded-xl border border-border bg-slate-900/35 p-4">
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <span className="font-medium text-white text-sm">{row.label}</span>
+                        <Badge className={`${integrationStatusBadge(row.status)} border text-xs shrink-0`}>
+                          {INTEGRATION_STATUS_VI[row.status] ?? row.status}
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {row.last_sync_at
+                          ? `Sync gần nhất: ${formatDbTimestamp(row.last_sync_at)}`
+                          : 'Chưa chạy sync'}
+                      </p>
+                      {row.last_error && row.status === 'error' ? (
+                        <p className="text-xs text-red-300/90 mt-2 line-clamp-2" title={row.last_error}>
+                          {row.last_error}
+                        </p>
+                      ) : null}
+                      {snapshots.length > 0 ? (
+                        <div className="flex flex-wrap gap-1.5 mt-3">
+                          {snapshots.map((s) => (
+                            <Badge
+                              key={`${s.provider}-${s.entity_type}`}
+                              variant="outline"
+                              className="text-[10px] border-border/80 text-slate-400"
+                            >
+                              {s.label}: {s.record_count}
+                            </Badge>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </NavCard>
         ) : dlqCounts.total > 0 ? (
           <NavCard to="/proxy-queue" className="rounded-2xl p-6 bg-card/80 border-border" ariaLabel="DLQ hàng đợi">

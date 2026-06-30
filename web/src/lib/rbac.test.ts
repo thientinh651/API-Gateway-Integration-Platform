@@ -51,7 +51,7 @@ describe('rbacAllow (sync backend admin_auth)', () => {
     expect(rbacAllow('GET', '/api/integrations/salesforce/test', 'operator')).toBe(false);
     expect(rbacAllow('POST', '/api/integrations/salesforce/sync', 'operator')).toBe(false);
     expect(rbacAllow('GET', '/api/integrations', 'viewer')).toBe(false);
-    expect(rbacAllow('GET', '/api/integrations/bridge', 'viewer')).toBe(false);
+    expect(rbacAllow('GET', '/api/integrations/pipeline-status', 'viewer')).toBe(false);
   });
 });
 

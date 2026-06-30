@@ -22,6 +22,8 @@ export type WorkspaceInfo = {
   is_home: boolean;
 };
 
+export type DeploymentMode = 'on_prem' | 'saas';
+
 export type AdminMe = {
   username: string;
   email?: string | null;
@@ -30,7 +32,25 @@ export type AdminMe = {
   home_tenant_id?: number;
   user_id?: number;
   workspaces?: WorkspaceInfo[];
+  deployment_mode?: DeploymentMode;
 };
+
+export type PublicGatewayFeatures = {
+  status: string;
+  service: string;
+  version: string;
+  features: {
+    forgot_password: boolean;
+    register_viewer: boolean;
+    deployment_mode: DeploymentMode;
+    password_reset_dev_log: boolean;
+    dashboard_users_table: boolean;
+  };
+};
+
+export async function fetchPublicGatewayFeatures(): Promise<PublicGatewayFeatures> {
+  return publicFetchJson<PublicGatewayFeatures>('/api/ping');
+}
 
 export async function switchWorkspace(tenantId: number): Promise<{ status: string; tenant_id: number; role: string }> {
   return fetchJson('/api/workspace/switch', {
@@ -50,6 +70,10 @@ export async function inviteWorkspaceMember(body: { username: string; role: stri
 
 export async function removeWorkspaceMember(userId: number): Promise<void> {
   return fetchOk(`/api/workspace/members/${userId}`, { method: 'DELETE' });
+}
+
+export async function fetchWorkspaceMembers(): Promise<AdminUserRow[]> {
+  return fetchJson<AdminUserRow[]>('/api/workspace/members');
 }
 
 export async function adminMe(): Promise<AdminMe> {
@@ -499,6 +523,7 @@ export type GatewaySettings = {
     bind_port: number;
     log_format: string;
     has_admin_api_key: boolean;
+    deployment_mode?: DeploymentMode;
   };
 };
 
@@ -601,49 +626,6 @@ export function fetchIntegrations(): Promise<IntegrationRow[]> {
   return fetchJson<IntegrationRow[]>('/api/integrations');
 }
 
-export type BridgeFieldMapping = {
-  id: string;
-  source_entity: string;
-  source_field: string;
-  target_entity: string;
-  target_field: string;
-  enabled: boolean;
-  label: string;
-};
-
-export type IntegrationBridgeConfig = {
-  enabled: boolean;
-  direction: string;
-  mappings: BridgeFieldMapping[];
-  both_connected: boolean;
-};
-
-export function fetchIntegrationBridge(): Promise<IntegrationBridgeConfig> {
-  return fetchJson<IntegrationBridgeConfig>('/api/integrations/bridge');
-}
-
-export function updateIntegrationBridge(body: {
-  enabled: boolean;
-  direction: string;
-  mappings: BridgeFieldMapping[];
-}): Promise<IntegrationBridgeConfig> {
-  return fetchJson<IntegrationBridgeConfig>('/api/integrations/bridge', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-}
-
-export function runIntegrationBridge(): Promise<{
-  status: string;
-  provider: string;
-  entity_type: string;
-  records: number;
-  mappings_enabled: number;
-}> {
-  return fetchJson('/api/integrations/bridge/run', { method: 'POST' });
-}
-
 export type SyncLogRow = {
   id: number;
   tenant_id: number;
@@ -663,22 +645,36 @@ export type SyncNowResult = {
     provider: string;
     opportunity: number;
     account: number;
-    contact?: number;
     demo?: boolean;
   };
-  bridge: IntegrationBridgeRunResult;
   push: {
     status?: string;
     created?: number;
     skipped?: number;
     tasks_created?: number;
-    documents_created?: number;
-    office_integrator?: boolean;
-    demo?: boolean;
     reason?: string;
     message?: string;
   };
+  pipeline?: IntegrationPipelineStatus;
 };
+
+export type IntegrationPipelineStep = {
+  key: 'snapshot' | 'filter' | 'push' | 'log';
+  label: string;
+  status: 'idle' | 'ok' | 'skipped' | 'failed';
+  summary: string;
+};
+
+export type IntegrationPipelineStatus = {
+  sf_connected: boolean;
+  zoho_connected: boolean;
+  both_connected: boolean;
+  steps: IntegrationPipelineStep[];
+};
+
+export function fetchIntegrationPipelineStatus(): Promise<IntegrationPipelineStatus> {
+  return fetchJson<IntegrationPipelineStatus>('/api/integrations/pipeline-status');
+}
 
 export type EntityLinkRow = {
   sf_entity_type: string;
@@ -686,68 +682,10 @@ export type EntityLinkRow = {
   zoho_id: string;
   zoho_name: string | null;
   last_synced_at: string;
-  document_id: number | null;
-  document_filename: string | null;
 };
 
 export function fetchEntityLinks(): Promise<EntityLinkRow[]> {
   return fetchJson<EntityLinkRow[]>('/api/integrations/entity-links');
-}
-
-export type IntegrationDocumentRow = {
-  id: number;
-  sf_entity_type: string;
-  sf_id: string;
-  zoho_project_id: string | null;
-  filename: string;
-  content_type: string;
-  file_size: number;
-  source_provider: string;
-  created_at: string;
-};
-
-export function fetchIntegrationDocuments(): Promise<IntegrationDocumentRow[]> {
-  return fetchJson<IntegrationDocumentRow[]>('/api/integrations/documents');
-}
-
-export function integrationDocumentDownloadUrl(id: number): string {
-  return apiUrl(`/api/integrations/documents/${id}/download`);
-}
-
-export type ZohoOfficeConfigPublic = {
-  api_domain: string;
-  template_path: string;
-  enabled: boolean;
-  has_api_key: boolean;
-  api_key_masked?: string | null;
-  updated_by?: string | null;
-  updated_at?: string | null;
-};
-
-export function fetchOfficeConfig(): Promise<ZohoOfficeConfigPublic> {
-  return fetchJson<ZohoOfficeConfigPublic>('/api/integrations/office/config');
-}
-
-export function updateOfficeConfig(body: {
-  api_key: string;
-  api_domain: string;
-  template_path: string;
-  enabled: boolean;
-}): Promise<ZohoOfficeConfigPublic> {
-  return fetchJson<ZohoOfficeConfigPublic>('/api/integrations/office/config', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-}
-
-export function officeIntegratorTest(): Promise<{
-  status: string;
-  provider: string;
-  template: string;
-  pdf_bytes: number;
-}> {
-  return fetchJson('/api/integrations/office/test');
 }
 
 export function integrationSyncNow(): Promise<SyncNowResult> {
@@ -757,7 +695,6 @@ export function integrationSyncNow(): Promise<SyncNowResult> {
 export function resetIntegrationSync(): Promise<{
   status: string;
   entity_links_deleted: number;
-  documents_deleted?: number;
 }> {
   return fetchJson('/api/integrations/reset-sync', { method: 'POST' });
 }
@@ -770,14 +707,9 @@ export async function salesforceTest(): Promise<{ status: string; limits: unknow
   return fetchJson<{ status: string; limits: unknown }>('/api/integrations/salesforce/test');
 }
 
-export type IntegrationBridgeRunResult =
-  | { status: 'ok'; provider: string; entity_type: string; records: number; mappings_enabled?: number }
-  | { status: 'skipped'; reason: string };
-
 export async function salesforceSync(): Promise<{
   status: string;
   summary: { provider: string; opportunity: number; account: number };
-  bridge?: IntegrationBridgeRunResult;
 }> {
   return fetchJson('/api/integrations/salesforce/sync', { method: 'POST' });
 }
@@ -834,7 +766,6 @@ export async function zohoTest(): Promise<{
 export async function zohoSync(): Promise<{
   status: string;
   summary: { provider: string; portal_id?: string; project: number; task: number };
-  bridge?: IntegrationBridgeRunResult;
 }> {
   return fetchJson('/api/integrations/zoho/sync', { method: 'POST' });
 }
@@ -849,34 +780,6 @@ export type IntegrationSnapshotSummary = {
 export function fetchIntegrationSnapshots(provider?: string): Promise<IntegrationSnapshotSummary[]> {
   const q = provider ? `?provider=${encodeURIComponent(provider)}` : '';
   return fetchJson<IntegrationSnapshotSummary[]>(`/api/integrations/snapshots${q}`);
-}
-
-export type SnapshotContactRow = {
-  id: string;
-  name?: string;
-  email?: string;
-  account_id?: string;
-  url?: string;
-};
-
-export type SnapshotRecordsResponse = {
-  provider: string;
-  entity_type: string;
-  fetched_at: string | null;
-  record_count: number;
-  records: SnapshotContactRow[];
-  hint?: string;
-};
-
-export function fetchSnapshotRecords(
-  provider = 'salesforce',
-  entityType = 'contact',
-): Promise<SnapshotRecordsResponse> {
-  const q = new URLSearchParams({
-    provider,
-    entity_type: entityType,
-  });
-  return fetchJson<SnapshotRecordsResponse>(`/api/integrations/snapshots/records?${q}`);
 }
 
 export type DashboardStats = {
@@ -935,87 +838,11 @@ export type MiddlewareStatus = {
   rate_limit_global_enabled: boolean;
   rate_limit_global_rps: number;
   integration_platform?: {
-    transform_engine: string;
-    canonical_entities: string[];
     connectors: string[];
     dlq_storage: string;
     dlq_auto_replay_worker: boolean;
-    bridge_enabled: boolean;
   };
 };
-
-export type TransformProfile = {
-  engine: string;
-  entities: string[];
-  contact?: {
-    canonical: Record<string, string>;
-    example?: {
-      salesforce_in: Record<string, string>;
-      canonical: Record<string, string>;
-      zoho_projects_out: Record<string, string>;
-    };
-  };
-};
-
-export type OpportunityTemplateRule = {
-  id: string;
-  label: string;
-  enabled: boolean;
-  keywords: string[];
-  tasks: string[];
-};
-
-export type OpportunityTemplateConfig = {
-  enabled: boolean;
-  rules: OpportunityTemplateRule[];
-  fallback_tasks: string[];
-  updated_by?: string | null;
-  updated_at?: string | null;
-};
-
-export function fetchOpportunityTemplates(): Promise<OpportunityTemplateConfig> {
-  return fetchJson<OpportunityTemplateConfig>('/api/integrations/opportunity-templates');
-}
-
-export function updateOpportunityTemplates(body: OpportunityTemplateConfig): Promise<OpportunityTemplateConfig> {
-  return fetchJson<OpportunityTemplateConfig>('/api/integrations/opportunity-templates', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-}
-
-export function fetchTransformProfile(): Promise<TransformProfile> {
-  return fetchJson<TransformProfile>('/api/integrations/transform/profile');
-}
-
-export function previewTransform(body: {
-  provider: string;
-  entity: string;
-  payload: Record<string, unknown>;
-}): Promise<{ canonical: Record<string, unknown> }> {
-  return fetchJson('/api/integrations/transform/preview', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-}
-
-export function syncContactSfToZoho(body: {
-  salesforce_contact_id: string;
-  zoho_project_id?: string;
-}): Promise<{
-  status: string;
-  canonical: Record<string, unknown>;
-  salesforce: { id: string; raw?: Record<string, unknown> };
-  zoho: { project_id: string; request?: Record<string, unknown>; response?: Record<string, unknown> };
-}> {
-  return fetchJson('/api/integrations/transform/sync-contact', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-}
 
 export function fetchMiddlewareStatus(): Promise<MiddlewareStatus> {
   return fetchJson<MiddlewareStatus>('/api/middleware/status');

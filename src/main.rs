@@ -5,7 +5,6 @@ mod db;
 mod dashboard;
 mod gateway_rsa;
 mod identity;
-mod integration_office;
 mod integrations;
 mod jwt_auth;
 mod metrics;
@@ -233,6 +232,7 @@ struct SettingsSystemInfo {
     bind_port: u16,
     log_format: &'static str,
     has_admin_api_key: bool,
+    deployment_mode: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -821,6 +821,11 @@ fn settings_response_from_config(cfg: &AppConfig) -> SettingsResponse {
             bind_port: current_bind_port(),
             log_format: "tracing JSON",
             has_admin_api_key: !cfg.admin_api_key_sha256.is_empty(),
+            deployment_mode: if admin_auth::on_prem_single_org() {
+                "on_prem"
+            } else {
+                "saas"
+            },
         },
     }
 }
@@ -1045,7 +1050,10 @@ async fn main() {
         .route("/users/:id", put(api_update_user).delete(api_delete_user))
         .route("/workspace/memberships", get(api_list_workspaces))
         .route("/workspace/switch", post(api_switch_workspace))
-        .route("/workspace/members", post(api_invite_workspace_member))
+        .route(
+            "/workspace/members",
+            get(api_list_workspace_members).post(api_invite_workspace_member),
+        )
         .route("/workspace/members/:user_id", delete(api_remove_workspace_member))
         .route("/audit-logs", get(api_list_audit_logs))
         .route("/transaction-logs", get(api_list_transaction_logs))
@@ -1092,50 +1100,16 @@ async fn main() {
             get(api_list_integration_snapshots),
         )
         .route(
-            "/integrations/snapshots/records",
-            get(api_list_snapshot_records),
-        )
-        .route(
             "/integrations/zoho/disconnect",
             post(api_zoho_disconnect),
         )
-        .route(
-            "/integrations/bridge",
-            get(api_get_integration_bridge).put(api_put_integration_bridge),
-        )
-        .route(
-            "/integrations/bridge/run",
-            post(api_run_integration_bridge),
-        )
-        .route(
-            "/integrations/transform/profile",
-            get(api_get_transform_profile),
-        )
-        .route(
-            "/integrations/transform/preview",
-            post(api_post_transform_preview),
-        )
-        .route(
-            "/integrations/transform/sync-contact",
-            post(api_sync_contact_sf_to_zoho),
-        )
-        .route(
-            "/integrations/opportunity-templates",
-            get(api_get_opportunity_templates).put(api_put_opportunity_templates),
-        )
         .route("/integrations/sync-now", post(api_sync_now))
+        .route(
+            "/integrations/pipeline-status",
+            get(api_integration_pipeline_status),
+        )
         .route("/integrations/sync-logs", get(api_list_sync_logs))
         .route("/integrations/entity-links", get(api_list_entity_links))
-        .route("/integrations/documents", get(api_list_integration_documents))
-        .route(
-            "/integrations/documents/:id/download",
-            get(api_download_integration_document),
-        )
-        .route(
-            "/integrations/office/config",
-            get(api_office_config_get).put(api_office_config_put),
-        )
-        .route("/integrations/office/test", get(api_office_test))
         .route("/integrations/reset-sync", post(api_reset_integration_sync))
         .route("/settings", get(api_get_settings).put(api_update_settings))
         .route("/dashboard/stats", get(api_dashboard_stats))
@@ -2854,6 +2828,34 @@ async fn api_list_workspaces(Extension(ctx): Extension<AdminCtx>) -> impl IntoRe
 struct InviteMemberBody {
     username: String,
     role: String,
+}
+
+async fn api_list_workspace_members(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if admin_auth::on_prem_single_org() {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "on_prem_mode",
+            "Triển khai on-prem — dùng Quản lý Users cho thành viên tổ chức",
+        );
+    }
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "workspace/members").await;
+    }
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "state not initialized",
+        );
+    };
+    match db::list_workspace_users(&st.pool, ctx.tenant_id).await {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
 }
 
 async fn api_invite_workspace_member(
@@ -5502,89 +5504,20 @@ async fn api_list_integration_snapshots(
     integrations::api_list_snapshots(&ctx, query).await
 }
 
-async fn api_list_snapshot_records(
-    Extension(ctx): Extension<AdminCtx>,
-    axum::extract::Query(query): axum::extract::Query<integrations::SnapshotRecordsQuery>,
-) -> impl IntoResponse {
-    if !ctx.is_admin() {
-        return audit_admin_denied(&ctx, "integrations/snapshots/records").await;
-    }
-    integrations::api_list_snapshot_records(&ctx, query).await
-}
-
-async fn api_get_integration_bridge(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
-    if !ctx.is_admin() {
-        return audit_admin_denied(&ctx, "integrations/bridge").await;
-    }
-    integrations::api_get_integration_bridge(&ctx).await
-}
-
-async fn api_put_integration_bridge(
-    Extension(ctx): Extension<AdminCtx>,
-    axum::Json(body): axum::Json<integrations::IntegrationBridgeWrite>,
-) -> impl IntoResponse {
-    if !ctx.is_admin() {
-        return audit_admin_denied(&ctx, "integrations/bridge").await;
-    }
-    integrations::api_put_integration_bridge(&ctx, body).await
-}
-
-async fn api_run_integration_bridge(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
-    if !ctx.is_admin() {
-        return audit_admin_denied(&ctx, "integrations/bridge/run").await;
-    }
-    integrations::api_run_integration_bridge(&ctx).await
-}
-
-async fn api_get_transform_profile(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
-    if !ctx.is_admin() {
-        return audit_admin_denied(&ctx, "integrations/transform/profile").await;
-    }
-    integrations::api_get_transform_profile(&ctx).await
-}
-
-async fn api_post_transform_preview(
-    Extension(ctx): Extension<AdminCtx>,
-    Json(body): Json<integrations::TransformPreviewBody>,
-) -> impl IntoResponse {
-    if !ctx.is_admin() {
-        return audit_admin_denied(&ctx, "integrations/transform/preview").await;
-    }
-    integrations::api_post_transform_preview(&ctx, body).await
-}
-
-async fn api_sync_contact_sf_to_zoho(
-    Extension(ctx): Extension<AdminCtx>,
-    Json(body): Json<integrations::SyncContactBody>,
-) -> impl IntoResponse {
-    if !ctx.is_admin() {
-        return audit_admin_denied(&ctx, "integrations/transform/sync-contact").await;
-    }
-    integrations::api_sync_contact_sf_to_zoho(&ctx, body).await
-}
-
-async fn api_get_opportunity_templates(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
-    if !ctx.is_admin() {
-        return audit_admin_denied(&ctx, "integrations/opportunity-templates").await;
-    }
-    integrations::api_get_opportunity_templates(&ctx).await
-}
-
-async fn api_put_opportunity_templates(
-    Extension(ctx): Extension<AdminCtx>,
-    Json(body): Json<integrations::OpportunityTemplateConfigWriteBody>,
-) -> impl IntoResponse {
-    if !ctx.is_admin() {
-        return audit_admin_denied(&ctx, "integrations/opportunity-templates").await;
-    }
-    integrations::api_put_opportunity_templates(&ctx, body).await
-}
-
 async fn api_sync_now(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
     if !ctx.is_admin() {
         return audit_admin_denied(&ctx, "integrations/sync-now").await;
     }
     integrations::api_sync_now(&ctx).await
+}
+
+async fn api_integration_pipeline_status(
+    Extension(ctx): Extension<AdminCtx>,
+) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/pipeline-status").await;
+    }
+    integrations::api_integration_pipeline_status(&ctx).await
 }
 
 async fn api_list_sync_logs(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
@@ -5598,48 +5531,7 @@ async fn api_list_entity_links(Extension(ctx): Extension<AdminCtx>) -> impl Into
     if !ctx.is_admin() {
         return audit_admin_denied(&ctx, "integrations/entity-links").await;
     }
-    integration_office::api_list_entity_links(&ctx).await
-}
-
-async fn api_list_integration_documents(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
-    if !ctx.is_admin() {
-        return audit_admin_denied(&ctx, "integrations/documents").await;
-    }
-    integration_office::api_list_documents(&ctx).await
-}
-
-async fn api_download_integration_document(
-    Extension(ctx): Extension<AdminCtx>,
-    Path(id): Path<i64>,
-) -> impl IntoResponse {
-    if !ctx.is_admin() {
-        return audit_admin_denied(&ctx, "integrations/documents/download").await;
-    }
-    integration_office::api_download_document(&ctx, id).await
-}
-
-async fn api_office_config_get(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
-    if !ctx.is_admin() {
-        return audit_admin_denied(&ctx, "integrations/office/config").await;
-    }
-    integration_office::api_office_config_get(&ctx).await
-}
-
-async fn api_office_config_put(
-    Extension(ctx): Extension<AdminCtx>,
-    axum::Json(body): axum::Json<integration_office::ZohoOfficeConfigWriteBody>,
-) -> impl IntoResponse {
-    if !ctx.is_admin() {
-        return audit_admin_denied(&ctx, "integrations/office/config").await;
-    }
-    integration_office::api_office_config_put(&ctx, body).await
-}
-
-async fn api_office_test(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
-    if !ctx.is_admin() {
-        return audit_admin_denied(&ctx, "integrations/office/test").await;
-    }
-    integration_office::api_office_test(&ctx).await
+    integrations::api_list_entity_links(&ctx).await
 }
 
 async fn api_reset_integration_sync(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
@@ -5666,12 +5558,9 @@ struct MiddlewareStatusResponse {
 
 #[derive(Debug, Serialize)]
 struct IntegrationPlatformStatus {
-    transform_engine: &'static str,
-    canonical_entities: Vec<&'static str>,
     connectors: Vec<&'static str>,
     dlq_storage: &'static str,
     dlq_auto_replay_worker: bool,
-    bridge_enabled: bool,
 }
 
 async fn api_middleware_status(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
@@ -5707,11 +5596,6 @@ async fn api_middleware_status(Extension(ctx): Extension<AdminCtx>) -> impl Into
     };
     let cfg = st.config.read().await;
     let oauth_clients_loaded = cfg.client_credentials.oauth_clients.len();
-    let bridge_row = db::fetch_integration_bridge(&st.pool, ctx.tenant_id)
-        .await
-        .ok()
-        .flatten();
-    let bridge_enabled = bridge_row.map(|r| r.enabled != 0).unwrap_or(false);
     let body = MiddlewareStatusResponse {
         data_plane_prefix: data_plane_prefix(),
         client_registry: dashboard::ClientRegistryStats {
@@ -5724,12 +5608,9 @@ async fn api_middleware_status(Extension(ctx): Extension<AdminCtx>) -> impl Into
         rate_limit_global_enabled: cfg.settings.rate_limit.enabled,
         rate_limit_global_rps: f64::from(cfg.settings.rate_limit.rps),
         integration_platform: IntegrationPlatformStatus {
-            transform_engine: "avaso_transform_v1",
-            canonical_entities: vec!["contact"],
             connectors: vec!["salesforce", "zoho_projects"],
             dlq_storage: "postgresql",
             dlq_auto_replay_worker: true,
-            bridge_enabled,
         },
     };
     Json(body).into_response()

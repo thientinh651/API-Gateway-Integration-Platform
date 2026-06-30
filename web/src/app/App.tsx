@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
 import { AppToaster } from './components/AppToaster';
 import { ToastNavigateBridge } from './components/ToastNavigateBridge';
 import { AdminAuthProvider } from '../contexts/AdminAuthContext';
+import { GatewayFeaturesProvider } from '../contexts/GatewayFeaturesContext';
 import { MainLayout } from './components/layout/MainLayout';
 import { Overview } from './pages/Overview';
 import { Routes as RoutesPage } from './pages/Routes';
@@ -17,6 +18,7 @@ import { OAuthDemoCallback } from './pages/oauth/OAuthDemoCallback';
 import { LoginPage } from './pages/login/LoginPage';
 import { ForgotPassword } from './pages/ForgotPassword';
 import { Register } from './pages/Register';
+import { RegisterGuard } from './components/auth/RegisterGuard';
 import { Profile } from './pages/Profile';
 import { AdminOnly } from './components/auth/AdminOnly';
 import { NavAccessGuard } from './components/auth/NavAccessGuard';
@@ -24,7 +26,8 @@ import { NavAccessGuard } from './components/auth/NavAccessGuard';
 export default function App() {
   return (
     <BrowserRouter>
-      <AdminAuthProvider>
+      <GatewayFeaturesProvider>
+        <AdminAuthProvider>
         <ToastNavigateBridge />
         <AppToaster
           dir="ltr"
@@ -37,7 +40,14 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/oauth/demo-callback" element={<OAuthDemoCallback />} />
-          <Route path="/register" element={<Register />} />
+          <Route
+            path="/register"
+            element={
+              <RegisterGuard>
+                <Register />
+              </RegisterGuard>
+            }
+          />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/" element={<MainLayout />}>
             <Route index element={<Overview />} />
@@ -125,7 +135,8 @@ export default function App() {
             />
           </Route>
         </Routes>
-      </AdminAuthProvider>
+        </AdminAuthProvider>
+      </GatewayFeaturesProvider>
     </BrowserRouter>
   );
 }

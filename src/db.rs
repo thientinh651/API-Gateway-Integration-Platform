@@ -2782,50 +2782,6 @@ pub async fn ping_timed(pool: &PgPool) -> (bool, u128) {
     (ok, start.elapsed().as_millis())
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct IntegrationBridgeRow {
-    pub enabled: i32,
-    pub direction: String,
-    pub mappings_json: String,
-}
-
-pub async fn fetch_integration_bridge(
-    pool: &PgPool,
-    tenant_id: i64,
-) -> Result<Option<IntegrationBridgeRow>, sqlx::Error> {
-    sqlx::query_as::<_, IntegrationBridgeRow>(
-        "SELECT enabled, direction, mappings_json FROM integration_bridge_config WHERE tenant_id = $1",
-    )
-    .bind(tenant_id)
-    .fetch_optional(pool)
-    .await
-}
-
-pub async fn upsert_integration_bridge(
-    pool: &PgPool,
-    tenant_id: i64,
-    enabled: bool,
-    direction: &str,
-    mappings_json: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO integration_bridge_config (tenant_id, enabled, direction, mappings_json, updated_at)
-         VALUES ($1, $2, $3, $4, NOW())
-         ON CONFLICT(tenant_id) DO UPDATE SET
-           enabled = excluded.enabled,
-           direction = excluded.direction,
-           mappings_json = excluded.mappings_json,
-           updated_at = NOW()",
-    )
-    .bind(tenant_id)
-    .bind(if enabled { 1i64 } else { 0 })
-    .bind(direction)
-    .bind(mappings_json)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct SyncLogRow {
     pub id: i64,
@@ -2919,6 +2875,38 @@ pub async fn fetch_entity_link(
     .await
 }
 
+pub async fn list_entity_links(
+    pool: &PgPool,
+    tenant_id: i64,
+) -> Result<Vec<EntityLinkRow>, sqlx::Error> {
+    sqlx::query_as::<_, EntityLinkRow>(
+        "SELECT sf_entity_type, sf_id, zoho_id, zoho_name
+         FROM integration_entity_links
+         WHERE tenant_id = $1",
+    )
+    .bind(tenant_id)
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn delete_entity_link(
+    pool: &PgPool,
+    tenant_id: i64,
+    sf_entity_type: &str,
+    sf_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "DELETE FROM integration_entity_links
+         WHERE tenant_id = $1 AND sf_entity_type = $2 AND sf_id = $3",
+    )
+    .bind(tenant_id)
+    .bind(sf_entity_type)
+    .bind(sf_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn upsert_entity_link(
     pool: &PgPool,
     tenant_id: i64,
@@ -2959,8 +2947,6 @@ pub struct EntityLinkPublic {
     pub zoho_id: String,
     pub zoho_name: Option<String>,
     pub last_synced_at: String,
-    pub document_id: Option<i64>,
-    pub document_filename: Option<String>,
 }
 
 pub async fn list_entity_links_public(
@@ -2968,153 +2954,15 @@ pub async fn list_entity_links_public(
     tenant_id: i64,
 ) -> Result<Vec<EntityLinkPublic>, sqlx::Error> {
     sqlx::query_as::<_, EntityLinkPublic>(
-        "SELECT el.sf_entity_type, el.sf_id, el.zoho_id, el.zoho_name,
-                el.last_synced_at::text AS last_synced_at,
-                d.id AS document_id, d.filename AS document_filename
-         FROM integration_entity_links el
-         LEFT JOIN integration_documents d
-           ON d.tenant_id = el.tenant_id
-          AND d.sf_entity_type = el.sf_entity_type
-          AND d.sf_id = el.sf_id
-         WHERE el.tenant_id = $1
-         ORDER BY el.last_synced_at DESC",
-    )
-    .bind(tenant_id)
-    .fetch_all(pool)
-    .await
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct IntegrationDocumentRow {
-    pub id: i64,
-    pub sf_entity_type: String,
-    pub sf_id: String,
-    pub zoho_project_id: Option<String>,
-    pub filename: String,
-    pub content_type: String,
-    pub file_size: i64,
-    pub source_provider: String,
-    pub created_at: String,
-}
-
-pub async fn list_integration_documents(
-    pool: &PgPool,
-    tenant_id: i64,
-    limit: i64,
-) -> Result<Vec<IntegrationDocumentRow>, sqlx::Error> {
-    sqlx::query_as::<_, IntegrationDocumentRow>(
-        "SELECT id, sf_entity_type, sf_id, zoho_project_id, filename, content_type,
-                file_size, source_provider, created_at::text AS created_at
-         FROM integration_documents
+        "SELECT sf_entity_type, sf_id, zoho_id, zoho_name,
+                last_synced_at::text AS last_synced_at
+         FROM integration_entity_links
          WHERE tenant_id = $1
-         ORDER BY id DESC
-         LIMIT $2",
-    )
-    .bind(tenant_id)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
-}
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct IntegrationDocumentFile {
-    pub id: i64,
-    pub filename: String,
-    pub content_type: String,
-    pub storage_path: String,
-}
-
-pub async fn fetch_integration_document_file(
-    pool: &PgPool,
-    tenant_id: i64,
-    document_id: i64,
-) -> Result<Option<IntegrationDocumentFile>, sqlx::Error> {
-    sqlx::query_as::<_, IntegrationDocumentFile>(
-        "SELECT id, filename, content_type, storage_path
-         FROM integration_documents
-         WHERE tenant_id = $1 AND id = $2",
-    )
-    .bind(tenant_id)
-    .bind(document_id)
-    .fetch_optional(pool)
-    .await
-}
-
-pub async fn fetch_integration_document_by_sf(
-    pool: &PgPool,
-    tenant_id: i64,
-    sf_entity_type: &str,
-    sf_id: &str,
-) -> Result<Option<IntegrationDocumentRow>, sqlx::Error> {
-    sqlx::query_as::<_, IntegrationDocumentRow>(
-        "SELECT id, sf_entity_type, sf_id, zoho_project_id, filename, content_type,
-                file_size, source_provider, created_at::text AS created_at
-         FROM integration_documents
-         WHERE tenant_id = $1 AND sf_entity_type = $2 AND sf_id = $3
-         LIMIT 1",
-    )
-    .bind(tenant_id)
-    .bind(sf_entity_type)
-    .bind(sf_id)
-    .fetch_optional(pool)
-    .await
-}
-
-pub async fn upsert_integration_document(
-    pool: &PgPool,
-    tenant_id: i64,
-    sf_entity_type: &str,
-    sf_id: &str,
-    zoho_project_id: Option<&str>,
-    filename: &str,
-    content_type: &str,
-    storage_path: &str,
-    file_size: i64,
-    source_provider: &str,
-) -> Result<i64, sqlx::Error> {
-    let id: i64 = sqlx::query_scalar(
-        "INSERT INTO integration_documents
-           (tenant_id, sf_entity_type, sf_id, zoho_project_id, filename, content_type,
-            storage_path, file_size, source_provider)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         ON CONFLICT (tenant_id, sf_entity_type, sf_id, source_provider) DO UPDATE SET
-           zoho_project_id = excluded.zoho_project_id,
-           filename = excluded.filename,
-           content_type = excluded.content_type,
-           storage_path = excluded.storage_path,
-           file_size = excluded.file_size,
-           created_at = NOW()
-         RETURNING id",
-    )
-    .bind(tenant_id)
-    .bind(sf_entity_type)
-    .bind(sf_id)
-    .bind(zoho_project_id)
-    .bind(filename)
-    .bind(content_type)
-    .bind(storage_path)
-    .bind(file_size)
-    .bind(source_provider)
-    .fetch_one(pool)
-    .await?;
-    Ok(id)
-}
-
-pub async fn delete_integration_documents(
-    pool: &PgPool,
-    tenant_id: i64,
-) -> Result<Vec<String>, sqlx::Error> {
-    let paths: Vec<String> = sqlx::query_scalar(
-        "SELECT storage_path FROM integration_documents WHERE tenant_id = $1",
+         ORDER BY last_synced_at DESC",
     )
     .bind(tenant_id)
     .fetch_all(pool)
-    .await?;
-    sqlx::query("DELETE FROM integration_documents WHERE tenant_id = $1")
-        .bind(tenant_id)
-        .execute(pool)
-        .await?;
-    Ok(paths)
+    .await
 }
 
 #[cfg(test)]

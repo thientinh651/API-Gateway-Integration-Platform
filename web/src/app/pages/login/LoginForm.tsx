@@ -7,6 +7,7 @@ import { Checkbox } from '../../components/ui/checkbox';
 import { toast } from 'sonner';
 import { adminLogin, ApiClientError } from '../../../lib/api';
 import { useAdminAuth } from '../../../contexts/AdminAuthContext';
+import { useGatewayFeatures } from '../../../contexts/GatewayFeaturesContext';
 import { getSavedUsername, setSavedUsername, SAVED_USERNAME_KEY } from '../../../lib/demoAuthStorage';
 
 type FieldErrors = {
@@ -30,6 +31,11 @@ export function LoginForm() {
   const navigate = useNavigate();
   const location = useLocation();
   const { refresh } = useAdminAuth();
+  const { features } = useGatewayFeatures();
+  const registrationDisabled = Boolean(
+    (location.state as { registrationDisabled?: boolean } | null)?.registrationDisabled,
+  );
+  const registerEnabled = features?.features.register_viewer === true;
   const prefilledUsername =
     (location.state as { username?: string } | null)?.username?.trim() ||
     getSavedUsername() ||
@@ -163,9 +169,23 @@ export function LoginForm() {
       <Button type="submit" disabled={busy} className="w-full bg-primary hover:bg-primary/90">
         {busy ? 'Đang đăng nhập…' : 'Đăng nhập'}
       </Button>
-      <p className="text-center text-xs text-muted-foreground pt-1">
-        Chưa có tài khoản? Liên hệ Admin tổ chức để được cấp quyền.
-      </p>
+      {registrationDisabled ? (
+        <p className="text-center text-xs text-amber-300/90 pt-1">
+          Đăng ký công khai đang tắt trên server này — liên hệ Admin.
+        </p>
+      ) : null}
+      {registerEnabled ? (
+        <p className="text-center text-xs text-muted-foreground pt-1">
+          Chưa có tài khoản?{' '}
+          <Link to="/register" className="text-primary hover:underline">
+            Đăng ký Viewer
+          </Link>
+        </p>
+      ) : (
+        <p className="text-center text-xs text-muted-foreground pt-1">
+          Chưa có tài khoản? Liên hệ Admin để được cấp quyền.
+        </p>
+      )}
     </form>
   );
 }

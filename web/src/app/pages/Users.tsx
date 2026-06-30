@@ -32,6 +32,7 @@ import {
   type AdminUserRow,
 } from '../../lib/api';
 import { roleLabel } from '../../lib/rbac';
+import { isSaasMode } from '../../lib/deployment';
 import { formatDbTimestamp } from '../../lib/formatDbTimestamp';
 import { toastApiError } from '../../lib/apiClientError';
 import {
@@ -230,6 +231,16 @@ function UsersAdmin() {
       <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Quản lý Users</h1>
+          <p className="text-sm text-muted-foreground max-w-2xl">
+            Tạo và quản lý tài khoản dashboard.
+            {isSaasMode(me?.deployment_mode) ? (
+              <>
+                {' '}
+                Mời collaborator đã có tài khoản tại{' '}
+                <span className="text-slate-300">Tài khoản → Workspace</span>.
+              </>
+            ) : null}
+          </p>
         </div>
         <Dialog open={isOpen} onOpenChange={handleDialogClose}>
           <DialogTrigger asChild>

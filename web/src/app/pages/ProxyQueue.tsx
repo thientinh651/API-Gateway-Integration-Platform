@@ -309,7 +309,7 @@ function ProxyQueueAdmin() {
               {!loading && items.length === 0 && (
                 <tr>
                   <td colSpan={colSpan} className="px-4 py-8 text-center text-muted-foreground text-sm max-w-lg mx-auto">
-                    <p className="mb-2">Chưa có bản ghi — DLQ lưu <strong className="text-slate-300">PostgreSQL</strong>.</p>
+                    <p className="mb-2">Chưa có bản ghi</p>
                     <p className="text-xs leading-relaxed">
                       Retry xóa entry khỏi queue (idempotent — replay 2 lần không được). Bật DLQ trong Settings.
                     </p>

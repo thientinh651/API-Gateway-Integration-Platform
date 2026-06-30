@@ -1,15 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Link, useSearchParams } from 'react-router';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router';
 import { toast } from 'sonner';
-import {
-  Plug,
-  RefreshCw,
-  Unplug,
-  FlaskConical,
-  Database,
-  Cloud,
-  X,
-} from 'lucide-react';
+import { Cloud, Plug, RefreshCw, X } from 'lucide-react';
 import { AdminOnly } from '../components/auth/AdminOnly';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import {
@@ -25,7 +17,9 @@ import {
   zohoProjects,
   zohoTasks,
   fetchIntegrationSnapshots,
+  fetchIntegrationPipelineStatus,
   fetchSyncLogs,
+  fetchEntityLinks,
   integrationSyncNow,
   resetIntegrationSync,
   fetchZohoConfig,
@@ -34,6 +28,8 @@ import {
   updateSfConfig,
   type IntegrationRow,
   type IntegrationSnapshotSummary,
+  type IntegrationPipelineStatus,
+  type EntityLinkRow,
   type SyncLogRow,
 } from '../../lib/api';
 import { ApiClientError } from '../../lib/apiClientError';
@@ -43,28 +39,24 @@ import { failClientValidation } from '../../lib/formValidation';
 import { describeOAuthRedirectError } from '../../lib/integrationSetup';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
-import { ConfirmDangerButton } from '../components/forms/ConfirmDangerButton';
-import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import { IntegrationBridge } from './integrations/IntegrationBridge';
-import { TransformEngine } from './integrations/TransformEngine';
-import { IntegrationOffice } from './integrations/IntegrationOffice';
-import { OpportunityTemplates } from './integrations/OpportunityTemplates';
+import {
+  IntegrationConnectorCard,
+  IntegrationConnectPrompt,
+  INTEGRATION_PROVIDER_META,
+  type ProviderKind,
+} from './integrations/IntegrationConnectorCard';
+import { IntegrationPipelinePanel } from './integrations/IntegrationPipelinePanel';
+import { IntegrationStatusStrip } from './integrations/IntegrationStatusStrip';
+import { IntegrationEntityLinksPanel } from './integrations/IntegrationEntityLinksPanel';
+import { IntegrationSyncLogsPanel } from './integrations/IntegrationSyncLogsPanel';
+import { IntegrationSnapshotsPanel } from './integrations/IntegrationSnapshotsPanel';
+import { resolvePipelineSteps } from '../../lib/integrationPipeline';
 
-type ProviderKind = 'salesforce' | 'zoho_projects';
 type FieldErrors = Record<string, string>;
 
-const PROVIDER_META: Record<ProviderKind, { label: string; short: string }> = {
-  salesforce: {
-    label: 'Salesforce',
-    short: 'Salesforce CRM',
-  },
-  zoho_projects: {
-    label: 'Zoho Projects',
-    short: 'Zoho Projects',
-  },
-};
+const PROVIDER_META = INTEGRATION_PROVIDER_META;
 
 function FieldHint({ error }: { error?: string }) {
   if (!error) return null;
@@ -123,19 +115,6 @@ function validateZohoConfig(cfg: {
   return errors;
 }
 
-function statusBadge(status: string) {
-  switch (status) {
-    case 'connected':
-      return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
-    case 'pending':
-      return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
-    case 'error':
-      return 'bg-red-500/10 text-red-400 border-red-500/20';
-    default:
-      return 'bg-slate-500/10 text-slate-400 border-slate-500/20';
-  }
-}
-
 function integrationCallbackUri(path: string): string {
   if (typeof window !== 'undefined' && window.location?.origin) {
     return `${window.location.origin}${path}`;
@@ -156,6 +135,8 @@ function IntegrationsAdmin() {
   const [syncingNow, setSyncingNow] = useState(false);
   const [snapshots, setSnapshots] = useState<IntegrationSnapshotSummary[]>([]);
   const [syncLogs, setSyncLogs] = useState<SyncLogRow[]>([]);
+  const [entityLinks, setEntityLinks] = useState<EntityLinkRow[]>([]);
+  const [pipelineStatus, setPipelineStatus] = useState<IntegrationPipelineStatus | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [cfgLoading, setCfgLoading] = useState<Partial<Record<ProviderKind, boolean>>>({});
   const [connecting, setConnecting] = useState<Partial<Record<ProviderKind, boolean>>>({});
@@ -186,12 +167,16 @@ function IntegrationsAdmin() {
       const list = await fetchIntegrations();
       setRows(list);
       if (isAdmin) {
-        const [snaps, logs] = await Promise.all([
+        const [snaps, logs, pipeline, links] = await Promise.all([
           fetchIntegrationSnapshots(),
           fetchSyncLogs().catch(() => [] as SyncLogRow[]),
+          fetchIntegrationPipelineStatus().catch(() => null),
+          fetchEntityLinks().catch(() => [] as EntityLinkRow[]),
         ]);
         setSnapshots(snaps);
         setSyncLogs(logs);
+        setPipelineStatus(pipeline);
+        setEntityLinks(links);
       }
     } catch (e) {
       toastApiError(e);
@@ -378,21 +363,13 @@ function IntegrationsAdmin() {
     }
   };
 
-  const toastBridgeAfterSync = (bridge?: { status: string; records?: number; reason?: string }) => {
-    if (!bridge) return;
-    if (bridge.status === 'ok' && bridge.records != null) {
-      toast.message(`Bridge: ${bridge.records} Opportunity SF đã map`);
-    }
-  };
-
   const handleSfSync = async () => {
     setSyncingProvider('salesforce');
     try {
       const res = await salesforceSync();
       toast.success(
-        `Sync SF: ${res.summary.opportunity} opportunities, ${res.summary.account} accounts`
+        `Pull SF: ${res.summary.opportunity} Opportunity · ${res.summary.account} Account`,
       );
-      toastBridgeAfterSync(res.bridge);
       await load();
     } catch (e) {
       toastApiError(e);
@@ -405,8 +382,7 @@ function IntegrationsAdmin() {
     setSyncingProvider('zoho_projects');
     try {
       const res = await zohoSync();
-      toast.success(`Sync Zoho: ${res.summary.project} projects, ${res.summary.task} tasks`);
-      toastBridgeAfterSync(res.bridge);
+      toast.success(`Pull Zoho: ${res.summary.project} Project · ${res.summary.task} Task`);
       await load();
     } catch (e) {
       toastApiError(e);
@@ -419,15 +395,19 @@ function IntegrationsAdmin() {
     setSyncingNow(true);
     try {
       const res = await integrationSyncNow();
+      if (res.pipeline) {
+        setPipelineStatus(res.pipeline);
+      }
       const push = res.push;
       if (push?.status === 'skipped' && push?.reason === 'need_both_connected') {
         toast.message('Đã sync Salesforce — kết nối Zoho Projects để đẩy dự án');
       } else {
+        const opp = res.salesforce?.opportunity ?? 0;
+        const acc = res.salesforce?.account ?? 0;
         toast.success(
-          `Đồng bộ xong: SF ${res.salesforce.account} accounts → Zoho tạo ${push.created ?? 0} dự án (${push.skipped ?? 0} bỏ qua)`
+          `Sync xong: pull SF ${opp} Opportunity · ${acc} Account → Zoho tạo ${push?.created ?? 0} dự án (${push?.skipped ?? 0} bỏ qua)`,
         );
       }
-      toastBridgeAfterSync(res.bridge);
       await load();
     } catch (e) {
       toastApiError(e);
@@ -523,8 +503,25 @@ function IntegrationsAdmin() {
 
   const sf = rows.find((r) => r.provider === 'salesforce');
   const zoho = rows.find((r) => r.provider === 'zoho_projects');
-  const showBridge =
-    sf?.status === 'connected' && zoho?.status === 'connected';
+  const sfConnected = sf?.status === 'connected';
+  const zohoConnected = zoho?.status === 'connected';
+  const showPipeline = sfConnected;
+
+  const pipelineSteps = useMemo(
+    () =>
+      resolvePipelineSteps(
+        pipelineStatus,
+        snapshots,
+        syncLogs,
+        sfConnected,
+        zohoConnected,
+      ),
+    [pipelineStatus, snapshots, syncLogs, sfConnected, zohoConnected],
+  );
+
+  const scrollToSyncLogs = () => {
+    document.getElementById('section-sync-logs')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   const renderSfConfigForm = () => (
     <div className="space-y-3">
@@ -650,124 +647,6 @@ function IntegrationsAdmin() {
     </div>
   );
 
-  const renderConnectedActions = (kind: ProviderKind) => (
-    <div className="flex flex-wrap gap-2">
-      <Button
-        variant="outline"
-        className="border-border"
-        disabled={testingProvider === kind}
-        onClick={() => void (kind === 'salesforce' ? handleSfTest() : handleZohoTest())}
-      >
-        <FlaskConical className="w-4 h-4 mr-2" />
-        {testingProvider === kind ? 'Đang gọi…' : kind === 'salesforce' ? 'Test API limits' : 'Test portals'}
-      </Button>
-      {kind === 'zoho_projects' ? (
-        <>
-          <Button
-            variant="outline"
-            className="border-border"
-            disabled={testingProvider === kind}
-            onClick={() => void handleZohoProjects()}
-          >
-            Test projects
-          </Button>
-          <Button
-            variant="outline"
-            className="border-border"
-            disabled={testingProvider === kind}
-            onClick={() => void handleZohoTasks()}
-          >
-            Test tasks
-          </Button>
-        </>
-      ) : null}
-      {isAdmin ? (
-        <Button
-          variant="outline"
-          className="border-border"
-          disabled={syncingProvider === kind}
-          onClick={() => void (kind === 'salesforce' ? handleSfSync() : handleZohoSync())}
-        >
-          <Database className="w-4 h-4 mr-2" />
-          {syncingProvider === kind ? 'Đang sync…' : 'Đồng bộ snapshot'}
-        </Button>
-      ) : null}
-    </div>
-  );
-
-  const renderConnectedCard = (kind: ProviderKind, row: IntegrationRow) => {
-    const meta = PROVIDER_META[kind];
-    return (
-      <Card key={kind} id={kind === 'salesforce' ? 'section-salesforce' : 'section-zoho'} className="p-6 bg-card/80 border-border scroll-mt-24">
-        <div className="flex items-start justify-between gap-4 mb-4">
-          <div className="flex items-start gap-3 min-w-0">
-            <div className="p-2 rounded-lg bg-primary/10 shrink-0">
-              <Cloud className="w-5 h-5 text-primary" />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="font-bold text-white text-lg">{meta.short}</h2>
-                <Badge className={`${statusBadge(row.status)} border`}>connected</Badge>
-                {row.is_demo ? (
-                  <Badge className="bg-amber-500/10 text-amber-400 border-amber-500/20 border">demo</Badge>
-                ) : null}
-              </div>
-              {row.last_sync_at ? (
-                <p className="text-xs text-muted-foreground mt-1">Sync gần nhất: {row.last_sync_at}</p>
-              ) : null}
-              {row.last_error && row.status === 'error' ? (
-                <p className="text-xs text-red-400 mt-2 break-all">{row.last_error}</p>
-              ) : null}
-            </div>
-          </div>
-          {isAdmin ? (
-            <ConfirmDangerButton
-              variant="outline"
-              size="default"
-              className="border-red-500/30 text-red-400 hover:bg-red-500/10 shrink-0"
-              title={`Ngắt kết nối ${meta.label}?`}
-              description="OAuth token sẽ bị xóa — cần kết nối lại để sync/test."
-              confirmLabel="Ngắt kết nối"
-              pendingLabel="Đang ngắt…"
-              onConfirm={() => handleDisconnect(kind)}
-            >
-              <Unplug className="w-4 h-4 mr-2" />
-              Ngắt kết nối
-            </ConfirmDangerButton>
-          ) : null}
-        </div>
-        {renderConnectedActions(kind)}
-      </Card>
-    );
-  };
-
-  const renderConnectPrompt = (kind: ProviderKind) => {
-    const meta = PROVIDER_META[kind];
-    if (workspace === kind) return null;
-    return (
-      <Card
-        key={`connect-${kind}`}
-        className="p-6 bg-card/40 border-dashed border-2 border-border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
-      >
-        <div>
-          <h2 className="font-semibold text-white">{meta.short}</h2>
-          <p className="text-sm text-muted-foreground mt-1">Chưa kết nối OAuth</p>
-        </div>
-        {isAdmin ? (
-          <Button
-            className="bg-primary hover:bg-primary/90 shrink-0"
-            onClick={() => openWorkspace(kind)}
-          >
-            <Plug className="w-4 h-4 mr-2" />
-            Kết nối {meta.label}
-          </Button>
-        ) : (
-          <p className="text-sm text-muted-foreground">Chỉ admin cấu hình và kết nối.</p>
-        )}
-      </Card>
-    );
-  };
-
   const renderSetupWorkspace = (kind: ProviderKind) => {
     const meta = PROVIDER_META[kind];
     const row = rows.find((r) => r.provider === kind);
@@ -830,12 +709,12 @@ function IntegrationsAdmin() {
 
   return (
     <>
-      <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
+      <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Tích hợp</h1>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {isAdmin && showBridge ? (
+        <div className="flex flex-wrap gap-2 shrink-0">
+          {isAdmin && showPipeline ? (
             <Button
               className="bg-primary hover:bg-primary/90"
               disabled={syncingNow}
@@ -853,16 +732,19 @@ function IntegrationsAdmin() {
       </div>
 
       {!loading && inDemoMode ? (
-        <Card className="mb-6 p-3 border-red-500/40 bg-red-500/10 text-sm text-red-200">
-          <p className="font-medium text-red-300">Token demo</p>
+        <Card className="mb-6 p-4 border-amber-500/35 bg-amber-500/10 text-sm">
+          <p className="font-medium text-amber-200">Connector đang dùng token demo</p>
+          <p className="text-xs text-amber-200/80 mt-1">
+            Kết nối OAuth thật trước khi bảo vệ. Link đồng bộ cũ có thể gây SKIPPED idempotent.
+          </p>
           {isAdmin ? (
             <Button
               variant="outline"
               size="sm"
-              className="mt-3 border-red-500/40"
+              className="mt-3 border-amber-500/40 text-amber-100"
               onClick={() => void handleResetSync()}
             >
-              Xóa link đồng bộ cũ
+              Xóa entity links cũ
             </Button>
           ) : null}
         </Card>
@@ -871,106 +753,90 @@ function IntegrationsAdmin() {
       {loading ? (
         <p className="text-muted-foreground">Đang tải…</p>
       ) : (
-        <div className="space-y-4">
-          {sf?.status === 'connected' ? renderConnectedCard('salesforce', sf) : null}
-          {zoho?.status === 'connected' ? renderConnectedCard('zoho_projects', zoho) : null}
+        <div className="space-y-8">
+          <IntegrationStatusStrip sf={sf} zoho={zoho} />
 
-          {workspace ? renderSetupWorkspace(workspace) : null}
-
-          {sf?.status !== 'connected' ? renderConnectPrompt('salesforce') : null}
-          {zoho?.status !== 'connected' ? renderConnectPrompt('zoho_projects') : null}
-
-          {showBridge ? (
-            <>
-              <OpportunityTemplates isAdmin={isAdmin} />
-              <TransformEngine
-                isAdmin={isAdmin}
-                sfConnected={sf?.status === 'connected'}
-                zohoConnected={zoho?.status === 'connected'}
-                sfSyncKey={sf?.last_sync_at}
-              />
-              <Card id="section-integration-bridge" className="p-6 bg-card/80 border-border scroll-mt-24">
-                <IntegrationBridge
-                isAdmin={isAdmin}
-                sfConnected={sf?.status === 'connected'}
-                zohoConnected={zoho?.status === 'connected'}
-                onApplied={() => void load()}
-              />
-            </Card>
-            </>
+          {showPipeline ? (
+            <section className="space-y-3">
+              <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                Pipeline
+              </h2>
+              <IntegrationPipelinePanel steps={pipelineSteps} onScrollLogs={scrollToSyncLogs} />
+            </section>
           ) : null}
 
-          {isAdmin ? (
-            <IntegrationOffice
-              isAdmin={isAdmin}
-              sfConnected={sf?.status === 'connected'}
-              zohoConnected={zoho?.status === 'connected'}
-            />
+          <section className="space-y-3">
+            <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+              Connector OAuth
+            </h2>
+            <div className="grid md:grid-cols-2 gap-4">
+              {sfConnected && sf ? (
+                <IntegrationConnectorCard
+                  kind="salesforce"
+                  row={sf}
+                  isAdmin={isAdmin}
+                  testing={testingProvider === 'salesforce'}
+                  syncing={syncingProvider === 'salesforce'}
+                  onDisconnect={() => handleDisconnect('salesforce')}
+                  onTest={() => void handleSfTest()}
+                  onSyncSnapshot={() => void handleSfSync()}
+                />
+              ) : workspace !== 'salesforce' ? (
+                <IntegrationConnectPrompt
+                  kind="salesforce"
+                  isAdmin={isAdmin}
+                  onConnect={() => openWorkspace('salesforce')}
+                />
+              ) : null}
+
+              {zohoConnected && zoho ? (
+                <IntegrationConnectorCard
+                  kind="zoho_projects"
+                  row={zoho}
+                  isAdmin={isAdmin}
+                  testing={testingProvider === 'zoho_projects'}
+                  syncing={syncingProvider === 'zoho_projects'}
+                  onDisconnect={() => handleDisconnect('zoho_projects')}
+                  onTest={() => void handleZohoTest()}
+                  onTestProjects={() => void handleZohoProjects()}
+                  onTestTasks={() => void handleZohoTasks()}
+                  onSyncSnapshot={() => void handleZohoSync()}
+                />
+              ) : workspace !== 'zoho_projects' ? (
+                <IntegrationConnectPrompt
+                  kind="zoho_projects"
+                  isAdmin={isAdmin}
+                  onConnect={() => openWorkspace('zoho_projects')}
+                />
+              ) : null}
+            </div>
+
+            {workspace ? (
+              <div className="md:col-span-2">{renderSetupWorkspace(workspace)}</div>
+            ) : null}
+          </section>
+
+          {sfConnected ? (
+            <section className="space-y-4">
+              <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                Kết quả đồng bộ
+              </h2>
+              <IntegrationEntityLinksPanel links={entityLinks} />
+              <div className="grid lg:grid-cols-2 gap-4 items-stretch">
+                <IntegrationSyncLogsPanel logs={syncLogs} />
+                <IntegrationSnapshotsPanel snapshots={snapshots} />
+              </div>
+            </section>
           ) : null}
         </div>
       )}
 
       {testResult ? (
-        <Card className="mt-6 p-4 bg-slate-950 border-border">
-          <h3 className="text-sm font-bold text-white mb-2">Kết quả test</h3>
+        <Card className="mt-6 p-4 bg-slate-950 border-border border-dashed">
+          <h3 className="text-sm font-bold text-white mb-2">Kết quả chẩn đoán</h3>
           <pre className="text-xs text-slate-300 overflow-auto max-h-64">{testResult}</pre>
         </Card>
       ) : null}
-
-      {!loading && syncLogs.length > 0 ? (
-        <Card className="mt-6 p-4 bg-slate-950 border-border scroll-mt-24" id="section-sync-logs">
-          <h3 className="text-sm font-bold text-white mb-3">Nhật ký đồng bộ middleware</h3>
-          <div className="space-y-2 max-h-64 overflow-auto">
-            {syncLogs.map((log) => (
-              <div
-                key={log.id}
-                className="text-xs border border-border rounded p-2 text-slate-300 flex flex-col gap-1"
-              >
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Badge
-                    className={
-                      log.status === 'SUCCESS'
-                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                        : log.status === 'FAILED'
-                          ? 'bg-red-500/10 text-red-400 border-red-500/20'
-                          : log.status === 'SKIPPED'
-                            ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                            : log.status === 'RETRY'
-                              ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
-                              : 'bg-slate-500/10 text-slate-400 border-slate-500/20'
-                    }
-                  >
-                    {log.status}
-                  </Badge>
-                  <span className="text-muted-foreground">{log.created_at}</span>
-                </div>
-                <p className="text-slate-200">{log.message}</p>
-                {log.error_detail ? (
-                  <p className="text-red-400/90 font-mono break-all">{log.error_detail}</p>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        </Card>
-      ) : null}
-
-      {!loading && snapshots.length > 0 ? (
-        <Card className="mt-6 p-4 bg-slate-950 border-border">
-          <h3 className="text-sm font-bold text-white mb-3">Snapshot báo cáo</h3>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {snapshots.map((s) => (
-              <div
-                key={`${s.provider}-${s.entity_type}`}
-                className="text-xs border border-border rounded p-2 text-slate-300"
-              >
-                <span className="font-medium text-white">{s.provider}</span> / {s.entity_type}:{' '}
-                <strong>{s.record_count}</strong> — {s.fetched_at}
-              </div>
-            ))}
-          </div>
-        </Card>
-      ) : null}
-
     </>
   );
 }

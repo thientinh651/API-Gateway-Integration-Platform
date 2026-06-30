@@ -153,6 +153,10 @@ export function isViewer(user: AdminMe | null): boolean {
   return normalizeRole(user?.role) === 'viewer';
 }
 
+export function isAdmin(user: AdminMe | null): boolean {
+  return normalizeRole(user?.role) === 'admin';
+}
+
 const NAV_PAGE_GET_API: Record<string, string> = {
   '/routes': '/api/routes',
   '/auth': '/api/client-keys',

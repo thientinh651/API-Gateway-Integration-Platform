@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { Layers } from 'lucide-react';
 import { MobileNav } from './MobileNav';
+import { WorkspaceSwitcher } from '../workspace/WorkspaceSwitcher';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -71,6 +72,7 @@ export function Header() {
       <div className="flex items-center gap-2 sm:gap-3 shrink-0">
         {user ? (
           <>
+            <WorkspaceSwitcher />
             <div className="flex items-center gap-2 min-w-0 max-w-[min(100%,14rem)] sm:max-w-none">
               <Link
                 to="/profile"
