@@ -3,6 +3,7 @@ import { Card } from '../../components/ui/card';
 import { ConfirmDangerButton } from '../../components/forms/ConfirmDangerButton';
 import { Edit, RefreshCw, Trash2, Users } from 'lucide-react';
 import type { RouteAclSummaryRow } from '../../../lib/api';
+import { formatAllowedMethodsLabel } from '../../../lib/allowedMethodsOptions';
 import type { UiRoute } from './routeTypes';
 
 type Props = {
@@ -41,6 +42,7 @@ export function RoutesTable({ routes, aclSummary, loading, error, onReload, onEd
           <thead className="bg-slate-900/50 text-[10px] uppercase text-muted-foreground font-bold">
             <tr>
               <th className="px-6 py-4">Path</th>
+              <th className="px-6 py-4">Methods</th>
               <th className="px-6 py-4">Upstream</th>
               <th className="px-6 py-4">Timeout</th>
               <th className="px-6 py-4">Rate limit</th>
@@ -51,7 +53,7 @@ export function RoutesTable({ routes, aclSummary, loading, error, onReload, onEd
           <tbody className="text-sm">
             {loading ? (
               <tr className="border-b border-border/50">
-                <td className="px-6 py-4 text-muted-foreground" colSpan={6}>
+                <td className="px-6 py-4 text-muted-foreground" colSpan={7}>
                   Đang tải…
                 </td>
               </tr>
@@ -59,6 +61,9 @@ export function RoutesTable({ routes, aclSummary, loading, error, onReload, onEd
               routes.map((route) => (
                 <tr key={route.id} className="border-b border-border/50 hover:bg-primary/5">
                   <td className="px-6 py-4 text-slate-300 font-mono text-xs">{route.path}</td>
+                  <td className="px-6 py-4 text-slate-400 text-xs font-mono">
+                    {formatAllowedMethodsLabel(route.allowedMethods)}
+                  </td>
                   <td className="px-6 py-4 text-slate-400 text-xs">{route.upstream}</td>
                   <td className="px-6 py-4 text-slate-400">{route.timeout}s</td>
                   <td className="px-6 py-4 text-slate-400">

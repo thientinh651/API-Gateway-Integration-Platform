@@ -114,7 +114,7 @@ export function ApiDocs() {
     {
       method: 'POST',
       path: '/oauth/token',
-      description: 'Identity — phát access_token (password | client_credentials | authorization_code). Rate limit: 20/phút/client_id, 50/phút/IP (burst ≤3)',
+      description: 'Identity — phát access_token (password | client_credentials | authorization_code). Rate limit: 20/phút/client_id, 50/phút/IP',
       auth: 'Không (public token endpoint)',
       response: '{"access_token":"eyJ...","token_type":"Bearer","expires_in":3600}',
     },

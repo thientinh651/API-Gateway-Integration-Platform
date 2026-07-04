@@ -257,6 +257,8 @@ export type RouteWriteBody = {
   target: string;
   timeout_secs: number;
   rate_limit_per_min: number;
+  /** `*` hoặc danh sách `GET,POST,...` */
+  allowed_methods?: string;
   transform_add_headers?: string;
   transform_remove_headers?: string;
   retry_max?: number;
@@ -509,6 +511,7 @@ export function fetchTransactionLogs(q?: TransactionLogsQuery): Promise<Transact
 
 export type GatewaySettings = {
   rate_limit_enabled: boolean;
+  rate_limit_burst_enabled: boolean;
   rate_limit_rps: number;
   rate_limit_burst: number;
   enable_metrics: boolean;
@@ -529,6 +532,7 @@ export type GatewaySettings = {
 
 export type GatewaySettingsWriteBody = {
   rate_limit_enabled: boolean;
+  rate_limit_burst_enabled: boolean;
   rate_limit_rps: number;
   rate_limit_burst: number;
   enable_metrics: boolean;

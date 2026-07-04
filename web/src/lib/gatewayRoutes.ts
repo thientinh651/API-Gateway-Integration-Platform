@@ -4,6 +4,7 @@ export type GatewayRouteRow = {
   target: string;
   timeout_secs: number;
   rate_limit_per_min: number;
+  allowed_methods?: string;
   transform_add_headers?: string;
   transform_remove_headers?: string;
   retry_max?: number;
@@ -12,6 +13,8 @@ export type GatewayRouteRow = {
   queue_on_failure?: number;
 };
 
+import { DEFAULT_ALLOWED_METHODS } from './allowedMethodsOptions';
+
 export function rowsToUiRoutes(rows: GatewayRouteRow[]) {
   return rows.map((r) => ({
     id: String(r.id),
@@ -19,6 +22,7 @@ export function rowsToUiRoutes(rows: GatewayRouteRow[]) {
     upstream: r.target,
     timeout: r.timeout_secs,
     rateLimit: r.rate_limit_per_min,
+    allowedMethods: r.allowed_methods?.trim() || DEFAULT_ALLOWED_METHODS,
     transformAddHeaders: r.transform_add_headers ?? '{}',
     transformRemoveHeaders: r.transform_remove_headers ?? '[]',
     retryMax: r.retry_max ?? 0,

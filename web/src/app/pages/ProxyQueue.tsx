@@ -10,7 +10,9 @@ import {
   bulkDeleteProxyQueueItems,
   deleteProxyQueueItem,
   fetchProxyQueue,
+  normalizeDlqStatus,
   retryProxyQueueItem,
+  type DlqItemStatus,
   type ProxyQueueItem,
 } from '../../lib/api';
 import { toastApiError } from '../../lib/apiClientError';
@@ -22,8 +24,8 @@ import { AdminOnly } from '../components/auth/AdminOnly';
 const queueCheckboxClass =
   'size-4 border-slate-600/45 bg-slate-900/60 shadow-none hover:border-slate-500/70 data-[state=checked]:bg-primary/85 data-[state=checked]:border-primary/50';
 
-function dlqStatusBadge(status: string) {
-  switch (status) {
+function dlqStatusBadge(status: string | undefined | null) {
+  switch (normalizeDlqStatus(status)) {
     case 'replayed':
       return {
         label: 'replayed',
@@ -42,8 +44,15 @@ function dlqStatusBadge(status: string) {
   }
 }
 
-function canRetryDlq(status: string) {
-  return status === 'pending' || status === 'failed_permanent';
+function canRetryDlq(status: string | undefined | null) {
+  const s = normalizeDlqStatus(status);
+  return s === 'pending' || s === 'failed_permanent';
+}
+
+function retryDisabledTitle(status: DlqItemStatus, canMutate: boolean): string | undefined {
+  if (!canMutate) return 'Cần quyền Operator hoặc Admin';
+  if (status === 'replayed') return 'Đã replay — không retry lại (idempotent)';
+  return undefined;
 }
 
 function ProxyQueueAdmin() {
@@ -186,6 +195,8 @@ function ProxyQueueAdmin() {
             <tbody>
               {items.map((item) => {
                 const isSelected = selected.has(item.id);
+                const dlqStatus = normalizeDlqStatus(item.status);
+                const retryAllowed = canMutate && canRetryDlq(item.status);
                 return (
                 <tr
                   key={item.id}
@@ -210,13 +221,13 @@ function ProxyQueueAdmin() {
                   </td>
                   <td className="px-4 py-3">
                     {(() => {
-                      const badge = dlqStatusBadge(item.status);
+                      const badge = dlqStatusBadge(dlqStatus);
                       return (
                         <div className="space-y-0.5">
                           <Badge className={`${badge.className} border text-[10px]`}>
                             {badge.label}
                           </Badge>
-                          {item.status === 'replayed' && item.replayed_at ? (
+                          {dlqStatus === 'replayed' && item.replayed_at ? (
                             <p className="text-[10px] text-slate-500 font-mono">
                               {formatDbTimestamp(item.replayed_at)}
                             </p>
@@ -245,8 +256,8 @@ function ProxyQueueAdmin() {
                           size="sm"
                           variant="outline"
                           className="border-border"
-                          disabled={busyId === item.id || bulkBusy || !canRetryDlq(item.status)}
-                          title={!canRetryDlq(item.status) ? 'Đã replay — không retry lại' : undefined}
+                          disabled={busyId === item.id || bulkBusy || !retryAllowed}
+                          title={retryDisabledTitle(dlqStatus, canMutate)}
                           onClick={async () => {
                             setBusyId(item.id);
                             try {

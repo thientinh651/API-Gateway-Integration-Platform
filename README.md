@@ -14,11 +14,17 @@
 
 **AVASO Gateway** là hệ thống API Gateway đa tích hợp, phát triển cho đồ án tốt nghiệp. Hệ thống gồm backend Rust (Axum), cơ sở dữ liệu PostgreSQL, Redis cho session admin, và giao diện quản trị React SPA.
 
+**Định vị chính thức:**
+
+- **~70%** = API Gateway Platform (routing, auth, rate limit, proxy, retry, DLQ, dashboard)
+- **~20%** = Salesforce Connector
+- **~10%** = Pipeline đồng bộ SF → Zoho Projects (minh họa khả năng mở rộng)
+
+> AVASO Gateway là **API Gateway Platform**. Salesforce–Zoho chỉ là use case chứng minh khả năng mở rộng.
+
 **Demo production:** [https://thientinh.io.vn](https://thientinh.io.vn)
 
-
 **Script Database:** [docs/schema_full_postgresql.sql](docs/schema_full_postgresql.sql)
-
 
 **Bảng ERD Database:**
 
@@ -28,211 +34,245 @@
 
 | Thành phần | Công nghệ |
 |------------|-----------|
-| Backend | Rust, Axum, Tokio, SQLx |
-| Cơ sở dữ liệu | PostgreSQL 16 |
-| Cache / session | Redis 7 |
-| Frontend | React, TypeScript, Vite |
+| Backend | Rust (Axum, Tokio, SQLx) |
+| Database | PostgreSQL 16 |
+| Cache / Session | Redis 7 |
+| Frontend | React 18, TypeScript, Vite 6, Tailwind 4 |
 | Reverse proxy | Nginx (TLS) |
 | Triển khai | systemd, Docker Compose |
+| Observability | Prometheus + Grafana (tùy chọn) |
 
 ---
 
-## Tính năng chính
+## 2. Hành trình phát triển
 
-| Lớp | Mô tả |
-|-----|--------|
-| **Data plane** | Reverse proxy theo route; prefix `/v1/api/*`; OAuth2 JWT Bearer; rate limit token bucket |
-| **Admin plane** | REST `/api/*` — session cookie hoặc `X-API-Key` admin; RBAC admin / operator / viewer |
-| **Bảo mật** | Argon2id mật khẩu; AES-256-GCM mã hóa client key; audit log; transaction log |
-| **Tích hợp** | Salesforce + Zoho Projects OAuth; proxy data-plane; đồng bộ snapshot |
-| **Mở rộng** | Request transform, retry, hàng đợi DLQ (bật/tắt runtime) |
-| **Dashboard** | React SPA trong `web/` — build ra `web/dist/` |
+| Giai đoạn | Nội dung |
+|-----------|----------|
+| **Khởi đầu** | Gateway Rust cơ bản ("Hello World") |
+| **Giai đoạn 1** | Thêm web admin React, xác thực, hash mật khẩu |
+| **Giai đoạn 2** | Tích hợp Salesforce + Zoho, dashboard responsive |
+| **Giai đoạn 3** | Hardening: logs, tests, CI, frontend thống nhất |
+| **Giai đoạn 4** | OAuth2: PKCE, client secret Argon2id, token lifecycle |
+| **Giai đoạn 5** | DLQ persist PostgreSQL, proxy queue status, observability |
+| **Giai đoạn 6** | Multi-tenant workspace, RBAC backend enforcement |
+| **Giai đoạn 7 (30/6)** | Refactor integration — bỏ Zoho Office/bridge, tập trung pipeline SF→Zoho |
+
+Commit mới nhất: `fix intergration` (30/6/2026).
 
 ---
 
-## Kiến trúc hệ thống
+## 3. Kiến trúc hệ thống
+
+Hệ thống tách **2 mặt phẳng (plane)** rõ ràng:
 
 ```
-Client ──► Nginx (TLS) ──► avaso-gateway :3000 (localhost)
-                              ├── /health, /metrics
-                              ├── /v1/api/*     → JWT Bearer → proxy upstream
-                              ├── /oauth/token  → phát access token
-                              ├── /api/*        → admin API (session / admin key)
-                              └── /*            → static web/dist/ (SPA)
+Client → Nginx (TLS) → avaso-gateway :3000
+           ├── /health, /metrics          → health check + metrics
+           ├── /oauth/token, /oauth/authorize → phát JWT / OAuth flow
+           ├── /v1/api/*                   → DATA PLANE (JWT Bearer → proxy)
+           ├── /api/*                      → ADMIN PLANE (session / API key)
+           └── /*                          → React SPA (web/dist/)
 ```
 
-| Thành phần | Lưu trữ | Ghi chú |
-|------------|---------|---------|
-| Route, user, key, integration, log | **PostgreSQL** | Seed lần đầu từ `config.yaml` |
-| Session admin | **Redis** | Key `gw:session:{id}`, TTL 24h; dùng chung giữa nhiều instance |
-| Proxy queue | **In-memory** | Mất khi restart process |
+| Plane | Prefix | Auth | Vai trò |
+|-------|--------|------|---------|
+| **Data plane** | `/v1/api/*` | OAuth2 JWT Bearer | Reverse proxy upstream, rate limit, ACL, transform, retry, DLQ |
+| **Admin plane** | `/api/*` | Cookie `gw_sid` (Redis) hoặc `X-API-Key` | CRUD route, client keys, users, logs, integrations, settings |
+
+**Lưu trữ state:**
+
+- **PostgreSQL**: routes, users, client keys, integrations, snapshots, sync logs, entity links, transaction/audit logs, DLQ persist
+- **Redis**: session admin (TTL 24h), rate limit distributed, JWT revocation
+- **In-memory**: buffer proxy queue trước khi flush xuống PostgreSQL
 
 Migration SQL tự chạy khi gateway khởi động (`migrations/`).
 
 ---
 
-## Yêu cầu hệ thống
+## 4. Backend — những gì đã implement
 
-- **Rust** ≥ 1.85 (`rustup`, `cargo`)
-- **Node.js** ≥ 20 (`npm`)
-- **PostgreSQL** 16 + client `psql`, `pg_dump`
-- **Redis** 7
-- *(Tùy chọn)* Docker + Docker Compose
+### 4.1 Gateway Core (~65%)
+
+- **Dynamic Routing Engine**: longest-prefix match, path parameter `{id}`, HTTP method filter, request header transform, per-route timeout, runtime reload
+- **Reverse Proxy**: strip `Authorization` trước upstream, preserve query string, path param substitution
+- **Resilience**: retry upstream (status/timeout, exponential backoff), DLQ persist PostgreSQL, replay idempotent (`pending` → `replayed` / `failed_permanent`), background replay worker
+- **Graceful shutdown**: SIGTERM + Ctrl+C
+
+### 4.2 OAuth2 Identity & Token Lifecycle (~60%)
+
+- **Token endpoint** (`POST /api/oauth/token`): `client_credentials`, `password`, `authorization_code` + **PKCE S256**
+- **JWT data plane**: HS256 claims (`sub`, `tenant_id`, `client_key_id`, `jti`, `tv`, `exp`); secret chỉ dùng tại token endpoint
+- **Token lifecycle**: revoke per-`jti` (Redis), revoke toàn client (`token_version`), audit, rate limit token endpoint
+- **Authorization Code + PKCE** (mở rộng): third-party apps, consent flow, demo callback — *giới hạn: user phải login dashboard trước; không phải full OAuth IdP production*
+
+### 4.3 Security & Access Control (~55%)
+
+- Mật khẩu admin: **Argon2id**; client secret: **Argon2id** one-way; integration config: **AES-256-GCM**; client key tạo UI: **RSA envelope**
+- **RBAC 3 role** enforcement backend: `admin` / `operator` / `viewer`
+- **Multi-tenant isolation**, ACL whitelist (`gateway_client_key_routes`), admin API key, password reset OTP (Brevo/SMTP)
+
+### 4.4 Rate Limiting (~50%)
+
+- **Token bucket hybrid**: Redis Lua (`gw:rl:*`) + fallback in-memory
+- Ưu tiên: Client req/phút → Route req/phút → Global RPS + burst; HTTP 429 + `Retry-After`
+
+### 4.5 Observability (~40%)
+
+- Transaction log async (data plane), audit log (admin plane)
+- `/health` (PostgreSQL + Redis latency), `/metrics` JSON + Prometheus
+- Grafana dashboard: `deploy/observability/`
+
+### 4.6 Admin API
+
+**Public:** login, logout, register viewer, forgot/reset password, OAuth token, SF/Zoho OAuth callback, RSA public key, feature flags (`/api/ping`).
+
+**Protected (session + RBAC):** CRUD routes, client keys (tạo/rotate/revoke), users, workspace memberships, audit/transaction logs, proxy queue (DLQ), integrations (connect/test/snapshot/sync), OAuth admin, settings, dashboard stats, reload config.
 
 ---
 
-## Cài đặt và chạy
+## 5. Frontend — Dashboard React SPA
 
-### 1. Dev local (cargo)
+| Trang | Path | Quyền | Chức năng |
+|-------|------|-------|-----------|
+| Tổng quan | `/` | Tất cả (guest có OverviewGuest) | Stats, middleware pipeline banner |
+| Routes | `/routes` | viewer+ | CRUD route, ACL, retry config |
+| OAuth & Clients | `/auth` | operator+ | Client registry, tokens, third-party apps, PKCE demo |
+| Proxy Try | `/proxy-try` | admin | Thử gọi data plane với JWT |
+| Proxy Queue | `/proxy-queue` | operator+ | Xem/replay DLQ |
+| API Docs | `/api-docs` | Public | Tài liệu API |
+| Integrations | `/integrations` | admin | SF/Zoho connect, pipeline, snapshots, sync logs |
+| Users | `/users` | admin | CRUD user, RBAC |
+| Logs | `/logs` | admin | Audit + transaction logs |
+| Settings | `/settings` | admin | Runtime settings, feature toggles |
+| Profile | `/profile` | Đăng nhập | Hồ sơ cá nhân |
+| Login / Register / Forgot | `/login`, `/register`, `/forgot-password` | Public | Auth flow |
+
+**Integration UI** (refactor 30/6): ConnectorCard, StatusStrip, PipelinePanel, Snapshots, SyncLogs, EntityLinks.
+
+**UI chính:** MainLayout, Sidebar, WorkspaceSwitcher, WorkspaceMembersPanel, ClientRegistryTable, RoutesTable, shadcn/Radix UI kit.
+
+---
+
+## 6. Tích hợp Salesforce ↔ Zoho (~25%)
+
+### Salesforce Connector
+
+- OAuth2 + PKCE connect, snapshot Opportunity/Account
+- Proxy data plane: `GET /v1/api/sf/*`, refresh token tự động
+- Config provider (client_id/secret) lưu DB mã hóa AES
+
+### Zoho Projects Connector
+
+- OAuth connect, list portals/projects/tasks
+- Proxy: `GET /v1/api/zoho/*`, push Project + Task từ deal Closed Won
+
+### Pipeline SF → Zoho
+
+1. Snapshot SF qua gateway loopback (`/v1/api/sf/*`)
+2. Lọc Stage = Closed Won + Amount ≥ ngưỡng (`INTEGRATION_MIN_DEAL_AMOUNT`)
+3. Push Zoho Project/Task
+4. Ghi `sync_logs` + `integration_entity_links` (idempotent — không tạo trùng)
+
+Background worker: interval 15 phút hoặc `POST /api/integrations/sync-now`. Sync worker **self-dogfood** qua gateway loopback.
+
+**Refactor 30/6:** Xóa Zoho Office, bridge config, opportunity templates → pipeline core đơn giản hơn. Script reset: [`scripts/reset_integration_data.sql`](scripts/reset_integration_data.sql).
+
+---
+
+## 7. Multi-tenant / Workspace
+
+- Bảng `tenants` + `tenant_memberships`
+- Workspace switcher UI, invite/remove members
+- Route path unique per `(tenant_id, path)`
+- Deployment mode: `on_prem` (mặc định) | `saas`
+- Viewer registration tùy chọn (`ALLOW_VIEWER_REGISTRATION`)
+
+---
+
+## 8. Deploy & Operations
+
+| Thành phần | Mô tả |
+|------------|-------|
+| **Docker** | `docker-compose.yml` (dev), `docker-compose.ha.yml` (2 instances + Nginx LB), `docker-compose.observability.yml` |
+| **Production** | systemd (`deploy/systemd/`), Nginx TLS `thientinh.io.vn`, tuning VPS 2GB |
+| **Scripts** | `smoke-test.sh`, `deploy-production.sh`, `reset_integration_data.sql`, `run-benchmark-suite.sh`, `collect-thesis-evidence.sh` |
+| **CI** | `.github/workflows/ci.yml` — `cargo test` + build + `npm test` + build |
+
+### Cài đặt nhanh
 
 ```bash
-# PostgreSQL + Redis (chọn một)
+# PostgreSQL + Redis
 docker compose up -d postgres redis
-# hoặc: sudo systemctl start postgresql redis-server
-
-cp .env.example .env   # chỉnh secret trước khi public
+cp .env.example .env
 cargo run
-```
 
-```bash
 # Frontend (terminal khác)
 cd web && npm install && npm run dev
-# Production build: npm run build  → web/dist/
+# Production: npm run build → web/dist/
 ```
 
-- Gateway: `http://127.0.0.1:3000/` (sau `npm run build`)
-- Vite dev: `http://127.0.0.1:5173/` (proxy `/api` → gateway)
-
-**Lưu ý:** `ADMIN_PASSWORD` trong `.env` chỉ bootstrap lần đầu khi bảng `dashboard_users` trống. Đổi mật khẩu sau login qua UI **Users** — sửa `.env` không đổi pass trong DB.
-
-### 2. Docker Compose
-
 ```bash
-cp .env.example .env
+# Docker all-in-one
 docker compose up --build
-# http://127.0.0.1:3000 — BIND_HOST=0.0.0.0 trong compose
 ```
 
-Chi tiết: [`docs/TRIEN_KHAI_DOCKER.md`](docs/TRIEN_KHAI_DOCKER.md).
+Chi tiết: [`docs/TRIEN_KHAI.md`](docs/TRIEN_KHAI.md), [`docs/TRIEN_KHAI_DOCKER.md`](docs/TRIEN_KHAI_DOCKER.md).
 
-### 3. Production (Ubuntu)
+### Kiểm thử
 
 ```bash
-cargo build --release
-cd web && npm run build && npm test
-sudo cp deploy/systemd/avaso-gateway.service /etc/systemd/system/
-sudo systemctl enable --now avaso-gateway
-```
-
-Nginx reverse proxy tới `127.0.0.1:3000` — xem [`deploy/nginx/thientinh.io.vn.conf`](deploy/nginx/thientinh.io.vn.conf), [`deploy/systemd/README.md`](deploy/systemd/README.md).
-
----
-
-## Cơ sở dữ liệu
-
-### Schema
-
-| Nguồn | Mô tả |
-|-------|--------|
-| `migrations/` | Migration thực tế gateway áp dụng khi start |
-| [`docs/schema_full_postgresql.sql`](docs/schema_full_postgresql.sql) | DDL đầy đủ (tham chiếu tài liệu) |
-``
-
-./scripts/export-db.sh
-# hoặc
-./scripts/export-db.sh schema
-```
-
-Tạo/cập nhật file tham chiếu trong `docs/`:
-
-```bash
-python3 scripts/generate_schema_sql.py --style clean --out docs/schema_full_postgresql.sql
-```
-
-**Output:**
-
-| File | Nội dung |
-|------|----------|
-| `exports/db/avaso_gateway_schema_YYYYMMDD_HHMMSS.sql` | DDL dictionary có timestamp |
-| `exports/db/avaso_gateway_schema_latest.sql` | Bản mới nhất — **nộp file này** |
-| [`docs/schema_full_postgresql.sql`](docs/schema_full_postgresql.sql) | Cùng nội dung, lưu trong repo |
-
-**Tuỳ chọn — snapshot DB thực tế** (cần PostgreSQL + `DATABASE_URL`):
-
-```bash
-./scripts/export-db.sh dump   # pg_dump schema + data
-./scripts/export-db.sh data   # pg_dump chỉ INSERT
-```
-
-Script đọc `DATABASE_URL` từ `.env` hoặc `/etc/avaso-gateway/env` khi dùng `dump`/`data`.
-
-**Giảng viên tạo DB từ dictionary:**
-
-```bash
-createdb avaso_gateway_review
-psql "postgres://avaso:avaso@127.0.0.1:5432/avaso_gateway_review" \
-  -f exports/db/avaso_gateway_schema_latest.sql
-```
-
----
-
-## Kiểm thử
-
-```bash
-cargo test                    # unit tests (crypto, RBAC, JWT, rate limit)
+cargo test
 cd web && npm test && npm run build
-./scripts/smoke-test.sh       # health + login + JWT data plane (optional)
-python3 scripts/test_jwt_auth.py  # JWT data plane (cần OAuth client)
-./scripts/deploy-production.sh  # build release + web/dist + restart systemd
+./scripts/smoke-test.sh
+python3 scripts/test_jwt_auth.py
+./scripts/collect-thesis-evidence.sh
 ```
 
-CI: GitHub Actions — [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+---
 
-Kịch bản demo bảo vệ: [`docs/DEMO_BAO_VE.md`](docs/DEMO_BAO_VE.md).
+## 9. Benchmark & thử nghiệm
+
+VPS DigitalOcean 2 vCPU / 2GB RAM (24/6/2026), tool k6 + wrk:
+
+| Scenario | RPS | p50 (ms) | p95 (ms) |
+|----------|-----|----------|----------|
+| Upstream direct (mock) | 647 | 3.5 | 8.5 |
+| `/health` (không auth) | 2248 | 19.4 | 37.3 |
+| JWT full pipeline | 275 | 143.2 | 780.1 |
+
+**Gateway overhead (p50):** ~139.7 ms (JWT pipeline − upstream direct @ 50 VUs).
+
+Chi tiết: [`docs/BENCHMARK.md`](docs/BENCHMARK.md), [`k6/results/BENCHMARK_TABLE.md`](k6/results/BENCHMARK_TABLE.md).
 
 ---
 
-## Cấu hình
+## 10. Tài liệu đồ án
 
-| File | Vai trò |
-|------|---------|
-| `.env` | `DATABASE_URL`, `REDIS_URL`, admin bootstrap, `CLIENT_KEY_MASTER_KEY`, OAuth, CORS |
-| `config.yaml` | Rate limit mặc định, seed routes, feature toggles |
-| `web/.env` | `VITE_API_BASE_URL`, `VITE_GATEWAY_ORIGIN` (dev) |
-
-Biến môi trường quan trọng:
-
-| Biến | Mặc định | Mô tả |
-|------|----------|--------|
-| `DATABASE_URL` | `postgres://avaso:avaso@127.0.0.1:5432/avaso_gateway` | PostgreSQL |
-| `REDIS_URL` | `redis://127.0.0.1:6379` | Session admin |
-| `PORT` | `3000` | Cổng gateway |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / `change-me-...` | Bootstrap user lần đầu |
+| Tài liệu | Nội dung |
+|----------|----------|
+| [`docs/TONG_QUAN_DO_AN_VA_DANH_GIA.md`](docs/TONG_QUAN_DO_AN_VA_DANH_GIA.md) | Tổng quan + đánh giá đồ án |
+| [`docs/MA_TRAN_DO_AN.md`](docs/MA_TRAN_DO_AN.md) | Ma trận chức năng + FR mapping |
+| [`docs/THESIS_CONTEXT.md`](docs/THESIS_CONTEXT.md) | Context đồ án cho hội đồng / AI |
+| [`docs/CHUONG_4_THU_NGHIEM.md`](docs/CHUONG_4_THU_NGHIEM.md) | Chương thử nghiệm (12/12 TC đạt) |
+| [`docs/ROUTING_JWT_CORE.md`](docs/ROUTING_JWT_CORE.md) | Routing + JWT core |
+| [`docs/OAUTH2_IDENTITY.md`](docs/OAUTH2_IDENTITY.md) | OAuth2 token endpoint |
+| [`docs/RBAC_LVTN.md`](docs/RBAC_LVTN.md) | RBAC |
+| [`docs/TICH_HOP_SALESFORCE.md`](docs/TICH_HOP_SALESFORCE.md) | Tích hợp Salesforce |
+| [`docs/schema_full_postgresql.sql`](docs/schema_full_postgresql.sql) | Schema DB đầy đủ |
+| [`docs/README.md`](docs/README.md) | Mục lục tài liệu đầy đủ |
 
 ---
 
-## Admin API (tóm tắt)
+## 11. Những gì CHƯA làm
 
-Tất cả dưới prefix **`/api`**:
-
-| Nhóm | Endpoint |
-|------|----------|
-| Auth | `POST /api/login`, `POST /api/logout`, `GET /api/me` |
-| Routes | `GET/POST /api/routes`, `PUT/DELETE /api/routes/:id` |
-| Client keys | `GET/POST /api/client-keys`, `DELETE /api/client-keys/:id` |
-| Users | `GET/POST/PUT/DELETE /api/users` |
-| Logs | `GET /api/audit-logs`, `GET /api/transaction-logs` |
-| Settings | `GET/PUT /api/settings`, `GET /api/dashboard/stats` |
-| Integrations | `GET /api/integrations/*` (Salesforce, Zoho OAuth + sync) |
-
-Tài liệu đầy đủ: UI **Tài liệu API** hoặc [`docs/TEAM_RUNBOOK.md`](docs/TEAM_RUNBOOK.md).
-
-### Data plane auth (OAuth2 JWT)
-
-1. Lấy token: `POST /oauth/token` (`grant_type=client_credentials` hoặc `password`)
-2. Gọi API: `Authorization: Bearer <access_token>`
-
-Demo web shop / script: dùng `client_id` + `client_secret` → JWT → gọi `/v1/api/*`.
+| Tính năng | Trạng thái |
+|-----------|------------|
+| Circuit breaker | Chưa implement |
+| Sliding window rate limit | Chưa (chỉ token bucket) |
+| Kafka/NATS DLQ scale-out | Chưa (chỉ PostgreSQL persist) |
+| Full OAuth IdP đa tenant production-grade | Chưa (có PKCE demo, giới hạn) |
+| NFR latency ≤10ms gateway overhead @ 50 VUs | Chưa đạt (p50 ~140ms) |
+| Distributed tracing (OpenTelemetry/Jaeger) | Chưa |
 
 ---
 
@@ -241,50 +281,15 @@ Demo web shop / script: dùng `client_id` + `client_secret` → JWT → gọi `/
 ```
 avaso-gateway/
 ├── src/                 # Backend Rust
-├── web/                 # Frontend React
-│   ├── src/             # Source — sửa code ở đây
-│   └── dist/            # Build output (gitignore)
+├── web/                 # Frontend React (build → web/dist/)
 ├── migrations/          # SQL migration PostgreSQL
 ├── scripts/             # Smoke test, benchmark, export DB, ...
-├── deploy/              # systemd, nginx, VPS scripts
-├── docs/                # Báo cáo, runbook, schema tham chiếu
-├── exports/db/          # SQL export (gitignore — tạo bằng export-db.sh)
+├── deploy/              # systemd, nginx, observability
+├── docs/                # Báo cáo, runbook, schema
+├── k6/                  # Benchmark scripts
 ├── config.yaml          # Seed routes & toggles
 ├── docker-compose.yml
 └── .env.example
-```
-
-** `web/dist/`** — luôn `npm run build` sau khi đổi UI.
-
----
-
-## Tài liệu đồ án
-
-| Tài liệu | Nội dung |
-|----------|----------|
-| [`docs/BAO_CAO.md`](docs/BAO_CAO.md) | Outline báo cáo luận văn |
-| [`docs/BAN_VE_HE_THONG.md`](docs/BAN_VE_HE_THONG.md) | Bản vẽ kỹ thuật (SSOT) |
-| [`docs/DEMO_BAO_VE.md`](docs/DEMO_BAO_VE.md) | Kịch bản demo bảo vệ |
-| [`docs/ROUTING_JWT_CORE.md`](docs/ROUTING_JWT_CORE.md) | **Trọng tâm bảo vệ** — routing + JWT + benchmark |
-| [`docs/OAUTH2_IDENTITY.md`](docs/OAUTH2_IDENTITY.md) | OAuth2 token endpoint |
-| [`docs/MA_TRAN_DONG_AN.md`](docs/MA_TRAN_DONG_AN.md) | Ma trận FR ↔ code |
-| [`docs/MO_HINH_BAO_MAT.md`](docs/MO_HINH_BAO_MAT.md) | Mô hình bảo mật |
-| [`docs/BENCHMARK.md`](docs/BENCHMARK.md) | Benchmark NFR |
-| [`docs/TICH_HOP_SALESFORCE.md`](docs/TICH_HOP_SALESFORCE.md) | Tích hợp Salesforce |
-| [`docs/TICH_HOP_ZOHO_PROJECTS.md`](docs/TICH_HOP_ZOHO_PROJECTS.md) | Tích hợp Zoho Projects |
-| [`docs/README.md`](docs/README.md) | Mục lục tài liệu đầy đủ |
-
-**Bảo vệ — trace FR + benchmark:**
-
-```bash
-./scripts/collect-thesis-evidence.sh
-```
-
-**Xử lý sự cố 502:**
-
-```bash
-sudo bash deploy/fix-502.sh
-# hoặc xem docs/XU_LY_502_BAD_GATEWAY.md
 ```
 
 ---

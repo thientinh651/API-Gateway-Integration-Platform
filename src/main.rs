@@ -179,6 +179,8 @@ impl Default for FeatureToggle {
 struct RateLimitConfig {
     #[serde(default = "default_rl_enabled")]
     enabled: bool,
+    #[serde(default = "default_rl_burst_enabled")]
+    burst_enabled: bool,
     #[serde(default = "default_rl_rps")]
     rps: u32,
     #[serde(default = "default_rl_burst")]
@@ -189,6 +191,7 @@ impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
             enabled: default_rl_enabled(),
+            burst_enabled: default_rl_burst_enabled(),
             rps: default_rl_rps(),
             burst: default_rl_burst(),
         }
@@ -197,6 +200,9 @@ impl Default for RateLimitConfig {
 
 fn default_rl_enabled() -> bool {
     false
+}
+fn default_rl_burst_enabled() -> bool {
+    true
 }
 fn default_rl_rps() -> u32 {
     10
@@ -238,6 +244,7 @@ struct SettingsSystemInfo {
 #[derive(Debug, Serialize)]
 struct SettingsResponse {
     rate_limit_enabled: bool,
+    rate_limit_burst_enabled: bool,
     rate_limit_rps: u32,
     rate_limit_burst: u32,
     enable_metrics: bool,
@@ -251,6 +258,8 @@ struct SettingsResponse {
 #[derive(Debug, Deserialize)]
 struct UpdateSettingsBody {
     rate_limit_enabled: bool,
+    #[serde(default = "default_rl_burst_enabled")]
+    rate_limit_burst_enabled: bool,
     rate_limit_rps: u32,
     rate_limit_burst: u32,
     enable_metrics: bool,
@@ -389,21 +398,22 @@ fn resolve_rate_limit(
     route: Option<&RouteRow>,
     settings: &RuntimeSettings,
 ) -> ResolvedRateLimit {
+    let burst_enabled = settings.rate_limit.burst_enabled;
     if client.rate_limit_per_min > 0 {
-        let (rps, burst) = rate_limit::per_min_to_bucket(client.rate_limit_per_min);
+        let (rps, calculated) = rate_limit::per_min_to_bucket(client.rate_limit_per_min);
         return ResolvedRateLimit {
             active: true,
             rps,
-            burst,
+            burst: rate_limit::effective_burst(calculated, burst_enabled),
             limit_header: client.rate_limit_per_min as u32,
         };
     }
     if let Some(r) = route.filter(|r| r.rate_limit_per_min > 0) {
-        let (rps, burst) = rate_limit::per_min_to_bucket(r.rate_limit_per_min);
+        let (rps, calculated) = rate_limit::per_min_to_bucket(r.rate_limit_per_min);
         return ResolvedRateLimit {
             active: true,
             rps,
-            burst,
+            burst: rate_limit::effective_burst(calculated, burst_enabled),
             limit_header: r.rate_limit_per_min as u32,
         };
     }
@@ -411,7 +421,7 @@ fn resolve_rate_limit(
         ResolvedRateLimit {
             active: true,
             rps: settings.rate_limit.rps as f64,
-            burst: settings.rate_limit.burst,
+            burst: rate_limit::effective_burst(settings.rate_limit.burst, burst_enabled),
             limit_header: settings.rate_limit.rps,
         }
     } else {
@@ -714,6 +724,10 @@ async fn load_runtime_settings(
         db::load_setting(pool, "runtime_rate_limit_burst").await?,
         yaml.rate_limit.burst,
     );
+    let rate_limit_burst_enabled = parse_bool_setting(
+        db::load_setting(pool, "runtime_rate_limit_burst_enabled").await?,
+        yaml.rate_limit.burst_enabled,
+    );
     let enable_metrics =
         parse_bool_setting(db::load_setting(pool, "runtime_metrics_enabled").await?, true);
     let enable_health_check = parse_bool_setting(
@@ -736,6 +750,7 @@ async fn load_runtime_settings(
     Ok(RuntimeSettings {
         rate_limit: RateLimitConfig {
             enabled: rate_limit_enabled,
+            burst_enabled: rate_limit_burst_enabled,
             rps: rate_limit_rps,
             burst: rate_limit_burst,
         },
@@ -769,6 +784,12 @@ async fn persist_runtime_settings(
         pool,
         "runtime_rate_limit_burst",
         &body.rate_limit_burst.to_string(),
+    )
+    .await?;
+    db::upsert_setting(
+        pool,
+        "runtime_rate_limit_burst_enabled",
+        if body.rate_limit_burst_enabled { "1" } else { "0" },
     )
     .await?;
     db::upsert_setting(
@@ -807,6 +828,7 @@ async fn persist_runtime_settings(
 fn settings_response_from_config(cfg: &AppConfig) -> SettingsResponse {
     SettingsResponse {
         rate_limit_enabled: cfg.settings.rate_limit.enabled,
+        rate_limit_burst_enabled: cfg.settings.rate_limit.burst_enabled,
         rate_limit_rps: cfg.settings.rate_limit.rps,
         rate_limit_burst: cfg.settings.rate_limit.burst,
         enable_metrics: cfg.settings.enable_metrics,
@@ -838,10 +860,10 @@ fn validate_settings_write(body: &UpdateSettingsBody) -> Option<Response> {
             serde_json::Value::String("Bật rate limit thì RPS phải > 0".into()),
         );
     }
-    if body.rate_limit_enabled && body.rate_limit_burst == 0 {
+    if body.rate_limit_enabled && body.rate_limit_burst_enabled && body.rate_limit_burst == 0 {
         fields.insert(
             "rate_limit_burst".into(),
-            serde_json::Value::String("Bật rate limit thì burst phải > 0".into()),
+            serde_json::Value::String("Bật burst thì giá trị burst phải > 0".into()),
         );
     }
     if body.rate_limit_rps > 100_000 {
@@ -5595,7 +5617,7 @@ async fn api_middleware_status(Extension(ctx): Extension<AdminCtx>) -> impl Into
         }
     };
     let cfg = st.config.read().await;
-    let oauth_clients_loaded = cfg.client_credentials.oauth_clients.len();
+    let oauth_clients_loaded = (active + disabled).max(0) as usize;
     let body = MiddlewareStatusResponse {
         data_plane_prefix: data_plane_prefix(),
         client_registry: dashboard::ClientRegistryStats {
@@ -6158,7 +6180,9 @@ mod path_tests {
     #[test]
     fn per_min_burst_capped_via_module() {
         let (_, burst) = rate_limit::per_min_to_bucket(10);
-        assert_eq!(burst, 3);
+        assert_eq!(burst, 1);
+        assert_eq!(rate_limit::effective_burst(burst, false), 1);
+        assert_eq!(rate_limit::effective_burst(5, true), 5);
     }
 
     #[test]

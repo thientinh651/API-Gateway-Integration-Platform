@@ -15,6 +15,7 @@ import {
 import { toastApiError } from '../../lib/apiClientError';
 import { handleFormApiError } from '../../lib/formValidation';
 import { parseDefaultNumber } from '../../lib/zeroDefaultNumberInput';
+import { DEFAULT_ALLOWED_METHODS } from '../../lib/allowedMethodsOptions';
 import { RouteFormDialog, type RouteFormState } from './routes/RouteFormDialog';
 import { RoutesTable } from './routes/RoutesTable';
 import { RouteClientsSheet } from './routes/RouteClientsSheet';
@@ -25,6 +26,7 @@ const emptyForm = (): RouteFormState => ({
   upstream: '',
   timeout: '30',
   rateLimit: '100',
+  allowedMethods: DEFAULT_ALLOWED_METHODS,
   transformAddHeaders: '{}',
   transformRemoveHeaders: '[]',
   retryMax: '0',
@@ -62,6 +64,7 @@ function routeBodyFromForm(form: RouteFormState, defaults: RouteNumericDefaults)
     target: form.upstream.trim(),
     timeout_secs,
     rate_limit_per_min,
+    allowed_methods: form.allowedMethods.trim() || DEFAULT_ALLOWED_METHODS,
     transform_add_headers: form.transformAddHeaders.trim() || '{}',
     transform_remove_headers: form.transformRemoveHeaders.trim() || '[]',
     retry_max: Number.parseInt(parseDefaultNumber(form.retryMax, defaults.retryMax), 10) || 0,
@@ -179,6 +182,7 @@ function RoutesAdmin() {
       upstream: route.upstream,
       timeout: String(route.timeout),
       rateLimit: String(route.rateLimit),
+      allowedMethods: route.allowedMethods,
       transformAddHeaders: route.transformAddHeaders,
       transformRemoveHeaders: route.transformRemoveHeaders,
       retryMax: String(route.retryMax),

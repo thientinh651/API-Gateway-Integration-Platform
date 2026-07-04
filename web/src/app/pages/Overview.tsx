@@ -89,6 +89,8 @@ const OUTCOME_VI: Record<string, string> = {
   queued: 'Xếp hàng DLQ',
 };
 
+const ACTIVE_INTEGRATION_PROVIDERS = new Set(['salesforce', 'zoho_projects']);
+
 const INTEGRATION_STATUS_VI: Record<string, string> = {
   connected: 'Đã kết nối',
   pending: 'Chờ cấu hình',
@@ -107,6 +109,68 @@ function integrationStatusBadge(status: string) {
     default:
       return 'bg-slate-500/10 text-slate-400 border-slate-500/20';
   }
+}
+
+function OverviewCrmIntegrationsCard({
+  integrations,
+  snapshotEntities,
+}: {
+  integrations: DashboardStats['integrations'];
+  snapshotEntities: DashboardStats['snapshot_entities'];
+}) {
+  return (
+    <NavCard to="/integrations" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Tích hợp CRM">
+      <div className="flex items-start justify-between gap-3 mb-4">
+        <div>
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider">Tích hợp CRM</h3>
+          <p className="text-xs text-muted-foreground mt-1">Salesforce · Zoho Projects · pipeline sync</p>
+        </div>
+        <span className="text-xs text-primary font-mono-tech shrink-0">Mở →</span>
+      </div>
+      {integrations.length === 0 ? (
+        <p className="text-sm text-muted-foreground">Chưa kết nối provider — cấu hình OAuth tại trang Tích hợp.</p>
+      ) : (
+        <div className="space-y-3">
+          {integrations.map((row) => {
+            const snapshots = snapshotEntities.filter((s) => s.provider === row.provider);
+            return (
+              <div key={row.provider} className="rounded-xl border border-border bg-slate-900/35 p-4">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <span className="font-medium text-white text-sm">{row.label}</span>
+                  <Badge className={`${integrationStatusBadge(row.status)} border text-xs shrink-0`}>
+                    {INTEGRATION_STATUS_VI[row.status] ?? row.status}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {row.last_sync_at
+                    ? `Sync gần nhất: ${formatDbTimestamp(row.last_sync_at)}`
+                    : 'Chưa chạy sync'}
+                </p>
+                {row.last_error && row.status === 'error' ? (
+                  <p className="text-xs text-red-300/90 mt-2 line-clamp-2" title={row.last_error}>
+                    {row.last_error}
+                  </p>
+                ) : null}
+                {snapshots.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5 mt-3">
+                    {snapshots.map((s) => (
+                      <Badge
+                        key={`${s.provider}-${s.entity_type}`}
+                        variant="outline"
+                        className="text-[10px] border-border/80 text-slate-400"
+                      >
+                        {s.label}: {s.record_count}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </NavCard>
+  );
 }
 
 function truncatePath(path: string, max = 28) {
@@ -234,6 +298,11 @@ function OverviewAdmin() {
   );
 
   const dlqCounts = useMemo(() => countDlqByStatus(proxyQueueItems), [proxyQueueItems]);
+
+  const integrationRows = useMemo(
+    () => (stats?.integrations ?? []).filter((r) => ACTIVE_INTEGRATION_PROVIDERS.has(r.provider)),
+    [stats?.integrations],
+  );
 
   const successRate =
     traffic && traffic.total > 0 ? Math.round((traffic.success / traffic.total) * 100) : null;
@@ -637,10 +706,17 @@ function OverviewAdmin() {
             </ChartContainer>
           )}
         </NavCard>
+
+        {showIntegrations ? (
+          <OverviewCrmIntegrationsCard
+            integrations={integrationRows}
+            snapshotEntities={stats?.snapshot_entities ?? []}
+          />
+        ) : null}
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 lg:gap-8">
-        <div className="xl:col-span-2">
+        <div className={!showIntegrations && dlqCounts.total > 0 ? 'xl:col-span-2' : 'xl:col-span-full'}>
           <NavCard to="/routes" className="rounded-2xl overflow-hidden bg-card/80 border-border" ariaLabel="Danh sách routes">
             <div className="p-6 border-b border-border flex justify-between items-center">
               <h3 className="font-bold text-white text-sm uppercase tracking-wider">Routes</h3>
@@ -667,59 +743,7 @@ function OverviewAdmin() {
           </NavCard>
         </div>
 
-        {showIntegrations ? (
-          <NavCard to="/integrations" className="rounded-2xl p-5 sm:p-6 bg-card/80 border-border" ariaLabel="Tích hợp CRM">
-            <div className="flex items-start justify-between gap-3 mb-4">
-              <div>
-                <h3 className="font-bold text-white text-sm uppercase tracking-wider">Tích hợp CRM</h3>
-                <p className="text-xs text-muted-foreground mt-1">Salesforce · Zoho Projects · pipeline sync</p>
-              </div>
-              <span className="text-xs text-primary font-mono-tech shrink-0">Mở →</span>
-            </div>
-            {(stats?.integrations ?? []).length === 0 ? (
-              <p className="text-sm text-muted-foreground">Chưa kết nối provider — cấu hình OAuth tại trang Tích hợp.</p>
-            ) : (
-              <div className="space-y-3">
-                {(stats?.integrations ?? []).map((row) => {
-                  const snapshots = (stats?.snapshot_entities ?? []).filter((s) => s.provider === row.provider);
-                  return (
-                    <div key={row.provider} className="rounded-xl border border-border bg-slate-900/35 p-4">
-                      <div className="flex items-center justify-between gap-2 mb-2">
-                        <span className="font-medium text-white text-sm">{row.label}</span>
-                        <Badge className={`${integrationStatusBadge(row.status)} border text-xs shrink-0`}>
-                          {INTEGRATION_STATUS_VI[row.status] ?? row.status}
-                        </Badge>
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        {row.last_sync_at
-                          ? `Sync gần nhất: ${formatDbTimestamp(row.last_sync_at)}`
-                          : 'Chưa chạy sync'}
-                      </p>
-                      {row.last_error && row.status === 'error' ? (
-                        <p className="text-xs text-red-300/90 mt-2 line-clamp-2" title={row.last_error}>
-                          {row.last_error}
-                        </p>
-                      ) : null}
-                      {snapshots.length > 0 ? (
-                        <div className="flex flex-wrap gap-1.5 mt-3">
-                          {snapshots.map((s) => (
-                            <Badge
-                              key={`${s.provider}-${s.entity_type}`}
-                              variant="outline"
-                              className="text-[10px] border-border/80 text-slate-400"
-                            >
-                              {s.label}: {s.record_count}
-                            </Badge>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </NavCard>
-        ) : dlqCounts.total > 0 ? (
+        {!showIntegrations && dlqCounts.total > 0 ? (
           <NavCard to="/proxy-queue" className="rounded-2xl p-6 bg-card/80 border-border" ariaLabel="DLQ hàng đợi">
             <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">DLQ</h3>
             <p className="text-sm text-amber-300">

@@ -315,7 +315,10 @@ pub async fn ensure_integration_rows(pool: &PgPool, tenant_id: i64) -> Result<()
 }
 
 pub fn list_with_stubs(rows: Vec<IntegrationPublic>) -> Vec<IntegrationPublic> {
-    let mut out = rows;
+    let mut out: Vec<IntegrationPublic> = rows
+        .into_iter()
+        .filter(|r| r.provider == SF_PROVIDER || r.provider == ZOHO_PROVIDER)
+        .collect();
     let has_sf = out.iter().any(|r| r.provider == SF_PROVIDER);
     let has_zoho = out.iter().any(|r| r.provider == ZOHO_PROVIDER);
     if !has_sf {
@@ -900,7 +903,7 @@ pub async fn zoho_request_raw_with_refresh(
     let zoho = zoho_provider_config(pool, tenant_id)
         .await
         .ok_or_else(|| "Zoho not configured".to_string())?;
-    let mut token = load_zoho_token(pool, tenant_id).await?;
+    let mut token = ensure_zoho_token_fresh(pool, tenant_id).await?;
     let suffix = integration_suffix_safe(path)?;
     let base = zoho_projects_api_base(&zoho.accounts_url);
     let mut url = format!("{base}{suffix}");
@@ -922,7 +925,13 @@ pub async fn zoho_request_raw_with_refresh(
         if let Some(rt) = token.refresh_token.clone() {
             let portal_id = token.portal_id.clone();
             let oauth_connected_at = token.oauth_connected_at.clone();
-            token = refresh_zoho_access_token(&st.http, &zoho, &rt).await?;
+            token = match refresh_zoho_access_token(&st.http, &zoho, &rt).await {
+                Ok(t) => t,
+                Err(e) => {
+                    mark_zoho_token_error(pool, tenant_id, &e).await;
+                    return Err(oauth_exchange_user_message("Zoho", &e));
+                }
+            };
             token.portal_id = portal_id;
             token.oauth_connected_at = oauth_connected_at;
             let json = serde_json::to_string(&token).map_err(|e| format!("serialize: {e}"))?;
@@ -953,6 +962,10 @@ pub async fn zoho_request_raw_with_refresh(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
     let bytes = res.bytes().await.map_err(|e| format!("body: {e}"))?;
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        let preview = String::from_utf8_lossy(&bytes);
+        mark_zoho_token_error(pool, tenant_id, &preview).await;
+    }
     Ok((status, bytes.to_vec(), ct))
 }
 
@@ -1533,7 +1546,7 @@ pub async fn api_zoho_connect(ctx: &AdminCtx) -> Response {
     let scope = urlencoding::encode(&zoho.scopes);
     let redirect = urlencoding::encode(&zoho.redirect_uri);
     let url = format!(
-        "{}/oauth/v2/auth?scope={}&client_id={}&response_type=code&access_type=offline&redirect_uri={}&state={}",
+        "{}/oauth/v2/auth?scope={}&client_id={}&response_type=code&access_type=offline&prompt=consent&redirect_uri={}&state={}",
         zoho.accounts_url, scope, zoho.client_id, redirect, state
     );
     if let Err(e) = db::set_integration_status(
@@ -1575,6 +1588,7 @@ pub async fn api_zoho_callback(
     let Some(zoho) = zoho_provider_config(&st.pool, pending.tenant_id).await else {
         return redirect_ui_error("not_configured", Some(ZOHO_PROVIDER), None);
     };
+    let prior_token = load_zoho_token(&st.pool, pending.tenant_id).await.ok();
     let mut token = match exchange_zoho_code(&st.http, &zoho, &code).await {
         Ok(t) => t,
         Err(e) => {
@@ -1590,6 +1604,15 @@ pub async fn api_zoho_callback(
             return redirect_ui_error("token_exchange_failed", Some(ZOHO_PROVIDER), Some(&msg));
         }
     };
+    if token.refresh_token.is_none() {
+        token.refresh_token = prior_token.as_ref().and_then(|t| t.refresh_token.clone());
+    }
+    if token.portal_id.is_none() {
+        token.portal_id = prior_token.as_ref().and_then(|t| t.portal_id.clone());
+    }
+    if token.refresh_token.is_none() {
+        tracing::warn!(tenant_id = pending.tenant_id, "zoho oauth: missing refresh_token after exchange");
+    }
     token.oauth_connected_at = Some(chrono::Utc::now().to_rfc3339());
     let json = match serde_json::to_string(&token) {
         Ok(j) => j,
@@ -1666,6 +1689,86 @@ async fn persist_zoho_token(pool: &PgPool, tenant_id: i64, token: &ZohoTokenConf
         .await
         .map_err(|e| format!("db: {e}"))?;
     Ok(())
+}
+
+async fn mark_zoho_token_error(pool: &PgPool, tenant_id: i64, detail: &str) {
+    let msg = oauth_exchange_user_message("Zoho", detail);
+    let _ = db::set_integration_status(pool, tenant_id, ZOHO_PROVIDER, "error", Some(&msg)).await;
+}
+
+/// Refresh access token trước khi hết hạn (~1h Zoho) — tránh 401 khi Sync Now.
+async fn ensure_zoho_token_fresh(pool: &PgPool, tenant_id: i64) -> Result<ZohoTokenConfig, String> {
+    let Some(st) = STATE.get() else {
+        return Err("state not initialized".into());
+    };
+    let token = load_zoho_token(pool, tenant_id).await?;
+    if token.demo {
+        return Ok(token);
+    }
+    if !token_expires_soon(token.expires_at.as_deref()) {
+        return Ok(token);
+    }
+    let Some(rt) = token.refresh_token.clone() else {
+        let msg = "Zoho thiếu refresh_token — Ngắt kết nối → Kết nối lại Zoho.";
+        mark_zoho_token_error(pool, tenant_id, "missing refresh_token").await;
+        return Err(msg.into());
+    };
+    let zoho = zoho_provider_config(pool, tenant_id)
+        .await
+        .ok_or_else(|| "Zoho not configured".to_string())?;
+    match refresh_zoho_access_token(&st.http, &zoho, &rt).await {
+        Ok(mut fresh) => {
+            fresh.portal_id = token.portal_id.clone();
+            fresh.oauth_connected_at = token.oauth_connected_at.clone();
+            persist_zoho_token(pool, tenant_id, &fresh).await?;
+            let _ = db::set_integration_status(pool, tenant_id, ZOHO_PROVIDER, "connected", None).await;
+            Ok(fresh)
+        }
+        Err(e) => {
+            mark_zoho_token_error(pool, tenant_id, &e).await;
+            Err(format!(
+                "Zoho refresh thất bại: {}",
+                oauth_exchange_user_message("Zoho", &e)
+            ))
+        }
+    }
+}
+
+async fn ensure_sf_token_fresh(pool: &PgPool, tenant_id: i64) -> Result<SalesforceTokenConfig, String> {
+    let Some(st) = STATE.get() else {
+        return Err("state not initialized".into());
+    };
+    let token = load_sf_token(pool, tenant_id).await?;
+    if token.demo {
+        return Ok(token);
+    }
+    if !token_expires_soon(token.expires_at.as_deref()) {
+        return Ok(token);
+    }
+    let Some(rt) = token.refresh_token.clone() else {
+        return Err("Salesforce thiếu refresh_token — Ngắt kết nối → Kết nối lại.".into());
+    };
+    let sf = salesforce_provider_config(pool, tenant_id)
+        .await
+        .ok_or_else(|| "SF not configured".to_string())?;
+    match refresh_access_token(&st.http, &sf, &rt).await {
+        Ok(mut fresh) => {
+            if fresh.instance_url.is_empty() {
+                fresh.instance_url = token.instance_url.clone();
+            }
+            fresh.oauth_connected_at = token.oauth_connected_at.clone();
+            let json = serde_json::to_string(&fresh).map_err(|e| format!("serialize: {e}"))?;
+            let enc = encrypt_integration_config(&json)?;
+            db::upsert_integration_config(pool, tenant_id, SF_PROVIDER, "connected", &enc, None)
+                .await
+                .map_err(|e| format!("db save refresh: {e}"))?;
+            Ok(fresh)
+        }
+        Err(e) => Err(format!(
+            "Salesforce refresh thất bại: {}",
+            oauth_exchange_user_message("Salesforce", &e)
+        )),
+    }
 }
 
 /// Tự chọn portal đầu tiên — không cần bấm Test portals thủ công.
@@ -1832,7 +1935,7 @@ pub async fn zoho_get_with_refresh(
     let zoho = zoho_provider_config(pool, tenant_id)
         .await
         .ok_or_else(|| "Zoho not configured".to_string())?;
-    let mut token = load_zoho_token(pool, tenant_id).await?;
+    let mut token = ensure_zoho_token_fresh(pool, tenant_id).await?;
     let base = zoho_projects_api_base(&zoho.accounts_url);
     let url = format!("{base}{}", path);
     let auth = format!("Zoho-oauthtoken {}", token.access_token);
@@ -1847,7 +1950,13 @@ pub async fn zoho_get_with_refresh(
         if let Some(rt) = token.refresh_token.clone() {
             let portal_id = token.portal_id.clone();
             let oauth_connected_at = token.oauth_connected_at.clone();
-            token = refresh_zoho_access_token(&st.http, &zoho, &rt).await?;
+            token = match refresh_zoho_access_token(&st.http, &zoho, &rt).await {
+                Ok(t) => t,
+                Err(e) => {
+                    mark_zoho_token_error(pool, tenant_id, &e).await;
+                    return Err(oauth_exchange_user_message("Zoho", &e));
+                }
+            };
             token.portal_id = portal_id;
             token.oauth_connected_at = oauth_connected_at;
             let json = serde_json::to_string(&token).map_err(|e| format!("serialize: {e}"))?;
@@ -1867,6 +1976,9 @@ pub async fn zoho_get_with_refresh(
     let status = res.status();
     let body = res.text().await.map_err(|e| format!("body: {e}"))?;
     if !status.is_success() {
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            mark_zoho_token_error(pool, tenant_id, &body).await;
+        }
         return Err(compact_zoho_api_error(status, &body));
     }
     let val: serde_json::Value =
@@ -3218,8 +3330,9 @@ pub async fn push_salesforce_to_zoho(
     }))
 }
 
-/// Full pipeline: pull SF → lọc Closed Won → push Zoho Projects + tasks.
+/// Full pipeline: refresh tokens → pull SF → lọc Closed Won → push Zoho Projects + tasks.
 pub async fn run_full_sync_pipeline(pool: &PgPool, tenant_id: i64) -> Result<serde_json::Value, String> {
+    refresh_integration_tokens_if_needed(pool, tenant_id).await;
     let sf = sync_salesforce_snapshots(pool, tenant_id).await?;
     if !integration_both_connected(pool, tenant_id).await {
         return Ok(serde_json::json!({
@@ -3656,58 +3769,9 @@ pub async fn api_list_sync_logs(ctx: &AdminCtx) -> Response {
     }
 }
 
-async fn maybe_refresh_integration_tokens(pool: &PgPool, tenant_id: i64) {
-    let Some(st) = STATE.get() else { return };
-    if let Ok(token) = load_zoho_token(pool, tenant_id).await {
-        if !token.demo && token_expires_soon(token.expires_at.as_deref()) {
-            if let Some(rt) = token.refresh_token.as_deref() {
-                if let Some(zoho) = zoho_provider_config(pool, tenant_id).await {
-                    if let Ok(mut fresh) = refresh_zoho_access_token(&st.http, &zoho, rt).await {
-                        fresh.portal_id = token.portal_id;
-                        if let Ok(json) = serde_json::to_string(&fresh) {
-                            if let Ok(enc) = encrypt_integration_config(&json) {
-                                let _ = db::upsert_integration_config(
-                                    pool,
-                                    tenant_id,
-                                    ZOHO_PROVIDER,
-                                    "connected",
-                                    &enc,
-                                    None,
-                                )
-                                .await;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if let Ok(token) = load_sf_token(pool, tenant_id).await {
-        if !token.demo && token_expires_soon(token.expires_at.as_deref()) {
-            if let Some(rt) = token.refresh_token.as_deref() {
-                if let Some(sf) = salesforce_provider_config(pool, tenant_id).await {
-                    if let Ok(mut fresh) = refresh_access_token(&st.http, &sf, rt).await {
-                        if fresh.instance_url.is_empty() {
-                            fresh.instance_url = token.instance_url.clone();
-                        }
-                        if let Ok(json) = serde_json::to_string(&fresh) {
-                            if let Ok(enc) = encrypt_integration_config(&json) {
-                                let _ = db::upsert_integration_config(
-                                    pool,
-                                    tenant_id,
-                                    SF_PROVIDER,
-                                    "connected",
-                                    &enc,
-                                    None,
-                                )
-                                .await;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+async fn refresh_integration_tokens_if_needed(pool: &PgPool, tenant_id: i64) {
+    let _ = ensure_zoho_token_fresh(pool, tenant_id).await;
+    let _ = ensure_sf_token_fresh(pool, tenant_id).await;
 }
 
 // --- Transformation Engine (canonical data plane proxy) ---
@@ -3807,7 +3871,7 @@ pub fn spawn_integration_sync_worker(pool: PgPool) {
                 if !integration_both_connected(&pool, tenant_id).await {
                     continue;
                 }
-                maybe_refresh_integration_tokens(&pool, tenant_id).await;
+                refresh_integration_tokens_if_needed(&pool, tenant_id).await;
                 match run_full_sync_pipeline(&pool, tenant_id).await {
                     Ok(summary) => {
                         tracing::info!(
@@ -3836,6 +3900,15 @@ pub fn spawn_integration_sync_worker(pool: PgPool) {
 #[cfg(test)]
 mod middleware_tests {
     use super::*;
+
+    #[test]
+    fn token_expires_soon_flags_missing_or_past() {
+        assert!(token_expires_soon(None));
+        let past = (chrono::Utc::now() - chrono::Duration::minutes(1)).to_rfc3339();
+        assert!(token_expires_soon(Some(&past)));
+        let future = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+        assert!(!token_expires_soon(Some(&future)));
+    }
 
     #[test]
     fn project_name_uses_opportunity_name() {

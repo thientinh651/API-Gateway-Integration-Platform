@@ -33,6 +33,7 @@ import { defaultNumberHandlers, parseDefaultNumber } from '../../lib/zeroDefault
 
 type SettingsForm = {
   rateLimitEnabled: boolean;
+  rateLimitBurstEnabled: boolean;
   rateLimitRps: string;
   rateLimitBurst: string;
   enableMetrics: boolean;
@@ -80,6 +81,7 @@ const RUNTIME_TOGGLES: Array<{
 function toForm(data: GatewaySettings): SettingsForm {
   return {
     rateLimitEnabled: data.rate_limit_enabled,
+    rateLimitBurstEnabled: data.rate_limit_burst_enabled,
     rateLimitRps: String(data.rate_limit_rps),
     rateLimitBurst: String(data.rate_limit_burst),
     enableMetrics: data.enable_metrics,
@@ -165,6 +167,7 @@ export function Settings() {
     try {
       const data = await updateGatewaySettings({
         rate_limit_enabled: settings.rateLimitEnabled,
+        rate_limit_burst_enabled: settings.rateLimitBurstEnabled,
         rate_limit_rps: rateLimitRps,
         rate_limit_burst: rateLimitBurst,
         enable_metrics: settings.enableMetrics,
@@ -225,13 +228,24 @@ export function Settings() {
               <div className="space-y-5">
                 <div className="flex items-center justify-between gap-4 rounded-lg border border-border/60 bg-slate-900/30 px-4 py-3">
                   <div>
-                    <p className="text-sm font-medium text-white">Bật global rate limit</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">Token bucket — Redis, fallback RAM.</p>
+                    <p className="text-sm font-medium text-white">Global rate limit</p>
                   </div>
                   <Switch
                     checked={settings.rateLimitEnabled}
                     disabled={readOnly}
                     onCheckedChange={(checked) => setSettings({ ...settings, rateLimitEnabled: checked })}
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-4 rounded-lg border border-border/60 bg-slate-900/30 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-medium text-white">Burst</p>
+                  </div>
+                  <Switch
+                    checked={settings.rateLimitBurstEnabled}
+                    disabled={readOnly || !settings.rateLimitEnabled}
+                    onCheckedChange={(checked) =>
+                      setSettings({ ...settings, rateLimitBurstEnabled: checked })
+                    }
                   />
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -275,7 +289,7 @@ export function Settings() {
                         Boolean(fieldErrors.rate_limit_burst),
                         'bg-input border-border text-foreground mt-1.5',
                       )}
-                      disabled={readOnly || !settings.rateLimitEnabled}
+                      disabled={readOnly || !settings.rateLimitEnabled || !settings.rateLimitBurstEnabled}
                     />
                     <FieldError message={fieldErrors.rate_limit_burst} />
                   </div>

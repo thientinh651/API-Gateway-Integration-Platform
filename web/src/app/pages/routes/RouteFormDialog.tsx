@@ -16,6 +16,7 @@ import {
   useNumericDefaultsOnOpen,
 } from '../../../lib/zeroDefaultNumberInput';
 import type { UiRoute } from './routeTypes';
+import { AllowedMethodsPicker } from './AllowedMethodsPicker';
 import { RetryOnStatusPicker } from './RetryOnStatusPicker';
 
 export type RouteFormState = {
@@ -23,6 +24,7 @@ export type RouteFormState = {
   upstream: string;
   timeout: string;
   rateLimit: string;
+  allowedMethods: string;
   transformAddHeaders: string;
   transformRemoveHeaders: string;
   retryMax: string;
@@ -76,14 +78,14 @@ export function RouteFormDialog({
           </Button>
         </DialogTrigger>
       ) : null}
-      <DialogContent className="bg-card border-border">
-        <DialogHeader>
+      <DialogContent className="bg-card border-border flex max-h-[min(90vh,44rem)] w-full max-w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
+        <DialogHeader className="shrink-0 border-b border-border/50 px-6 pt-6 pb-4">
           <DialogTitle className="text-white">
             {editingRoute ? 'Chỉnh sửa Route' : 'Tạo Route mới'}
           </DialogTitle>
         </DialogHeader>
         <form
-          className="space-y-4 mt-4"
+          className="flex min-h-0 flex-1 flex-col"
           autoComplete="off"
           data-1p-ignore
           data-lpignore="true"
@@ -92,6 +94,7 @@ export function RouteFormDialog({
             onSubmit();
           }}
         >
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
           <PasswordManagerTrap />
           <div>
             <Label htmlFor="route-path" className="text-foreground">
@@ -174,10 +177,17 @@ export function RouteFormDialog({
               <FieldError message={fieldErrors.rate_limit_per_min} />
             </div>
           </div>
+          <div>
+            <AllowedMethodsPicker
+              value={formData.allowedMethods}
+              onChange={(allowedMethods) => setFormData({ ...formData, allowedMethods })}
+            />
+            <FieldError message={fieldErrors.allowed_methods} />
+          </div>
           <div className="rounded-lg border border-border/60 p-4 space-y-3">
             <p className="text-sm font-semibold text-white">Transform / Retry / Queue</p>
             <p className="text-xs text-muted-foreground">
-              Bật toggle tương ứng trong Cài đặt hệ thống trước.
+              Bật cấu hình tương ứng trong cài đặt hệ thống trước.
             </p>
             <div>
               <Label className="text-foreground">Add headers (JSON)</Label>
@@ -243,7 +253,8 @@ export function RouteFormDialog({
               />
             </div>
           </div>
-          <div className="flex gap-3">
+          </div>
+          <div className="flex shrink-0 gap-3 border-t border-border/50 bg-card px-6 py-4">
             <Button
               type="submit"
               disabled={submitDisabled}

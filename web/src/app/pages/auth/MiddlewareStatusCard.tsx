@@ -1,17 +1,33 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { Gauge, Route, Shield, Users } from 'lucide-react';
 import { fetchMiddlewareStatus, type MiddlewareStatus } from '../../../lib/api';
 import { Card } from '../../components/ui/card';
+import type { ClientRegistryRow } from './clientRegistryTypes';
 
-export function MiddlewareStatusCard() {
+type Props = {
+  clients: ClientRegistryRow[];
+  /** Tăng sau reload (xóa client, đổi route, settings…) để fetch lại routes / global RL */
+  refreshKey?: number;
+};
+
+export function MiddlewareStatusCard({ clients, refreshKey = 0 }: Props) {
   const [status, setStatus] = useState<MiddlewareStatus | null>(null);
+
+  const clientStats = useMemo(() => {
+    const active = clients.filter((c) => c.isActive).length;
+    return {
+      total: clients.length,
+      active,
+      disabled: clients.length - active,
+    };
+  }, [clients]);
 
   useEffect(() => {
     void fetchMiddlewareStatus()
       .then(setStatus)
       .catch(() => setStatus(null));
-  }, []);
+  }, [refreshKey]);
 
   if (!status) return null;
 
@@ -29,9 +45,9 @@ export function MiddlewareStatusCard() {
           <Shield className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
           <div>
             <p className="text-slate-400">OAuth clients</p>
-            <p className="text-white font-mono">{status.oauth_clients_loaded}</p>
+            <p className="text-white font-mono">{clientStats.total}</p>
             <p className="text-[10px] text-muted-foreground mt-0.5">
-              {status.client_registry.active} active · {status.client_registry.disabled} tắt
+              {clientStats.active} active · {clientStats.disabled} tắt
             </p>
           </div>
         </div>

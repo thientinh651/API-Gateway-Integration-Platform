@@ -9,9 +9,6 @@ use tracing::warn;
 
 use crate::db;
 
-/// Burst tối thiểu — demo throttle rõ; scale theo quota phút.
-pub const BURST_FLOOR: u32 = 3;
-
 /// `POST /oauth/token` — theo client_id (khi có).
 pub const OAUTH_TOKEN_CLIENT_PER_MIN: u32 = 20;
 
@@ -138,11 +135,27 @@ fn info_from_bucket(
     }
 }
 
-/// Chuyển req/phút → (rps, burst). Burst = max(3, per_min/10), capped bởi per_min.
+/// Chuyển req/phút → (rps, burst tính toán). Burst = max(1, per_min/10), capped bởi per_min.
 pub fn per_min_to_bucket(per_min: i32) -> (f64, u32) {
     let per_min = per_min.max(1) as u32;
-    let burst = (per_min / 10).max(BURST_FLOOR).min(per_min);
+    let burst = (per_min / 10).max(1).min(per_min);
     (per_min as f64 / 60.0, burst)
+}
+
+/// Áp chế độ burst toàn hệ thống (Settings → burst_enabled).
+pub fn effective_burst(calculated_burst: u32, burst_enabled: bool) -> u32 {
+    if burst_enabled {
+        calculated_burst.max(1)
+    } else {
+        1
+    }
+}
+
+/// Token endpoint — burst = quota phút (không áp BURST_FLOOR=3).
+/// Tránh chặn nhầm khi test/refresh token liên tiếp; vẫn giới hạn theo phút.
+pub fn oauth_token_bucket(per_min: i32) -> (f64, u32) {
+    let per_min = per_min.max(1) as u32;
+    (per_min as f64 / 60.0, per_min)
 }
 
 pub fn bucket_key(tenant_id: i64, scope: &str, subject: &str) -> String {
@@ -286,16 +299,18 @@ impl RateLimiter {
     ) -> Result<(), u64> {
         if let Some(ip) = ip.map(str::trim).filter(|s| !s.is_empty()) {
             let key = format!("oauth:token:ip:{}", db::sha256_hex(ip));
+            let (rps, burst) = oauth_token_bucket(OAUTH_TOKEN_IP_PER_MIN as i32);
             if let ConsumeOutcome::Denied { retry_after_secs, .. } =
-                self.try_consume_per_min(&key, OAUTH_TOKEN_IP_PER_MIN).await
+                self.try_consume(&key, rps, burst, OAUTH_TOKEN_IP_PER_MIN).await
             {
                 return Err(retry_after_secs);
             }
         }
         if let Some(cid) = client_id.map(str::trim).filter(|s| !s.is_empty()) {
             let key = format!("oauth:token:client:{}", db::sha256_hex(cid));
+            let (rps, burst) = oauth_token_bucket(OAUTH_TOKEN_CLIENT_PER_MIN as i32);
             if let ConsumeOutcome::Denied { retry_after_secs, .. } =
-                self.try_consume_per_min(&key, OAUTH_TOKEN_CLIENT_PER_MIN).await
+                self.try_consume(&key, rps, burst, OAUTH_TOKEN_CLIENT_PER_MIN).await
             {
                 return Err(retry_after_secs);
             }
@@ -312,13 +327,20 @@ mod tests {
     #[test]
     fn per_min_burst_scales() {
         let (_, burst10) = per_min_to_bucket(10);
-        assert_eq!(burst10, 3);
+        assert_eq!(burst10, 1);
         let (_, burst60) = per_min_to_bucket(60);
         assert_eq!(burst60, 6);
         let (_, burst100) = per_min_to_bucket(100);
         assert_eq!(burst100, 10);
         let (_, burst2) = per_min_to_bucket(2);
-        assert_eq!(burst2, 2);
+        assert_eq!(burst2, 1);
+    }
+
+    #[test]
+    fn effective_burst_modes() {
+        assert_eq!(effective_burst(10, true), 10);
+        assert_eq!(effective_burst(10, false), 1);
+        assert_eq!(effective_burst(0, true), 1);
     }
 
     #[test]
@@ -336,12 +358,20 @@ mod tests {
     async fn oauth_token_endpoint_limits_local() {
         let rl = RateLimiter::local_only();
         let ip = "203.0.113.99";
-        let (_, burst) = per_min_to_bucket(OAUTH_TOKEN_IP_PER_MIN as i32);
+        let (_, burst) = oauth_token_bucket(OAUTH_TOKEN_IP_PER_MIN as i32);
         for _ in 0..burst {
             rl.check_oauth_token_endpoint(None, Some(ip))
                 .await
                 .expect("under burst");
         }
         assert!(rl.check_oauth_token_endpoint(None, Some(ip)).await.is_err());
+    }
+
+    #[test]
+    fn oauth_token_bucket_allows_full_minute_burst() {
+        let (_, burst) = oauth_token_bucket(20);
+        assert_eq!(burst, 20);
+        let (_, burst50) = oauth_token_bucket(50);
+        assert_eq!(burst50, 50);
     }
 }

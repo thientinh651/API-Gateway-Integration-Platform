@@ -63,6 +63,7 @@ type Props = {
   onConfigure: (client: ClientRegistryRow) => void;
   onDelete: (id: string) => void;
   onBulkStatus?: (ids: string[], status: 'active' | 'disabled') => Promise<void>;
+  onBulkDelete?: (ids: string[]) => Promise<void>;
   canDelete?: boolean;
   canManage?: boolean;
 };
@@ -74,6 +75,7 @@ export function ClientRegistryTable({
   onConfigure,
   onDelete,
   onBulkStatus,
+  onBulkDelete,
   canDelete = true,
   canManage = false,
 }: Props) {
@@ -111,6 +113,27 @@ export function ClientRegistryTable({
 
   const selectedCount = useMemo(() => selected.size, [selected]);
 
+  const selectedSummary = useMemo(() => {
+    const rows = clients.filter((c) => selected.has(c.id));
+    const names = rows.map((c) => c.name);
+    const preview = names.slice(0, 4).join(', ');
+    const more = names.length > 4 ? ` và ${names.length - 4} client khác` : '';
+    return { count: rows.length, preview: `${preview}${more}` };
+  }, [clients, selected]);
+
+  const runBulkDelete = async () => {
+    if (!onBulkDelete || selected.size === 0) return;
+    setBulkBusy(true);
+    try {
+      await onBulkDelete([...selected]);
+      setSelected(new Set());
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const canSelect = canManage || (canDelete && !!onBulkDelete);
+
   const canCopyKey = (k: string) => k.startsWith('avaso_');
 
   if (clients.length === 0) {
@@ -123,69 +146,86 @@ export function ClientRegistryTable({
 
   return (
     <Card className="rounded-2xl overflow-hidden bg-card/80 border-border min-w-0">
-      <div className="px-6 py-4 border-b border-border flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h3 className="font-bold text-white text-sm">Client Registry</h3>
-          <p className="text-[11px] text-muted-foreground mt-0.5">
+      <div className="px-6 py-4 border-b border-border flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 min-w-0">
+          <h3 className="font-bold text-white text-sm shrink-0">Client Registry</h3>
+          <span className="text-[11px] text-muted-foreground shrink-0">
             {clients.length} client
-          </p>
+          </span>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="border-border text-xs"
-          onClick={() => exportRegistryCsv(clients, routes)}
-        >
-          <Download className="w-3.5 h-3.5 mr-1.5" />
-          Xuất CSV
-        </Button>
+        <div className="flex flex-wrap items-center gap-2 justify-end min-w-0 ml-auto">
+          {someSelected && (canManage || canDelete) ? (
+            <>
+              <span className="text-xs text-slate-400 shrink-0">{selectedCount} đã chọn</span>
+              {canManage ? (
+                <>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs border-emerald-500/40 text-emerald-400"
+                    disabled={bulkBusy}
+                    onClick={() => void runBulk('active')}
+                  >
+                    <UserCheck className="w-3.5 h-3.5 mr-1" />
+                    Bật active
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs border-amber-500/40 text-amber-400"
+                    disabled={bulkBusy}
+                    onClick={() => void runBulk('disabled')}
+                  >
+                    <UserX className="w-3.5 h-3.5 mr-1" />
+                    Tắt (disabled)
+                  </Button>
+                </>
+              ) : null}
+              {canDelete && onBulkDelete ? (
+                <ConfirmDangerButton
+                  title={`Xóa ${selectedSummary.count} client đã chọn?`}
+                  description={`Xóa vĩnh viễn: ${selectedSummary.preview}. Mọi request từ các client này sẽ bị từ chối — không khôi phục.`}
+                  confirmLabel={`Xóa ${selectedSummary.count} client`}
+                  pendingLabel="Đang xóa…"
+                  disabled={bulkBusy}
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs border-red-500/40 text-red-400 hover:bg-red-500/10"
+                  onConfirm={runBulkDelete}
+                >
+                  <Trash2 className="w-3.5 h-3.5 mr-1" />
+                  Xóa đã chọn
+                </ConfirmDangerButton>
+              ) : null}
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-8 text-xs text-muted-foreground"
+                disabled={bulkBusy}
+                onClick={() => setSelected(new Set())}
+              >
+                Bỏ chọn
+              </Button>
+            </>
+          ) : null}
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-border text-xs shrink-0"
+            onClick={() => exportRegistryCsv(clients, routes)}
+          >
+            <Download className="w-3.5 h-3.5 mr-1.5" />
+            Xuất CSV
+          </Button>
+        </div>
       </div>
-      {canManage ? (
-        <div
-          className={`px-6 border-b border-border bg-slate-950/50 flex flex-wrap items-center gap-2 min-h-[52px] transition-opacity ${
-            someSelected ? 'opacity-100' : 'opacity-0 pointer-events-none'
-          }`}
-          aria-hidden={!someSelected}
-        >
-          <span className="text-xs text-slate-400">{selectedCount} đã chọn</span>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-8 text-xs border-emerald-500/40 text-emerald-400"
-            disabled={bulkBusy || !someSelected}
-            onClick={() => void runBulk('active')}
-          >
-            <UserCheck className="w-3.5 h-3.5 mr-1" />
-            Bật active
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-8 text-xs border-amber-500/40 text-amber-400"
-            disabled={bulkBusy || !someSelected}
-            onClick={() => void runBulk('disabled')}
-          >
-            <UserX className="w-3.5 h-3.5 mr-1" />
-            Tắt (disabled)
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="h-8 text-xs text-muted-foreground"
-            disabled={bulkBusy || !someSelected}
-            onClick={() => setSelected(new Set())}
-          >
-            Bỏ chọn
-          </Button>
-        </div>
-      ) : null}
       <div className="min-w-0">
         <table className="w-full table-fixed text-left border-collapse">
           <colgroup>
-            {canManage ? <col className="w-9" /> : null}
+            {canSelect ? <col className="w-9" /> : null}
             <col className="w-[13%]" />
             <col className="w-[14%]" />
             <col className="w-[9%]" />
@@ -198,7 +238,7 @@ export function ClientRegistryTable({
           </colgroup>
           <thead className="bg-slate-900/50 text-[10px] uppercase text-muted-foreground font-bold">
             <tr>
-              {canManage ? (
+              {canSelect ? (
                 <th className="px-2 py-2.5">
                   <Checkbox
                     aria-label="Chọn tất cả"
@@ -221,7 +261,7 @@ export function ClientRegistryTable({
           <tbody className="text-sm">
             {clients.map((client) => (
               <tr key={client.id} className="border-b border-border/50 hover:bg-primary/5">
-                {canManage ? (
+                {canSelect ? (
                   <td className="px-2 py-3 w-9 align-middle">
                     <Checkbox
                       checked={selected.has(client.id)}

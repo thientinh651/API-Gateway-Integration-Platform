@@ -4,6 +4,7 @@ export interface UiRoute {
   upstream: string;
   timeout: number;
   rateLimit: number;
+  allowedMethods: string;
   transformAddHeaders: string;
   transformRemoveHeaders: string;
   retryMax: number;

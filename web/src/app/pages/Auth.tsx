@@ -81,6 +81,7 @@ function AuthAdmin() {
   const [searchTerm, setSearchTerm] = useState('');
   const [createPreset, setCreatePreset] = useState<string | null>(null);
   const [traffic24h, setTraffic24h] = useState<Map<string, number>>(new Map());
+  const [middlewareRefreshKey, setMiddlewareRefreshKey] = useState(0);
 
   const filteredClients = clients.filter((c) => {
     if (statusFilter === 'active' && !c.isActive) return false;
@@ -106,6 +107,7 @@ function AuthAdmin() {
       setClients(list.map(metaToRow));
       setRoutes(routeRows);
       setTraffic24h(new Map(trafficRows.map((r) => [String(r.client_key_id), r.total])));
+      setMiddlewareRefreshKey((k) => k + 1);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setLoadError(msg);
@@ -176,6 +178,22 @@ function AuthAdmin() {
       toast.success(`Đã cập nhật ${res.updated} client → ${status}`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const handleBulkDelete = async (ids: string[]) => {
+    const results = await Promise.allSettled(ids.map((id) => deleteClientKey(Number(id))));
+    const deleted = results.filter((r) => r.status === 'fulfilled').length;
+    const failed = results.length - deleted;
+    await reload();
+    if (failed === 0) {
+      toast.success(`Đã xóa ${deleted} client`);
+    } else if (deleted > 0) {
+      toast.warning(`Đã xóa ${deleted} client, ${failed} lỗi`);
+    } else {
+      const reason = results.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
+      toast.error(reason?.reason instanceof Error ? reason.reason.message : 'Không xóa được client');
+      throw reason?.reason;
     }
   };
 
@@ -251,7 +269,7 @@ function AuthAdmin() {
             </div>
           ) : null}
 
-          <MiddlewareStatusCard />
+          <MiddlewareStatusCard clients={clients} refreshKey={middlewareRefreshKey} />
           <ClientRegistrySummary clients={clients} />
           <div className="mb-4 flex flex-wrap gap-3">
             <div className="relative flex-1 min-w-[200px] max-w-md">
@@ -281,6 +299,7 @@ function AuthAdmin() {
               onConfigure={openConfig}
               onDelete={(id) => void handleDelete(id)}
               onBulkStatus={allowCreateKeys ? handleBulkStatus : undefined}
+              onBulkDelete={allowDeleteKeys ? handleBulkDelete : undefined}
               canDelete={allowDeleteKeys}
               canManage={allowCreateKeys}
             />
