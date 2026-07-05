@@ -49,6 +49,7 @@ use std::{
 };
 use tokio::sync::RwLock;
 use tower::ServiceExt;
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::normalize_path::NormalizePathLayer;
 use tower_http::services::{ServeDir, ServeFile};
@@ -608,7 +609,53 @@ fn mask_subject_for_log(subject: &str) -> String {
     format!("{}…", &s[..8.min(s.len())])
 }
 
-/// FR-D1: structured JSON transaction log + persist to SQLite for admin UI.
+/// Max bytes of request/response body persisted per transaction detail.
+const MAX_TX_DETAIL_BODY: usize = 16 * 1024;
+
+/// Headers redacted before persisting transaction detail (avoid leaking secrets).
+fn header_is_sensitive(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "authorization"
+            | "proxy-authorization"
+            | "cookie"
+            | "set-cookie"
+            | "x-api-key"
+            | "x-client-secret"
+            | "x-auth-token"
+    )
+}
+
+/// Serialize headers to a compact JSON object, redacting sensitive values.
+fn capture_headers(headers: &axum::http::HeaderMap) -> String {
+    let map: std::collections::BTreeMap<String, String> = headers
+        .iter()
+        .map(|(k, v)| {
+            let name = k.as_str().to_string();
+            let value = if header_is_sensitive(&name) {
+                "***redacted***".to_string()
+            } else {
+                v.to_str().unwrap_or("(binary)").to_string()
+            };
+            (name, value)
+        })
+        .collect();
+    serde_json::to_string(&map).unwrap_or_else(|_| "{}".into())
+}
+
+/// Truncate + lossily decode a body to UTF-8 text. Returns (text, total_bytes, truncated).
+fn capture_body(bytes: &[u8]) -> (Option<String>, i64, bool) {
+    let total = bytes.len() as i64;
+    if bytes.is_empty() {
+        return (None, 0, false);
+    }
+    let truncated = bytes.len() > MAX_TX_DETAIL_BODY;
+    let slice = &bytes[..bytes.len().min(MAX_TX_DETAIL_BODY)];
+    (Some(String::from_utf8_lossy(slice).into_owned()), total, truncated)
+}
+
+/// FR-D1: structured JSON transaction log + persist to PostgreSQL for admin UI.
+#[allow(clippy::too_many_arguments)]
 fn log_gateway_transaction(
     tenant_id: Option<i64>,
     client_ip: Option<&str>,
@@ -621,6 +668,37 @@ fn log_gateway_transaction(
     upstream: Option<&str>,
     elapsed_ms: u128,
     client_key_id: Option<i64>,
+) {
+    log_gateway_transaction_detailed(
+        tenant_id,
+        client_ip,
+        outcome,
+        reason,
+        method,
+        path,
+        status,
+        subject,
+        upstream,
+        elapsed_ms,
+        client_key_id,
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn log_gateway_transaction_detailed(
+    tenant_id: Option<i64>,
+    client_ip: Option<&str>,
+    outcome: &'static str,
+    reason: &'static str,
+    method: &str,
+    path: &str,
+    status: u16,
+    subject: &str,
+    upstream: Option<&str>,
+    elapsed_ms: u128,
+    client_key_id: Option<i64>,
+    detail: Option<db::TransactionDetail>,
 ) {
     let request_id = uuid::Uuid::new_v4().to_string();
     let api_key_masked = mask_subject_for_log(subject);
@@ -669,6 +747,7 @@ fn log_gateway_transaction(
                 &outcome,
                 &reason,
                 upstream.as_deref(),
+                detail.as_ref(),
             )
             .await;
         });
@@ -687,6 +766,31 @@ fn current_bind_port() -> u16 {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(3000)
+}
+
+/// Shared HTTP client cho proxy/integrations. Bắt buộc có connect + read timeout
+/// để upstream (Zoho/SF/backend) treo KHÔNG giữ request tới nginx read_timeout (60s) → 502.
+/// Proxy set `.timeout()` riêng theo route nên override được default này.
+fn build_http_client() -> reqwest::Client {
+    let connect_secs: u64 = std::env::var("HTTP_CONNECT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
+    let request_secs: u64 = std::env::var("HTTP_REQUEST_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30);
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(connect_secs.max(1)))
+        .timeout(Duration::from_secs(request_secs.max(1)))
+        .pool_idle_timeout(Duration::from_secs(30))
+        .pool_max_idle_per_host(16)
+        .tcp_keepalive(Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "build_http_client fallback to default client");
+            reqwest::Client::new()
+        })
 }
 
 fn server_bind_addr(port: u16) -> SocketAddr {
@@ -1035,7 +1139,7 @@ async fn main() {
     let state = AppState {
         pool,
         config: Arc::new(RwLock::new(initial)),
-        http: reqwest::Client::new(),
+        http: build_http_client(),
         rate_limiter,
         session_store,
         oauth_pending: Arc::new(DashMap::new()),
@@ -1079,6 +1183,7 @@ async fn main() {
         .route("/workspace/members/:user_id", delete(api_remove_workspace_member))
         .route("/audit-logs", get(api_list_audit_logs))
         .route("/transaction-logs", get(api_list_transaction_logs))
+        .route("/transaction-logs/:id/detail", get(api_get_transaction_detail))
         .route("/proxy-queue", get(api_list_proxy_queue))
         .route("/proxy-queue/bulk-delete", post(api_bulk_delete_proxy_queue))
         .route("/proxy-queue/:id/retry", post(api_retry_proxy_queue))
@@ -1131,6 +1236,7 @@ async fn main() {
             get(api_integration_pipeline_status),
         )
         .route("/integrations/sync-logs", get(api_list_sync_logs))
+        .route("/integrations/catalog", get(api_integration_catalog))
         .route("/integrations/entity-links", get(api_list_entity_links))
         .route("/integrations/reset-sync", post(api_reset_integration_sync))
         .route("/settings", get(api_get_settings).put(api_update_settings))
@@ -1182,17 +1288,23 @@ async fn main() {
         .allow_origin(AllowOrigin::list(cors_allowed_origins()));
 
     let app = Router::new()
-        .layer(NormalizePathLayer::trim_trailing_slash())
-        .layer(middleware::from_fn(client_ip_middleware))
-        .layer(middleware::from_fn(instance_label_middleware))
-        .layer(cors)
         .route("/oauth/token", post(oauth_token_handler))
         .route("/oauth/authorize", get(oauth_authorize_handler))
         .route("/oauth/consent", post(oauth_consent_handler))
         .nest("/api", api)
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
-        .fallback(proxy_or_static);
+        .fallback(proxy_or_static)
+        // NOTE: layers must be applied AFTER routes — axum `Router::layer` only wraps
+        // routes registered before the call. client_ip_middleware inserts ResolvedClientIp
+        // consumed by login/oauth handlers, so it must cover the /api nest.
+        .layer(cors)
+        .layer(middleware::from_fn(instance_label_middleware))
+        .layer(middleware::from_fn(client_ip_middleware))
+        .layer(NormalizePathLayer::trim_trailing_slash())
+        // Outermost: mọi panic trong handler/middleware → 500 sạch, KHÔNG rớt TCP
+        // (nginx thấy TCP reset = 502). Giữ gateway sống suốt demo.
+        .layer(CatchPanicLayer::new());
 
     let port = current_bind_port();
     let addr = server_bind_addr(port);
@@ -3285,8 +3397,18 @@ async fn api_reload_config() -> impl IntoResponse {
 async fn proxy_handler() -> impl IntoResponse {
     let backend_url = "https://jsonplaceholder.typicode.com/todos/1";
 
-    let client = reqwest::Client::new();
-    let result = client.get(backend_url).send().await;
+    let result = match STATE.get() {
+        Some(st) => st.http.get(backend_url).send().await,
+        None => {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new())
+                .get(backend_url)
+                .send()
+                .await
+        }
+    };
 
     match result {
         Ok(res) => {
@@ -5366,6 +5488,35 @@ async fn api_list_transaction_logs(
     }
 }
 
+async fn api_get_transaction_detail(
+    Extension(ctx): Extension<AdminCtx>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> impl IntoResponse {
+    let st = match STATE.get() {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "state not initialized" })),
+            )
+                .into_response();
+        }
+    };
+    match db::get_transaction_detail(&st.pool, ctx.tenant_id, id).await {
+        Ok(Some(row)) => Json(row).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "not_found" })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
 async fn api_list_integrations(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
     if !ctx.is_admin() {
         return audit_admin_denied(&ctx, "integrations").await;
@@ -5547,6 +5698,13 @@ async fn api_list_sync_logs(Extension(ctx): Extension<AdminCtx>) -> impl IntoRes
         return audit_admin_denied(&ctx, "integrations/sync-logs").await;
     }
     integrations::api_list_sync_logs(&ctx).await
+}
+
+async fn api_integration_catalog(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/catalog").await;
+    }
+    integrations::api_integration_catalog(&ctx).await
 }
 
 async fn api_list_entity_links(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
@@ -6004,6 +6162,9 @@ async fn do_proxy(
         .await
         .map_err(|_| status_to_json_error(StatusCode::BAD_REQUEST))?;
 
+    let cap_req_headers = capture_headers(&parts.headers);
+    let (cap_req_body, cap_req_bytes, cap_req_truncated) = capture_body(&body_bytes);
+
     let rl = resolve_rate_limit(&verified, Some(&route), &cfg.settings);
     let scope = if verified.rate_limit_per_min > 0 {
         "client".to_string()
@@ -6077,8 +6238,22 @@ async fn do_proxy(
         "upstream_error"
     };
 
+    let (cap_resp_body, cap_resp_bytes, cap_resp_truncated) = capture_body(&upstream.body);
+    let tx_detail = db::TransactionDetail {
+        route_id: Some(route.id),
+        upstream_url: Some(url.clone()),
+        req_headers: Some(cap_req_headers),
+        req_body: cap_req_body,
+        req_bytes: Some(cap_req_bytes),
+        req_truncated: cap_req_truncated,
+        resp_headers: Some(capture_headers(&upstream.headers)),
+        resp_body: cap_resp_body,
+        resp_bytes: Some(cap_resp_bytes),
+        resp_truncated: cap_resp_truncated,
+    };
+
     let elapsed_ms = started.elapsed().as_millis();
-    log_gateway_transaction(
+    log_gateway_transaction_detailed(
         Some(route.tenant_id),
         client_ip.as_deref(),
         log_outcome,
@@ -6090,6 +6265,7 @@ async fn do_proxy(
         Some(&route.target),
         elapsed_ms,
         Some(verified.key_id),
+        Some(tx_detail),
     );
 
     if let Some(qid) = upstream.queued_id.clone() {

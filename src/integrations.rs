@@ -18,7 +18,70 @@ use sha2::{Digest, Sha256};
 
 const SF_PROVIDER: &str = "salesforce";
 const ZOHO_PROVIDER: &str = "zoho_projects";
+const FLOW_SALES_TO_DELIVERY: &str = "sales_to_delivery";
 const OAUTH_STATE_TTL: Duration = Duration::from_secs(600);
+
+/// Typed integration events — extensible catalog for pipeline observability.
+#[derive(Clone, Copy, Debug)]
+enum IntegrationEventType {
+    PipelineStarted,
+    PipelineCompleted,
+    SnapshotSynced,
+    DealFiltered,
+    EntitySkipped,
+    EntityPushed,
+    EntityPushFailed,
+    EntityLinkStale,
+    UpstreamRetry,
+}
+
+impl IntegrationEventType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::PipelineStarted => "pipeline_started",
+            Self::PipelineCompleted => "pipeline_completed",
+            Self::SnapshotSynced => "snapshot_synced",
+            Self::DealFiltered => "deal_filtered",
+            Self::EntitySkipped => "entity_skipped",
+            Self::EntityPushed => "entity_pushed",
+            Self::EntityPushFailed => "entity_push_failed",
+            Self::EntityLinkStale => "entity_link_stale",
+            Self::UpstreamRetry => "upstream_retry",
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct SyncEventOpts<'a> {
+    event_type: Option<IntegrationEventType>,
+    flow_type: Option<&'static str>,
+    source_provider: Option<&'static str>,
+    target_provider: Option<&'static str>,
+    correlation_id: Option<&'a str>,
+    metadata_json: Option<String>,
+}
+
+impl<'a> SyncEventOpts<'a> {
+    fn sales_to_delivery(correlation_id: Option<&'a str>) -> Self {
+        Self {
+            flow_type: Some(FLOW_SALES_TO_DELIVERY),
+            source_provider: Some(SF_PROVIDER),
+            target_provider: Some(ZOHO_PROVIDER),
+            correlation_id,
+            ..Default::default()
+        }
+    }
+
+    fn with_event(mut self, event_type: IntegrationEventType) -> Self {
+        self.event_type = Some(event_type);
+        self
+    }
+
+    fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
+        self.metadata_json = Some(metadata.to_string());
+        self
+    }
+}
 
 #[derive(Clone)]
 pub struct OAuthPending {
@@ -2855,6 +2918,8 @@ async fn zoho_post_json_with_retry(
                     "RETRY",
                     &format!("Zoho API lỗi tạm thời — thử lại sau {delay_secs}s (lần {attempt}/{attempts})"),
                     Some(&e),
+                    SyncEventOpts::sales_to_delivery(None)
+                        .with_event(IntegrationEventType::UpstreamRetry),
                 )
                 .await;
                 tokio::time::sleep(Duration::from_secs(delay_secs)).await;
@@ -2911,13 +2976,20 @@ pub async fn reconcile_entity_links_with_zoho(pool: &PgPool, tenant_id: i64) -> 
         .map_err(|e| format!("db list links: {e}"))?;
     let mut deleted = 0_i64;
     for link in links {
-        if link.zoho_id.starts_with("DEMO-") {
+        if link.target_id.starts_with("DEMO-") {
             continue;
         }
-        if valid.contains(&link.zoho_id) {
+        if valid.contains(&link.target_id) {
             continue;
         }
-        db::delete_entity_link(pool, tenant_id, &link.sf_entity_type, &link.sf_id)
+        db::delete_entity_link(
+            pool,
+            tenant_id,
+            &link.flow_type,
+            &link.source_provider,
+            &link.source_entity_type,
+            &link.source_id,
+        )
             .await
             .map_err(|e| format!("db delete link: {e}"))?;
         log_sync(
@@ -2925,12 +2997,15 @@ pub async fn reconcile_entity_links_with_zoho(pool: &PgPool, tenant_id: i64) -> 
             tenant_id,
             "SKIPPED",
             &format!(
-                "Đã xóa entity link cũ: {} → \"{}\" (Zoho id {} không còn trên portal)",
-                link.sf_id,
-                link.zoho_name.as_deref().unwrap_or("—"),
-                link.zoho_id,
+                "Đã xóa entity link cũ: {} → \"{}\" ({} id {} không còn trên portal)",
+                link.source_id,
+                link.target_name.as_deref().unwrap_or("—"),
+                link.target_provider,
+                link.target_id,
             ),
             None,
+            SyncEventOpts::sales_to_delivery(None)
+                .with_event(IntegrationEventType::EntityLinkStale),
         )
         .await;
         deleted += 1;
@@ -3019,8 +3094,17 @@ async fn log_sync(
     status: &str,
     message: &str,
     error_detail: Option<&str>,
+    opts: SyncEventOpts<'_>,
 ) {
-    if let Err(e) = db::insert_sync_log(pool, tenant_id, status, message, error_detail).await {
+    let meta = db::SyncLogInsert {
+        event_type: opts.event_type.map(IntegrationEventType::as_str).map(str::to_string),
+        flow_type: opts.flow_type.or(Some(FLOW_SALES_TO_DELIVERY)).map(str::to_string),
+        source_provider: opts.source_provider.map(str::to_string),
+        target_provider: opts.target_provider.map(str::to_string),
+        correlation_id: opts.correlation_id.map(str::to_string),
+        metadata_json: opts.metadata_json,
+    };
+    if let Err(e) = db::insert_sync_log(pool, tenant_id, status, message, error_detail, meta).await {
         tracing::warn!(error = %e, "insert sync_log failed");
     }
     let _ = db::prune_sync_logs(pool, tenant_id, SYNC_LOG_RETAIN).await;
@@ -3065,9 +3149,14 @@ fn default_delivery_tasks() -> Vec<String> {
     ]
 }
 
-async fn collect_push_items(pool: &PgPool, tenant_id: i64) -> Result<Vec<PushItem>, String> {
+async fn collect_push_items(
+    pool: &PgPool,
+    tenant_id: i64,
+    correlation_id: Option<&str>,
+) -> Result<Vec<PushItem>, String> {
     let min_amount = min_deal_amount_vnd();
     let mut items = Vec::new();
+    let event_base = || SyncEventOpts::sales_to_delivery(correlation_id);
 
     let opp_snap = db::fetch_latest_integration_snapshot(pool, tenant_id, SF_PROVIDER, "opportunity")
         .await
@@ -3093,6 +3182,9 @@ async fn collect_push_items(pool: &PgPool, tenant_id: i64) -> Result<Vec<PushIte
                     "Middleware router: {sf_id} — chưa Closed Won (Stage: {stage})"
                 ),
                 None,
+                event_base()
+                    .with_event(IntegrationEventType::DealFiltered)
+                    .with_metadata(serde_json::json!({ "sf_id": sf_id, "stage": stage })),
             )
             .await;
             continue;
@@ -3107,6 +3199,13 @@ async fn collect_push_items(pool: &PgPool, tenant_id: i64) -> Result<Vec<PushIte
                     "Middleware router: {sf_id} — không đủ điều kiện giá trị (Amount {amount:.0} < {min_amount:.0} VNĐ)"
                 ),
                 None,
+                event_base()
+                    .with_event(IntegrationEventType::DealFiltered)
+                    .with_metadata(serde_json::json!({
+                        "sf_id": sf_id,
+                        "amount": amount,
+                        "min_amount": min_amount,
+                    })),
             )
             .await;
             continue;
@@ -3137,6 +3236,7 @@ async fn collect_push_items(pool: &PgPool, tenant_id: i64) -> Result<Vec<PushIte
 pub async fn push_salesforce_to_zoho(
     pool: &PgPool,
     tenant_id: i64,
+    correlation_id: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     if !integration_both_connected(pool, tenant_id).await {
         return Err("Cần connected cả Salesforce và Zoho".into());
@@ -3147,7 +3247,8 @@ pub async fn push_salesforce_to_zoho(
     if let Ok(token) = load_zoho_token(pool, tenant_id).await {
         reject_integration_demo_token(token.demo)?;
     }
-    let items = collect_push_items(pool, tenant_id).await?;
+    let event_base = || SyncEventOpts::sales_to_delivery(correlation_id);
+    let items = collect_push_items(pool, tenant_id, correlation_id).await?;
     if items.is_empty() {
         log_sync(
             pool,
@@ -3158,12 +3259,14 @@ pub async fn push_salesforce_to_zoho(
                 min_deal_amount_vnd()
             ),
             None,
+            event_base().with_event(IntegrationEventType::EntitySkipped),
         )
         .await;
         return Ok(serde_json::json!({
             "created": 0,
             "skipped": 0,
             "reason": "no_items",
+            "correlation_id": correlation_id,
             "middleware": {
                 "min_deal_amount_vnd": min_deal_amount_vnd(),
                 "router": "closed_won_and_min_amount",
@@ -3183,14 +3286,29 @@ pub async fn push_salesforce_to_zoho(
     let mut tasks_created = 0_i64;
 
     for item in items {
-        if let Some(link) = db::fetch_entity_link(pool, tenant_id, item.sf_entity_type, &item.sf_id)
+        if let Some(link) = db::fetch_entity_link(
+            pool,
+            tenant_id,
+            FLOW_SALES_TO_DELIVERY,
+            SF_PROVIDER,
+            item.sf_entity_type,
+            &item.sf_id,
+        )
             .await
             .map_err(|e| format!("db: {e}"))?
         {
-            let stale_demo = link.zoho_id.starts_with("DEMO-");
-            let stale_missing = !live_zoho_ids.contains(&link.zoho_id);
+            let stale_demo = link.target_id.starts_with("DEMO-");
+            let stale_missing = !live_zoho_ids.contains(&link.target_id);
             if stale_demo || stale_missing {
-                let _ = db::delete_entity_link(pool, tenant_id, item.sf_entity_type, &item.sf_id).await;
+                let _ = db::delete_entity_link(
+                    pool,
+                    tenant_id,
+                    FLOW_SALES_TO_DELIVERY,
+                    SF_PROVIDER,
+                    item.sf_entity_type,
+                    &item.sf_id,
+                )
+                .await;
                 if stale_missing && !stale_demo {
                     log_sync(
                         pool,
@@ -3198,9 +3316,15 @@ pub async fn push_salesforce_to_zoho(
                         "SKIPPED",
                         &format!(
                             "Entity link hết hạn: {} — Zoho id {} không tồn tại, sẽ đồng bộ lại",
-                            item.sf_id, link.zoho_id
+                            item.sf_id, link.target_id
                         ),
                         None,
+                        event_base()
+                            .with_event(IntegrationEventType::EntityLinkStale)
+                            .with_metadata(serde_json::json!({
+                                "source_id": item.sf_id,
+                                "target_id": link.target_id,
+                            })),
                     )
                     .await;
                 }
@@ -3212,9 +3336,15 @@ pub async fn push_salesforce_to_zoho(
                     "SKIPPED",
                     &format!(
                         "Đã đồng bộ: {} → dự án \"{}\" (Zoho id {})",
-                        item.sf_id, item.project_name, link.zoho_id
+                        item.sf_id, item.project_name, link.target_id
                     ),
                     None,
+                    event_base()
+                        .with_event(IntegrationEventType::EntitySkipped)
+                        .with_metadata(serde_json::json!({
+                            "source_id": item.sf_id,
+                            "target_id": link.target_id,
+                        })),
                 )
                 .await;
                 continue;
@@ -3251,6 +3381,12 @@ pub async fn push_salesforce_to_zoho(
                         "FAILED",
                         &format!("Tạo dự án \"{}\" thất bại sau retry", item.project_name),
                         Some(&e),
+                        event_base()
+                            .with_event(IntegrationEventType::EntityPushFailed)
+                            .with_metadata(serde_json::json!({
+                                "source_id": item.sf_id,
+                                "project_name": item.project_name,
+                            })),
                     )
                     .await;
                     continue;
@@ -3285,8 +3421,12 @@ pub async fn push_salesforce_to_zoho(
         db::upsert_entity_link(
             pool,
             tenant_id,
+            FLOW_SALES_TO_DELIVERY,
+            SF_PROVIDER,
             item.sf_entity_type,
             &item.sf_id,
+            ZOHO_PROVIDER,
+            "project",
             &project_id,
             Some(&item.project_name),
         )
@@ -3307,6 +3447,14 @@ pub async fn push_salesforce_to_zoho(
                 item_tasks
             ),
             None,
+            event_base()
+                .with_event(IntegrationEventType::EntityPushed)
+                .with_metadata(serde_json::json!({
+                    "source_id": item.sf_id,
+                    "target_id": project_id,
+                    "tasks_created": item_tasks,
+                    "amount": item.amount,
+                })),
         )
         .await;
         tokio::time::sleep(Duration::from_millis(zoho_push_delay_ms())).await;
@@ -3321,6 +3469,8 @@ pub async fn push_salesforce_to_zoho(
         "skipped": skipped,
         "tasks_created": tasks_created,
         "portal_id": portal_id,
+        "correlation_id": correlation_id,
+        "flow_type": FLOW_SALES_TO_DELIVERY,
         "middleware": {
             "min_deal_amount_vnd": min_deal_amount_vnd(),
             "router": "closed_won_and_min_amount",
@@ -3332,11 +3482,25 @@ pub async fn push_salesforce_to_zoho(
 
 /// Full pipeline: refresh tokens → pull SF → lọc Closed Won → push Zoho Projects + tasks.
 pub async fn run_full_sync_pipeline(pool: &PgPool, tenant_id: i64) -> Result<serde_json::Value, String> {
+    let correlation_id = uuid::Uuid::new_v4().to_string();
+    log_sync(
+        pool,
+        tenant_id,
+        "SUCCESS",
+        "Pipeline started: sales_to_delivery",
+        None,
+        SyncEventOpts::sales_to_delivery(Some(&correlation_id))
+            .with_event(IntegrationEventType::PipelineStarted),
+    )
+    .await;
+
     refresh_integration_tokens_if_needed(pool, tenant_id).await;
     let sf = sync_salesforce_snapshots(pool, tenant_id).await?;
     if !integration_both_connected(pool, tenant_id).await {
         return Ok(serde_json::json!({
             "status": "ok",
+            "correlation_id": correlation_id,
+            "flow_type": FLOW_SALES_TO_DELIVERY,
             "salesforce": sf,
             "push": {
                 "status": "skipped",
@@ -3345,9 +3509,22 @@ pub async fn run_full_sync_pipeline(pool: &PgPool, tenant_id: i64) -> Result<ser
             },
         }));
     }
-    let push = push_salesforce_to_zoho(pool, tenant_id).await?;
+    let push = push_salesforce_to_zoho(pool, tenant_id, Some(&correlation_id)).await?;
+    log_sync(
+        pool,
+        tenant_id,
+        "SUCCESS",
+        "Pipeline completed: sales_to_delivery",
+        None,
+        SyncEventOpts::sales_to_delivery(Some(&correlation_id))
+            .with_event(IntegrationEventType::PipelineCompleted)
+            .with_metadata(serde_json::json!({ "push": push })),
+    )
+    .await;
     Ok(serde_json::json!({
         "status": "ok",
+        "correlation_id": correlation_id,
+        "flow_type": FLOW_SALES_TO_DELIVERY,
         "salesforce": sf,
         "push": push,
     }))
@@ -3446,6 +3623,27 @@ pub async fn api_reset_integration_sync(ctx: &AdminCtx) -> Response {
         )
             .into_response(),
     }
+}
+
+pub async fn api_integration_catalog(ctx: &AdminCtx) -> Response {
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "state not initialized",
+        );
+    };
+    let providers = db::list_integration_providers(&st.pool).await.unwrap_or_default();
+    let flows = db::list_integration_flow_types(&st.pool).await.unwrap_or_default();
+    (
+        StatusCode::OK,
+        axum::Json(serde_json::json!({
+            "tenant_id": ctx.tenant_id,
+            "providers": providers,
+            "flow_types": flows,
+        })),
+    )
+        .into_response()
 }
 
 pub async fn api_list_entity_links(ctx: &AdminCtx) -> Response {
@@ -3868,10 +4066,17 @@ pub fn spawn_integration_sync_worker(pool: PgPool) {
                 vec![1]
             });
             for tenant_id in tenants {
-                if !integration_both_connected(&pool, tenant_id).await {
+                let (sf_connected, zoho_connected, both_connected) =
+                    integration_connection_flags(&pool, tenant_id).await;
+                // Refresh token cho provider nào đang connected — không phụ thuộc
+                // provider kia. Trước đây chỉ refresh khi cả hai connected, nên
+                // token Zoho hết hạn (~1h) khi Salesforce chưa kết nối.
+                if sf_connected || zoho_connected {
+                    refresh_integration_tokens_if_needed(&pool, tenant_id).await;
+                }
+                if !both_connected {
                     continue;
                 }
-                refresh_integration_tokens_if_needed(&pool, tenant_id).await;
                 match run_full_sync_pipeline(&pool, tenant_id).await {
                     Ok(summary) => {
                         tracing::info!(

@@ -46,6 +46,16 @@ export function IntegrationSyncLogsPanel({ logs, emptyHint }: Props) {
             >
               <div className="flex items-center gap-2 flex-wrap">
                 <Badge className={`${logBadgeClass(log.status)} border text-[10px]`}>{log.status}</Badge>
+                {log.event_type ? (
+                  <Badge className="bg-primary/10 text-primary border-primary/20 border text-[10px] font-mono">
+                    {log.event_type}
+                  </Badge>
+                ) : null}
+                {log.correlation_id ? (
+                  <span className="text-[10px] text-muted-foreground font-mono truncate max-w-[140px]" title={log.correlation_id}>
+                    trace {log.correlation_id.slice(0, 8)}
+                  </span>
+                ) : null}
                 <span className="text-muted-foreground">{log.created_at}</span>
               </div>
               <p className="text-slate-200 leading-relaxed">{log.message}</p>

@@ -2,6 +2,17 @@ import { Link2 } from 'lucide-react';
 import { Card } from '../../components/ui/card';
 import type { EntityLinkRow } from '../../../lib/api';
 
+function providerLabel(id: string) {
+  switch (id) {
+    case 'salesforce':
+      return 'Salesforce';
+    case 'zoho_projects':
+      return 'Zoho Projects';
+    default:
+      return id;
+  }
+}
+
 type Props = {
   links: EntityLinkRow[];
 };
@@ -16,7 +27,7 @@ export function IntegrationEntityLinksPanel({ links }: Props) {
         <div>
           <h3 className="text-sm font-bold text-white">Entity links (idempotent)</h3>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Ánh xạ Opportunity Salesforce ↔ Project Zoho — deal đã sync không tạo trùng
+            Ánh xạ nguồn → đích theo flow — bản ghi đã sync không tạo trùng
           </p>
         </div>
       </div>
@@ -24,16 +35,27 @@ export function IntegrationEntityLinksPanel({ links }: Props) {
         <table className="w-full text-xs text-left">
           <thead className="text-muted-foreground bg-slate-900/50 border-b border-border">
             <tr>
-              <th className="py-2.5 px-3 font-medium">SF Opportunity</th>
-              <th className="py-2.5 px-3 font-medium">Zoho Project</th>
+              <th className="py-2.5 px-3 font-medium">Flow</th>
+              <th className="py-2.5 px-3 font-medium">Nguồn</th>
+              <th className="py-2.5 px-3 font-medium">Đích</th>
               <th className="py-2.5 px-3 font-medium">Lần sync</th>
             </tr>
           </thead>
           <tbody>
             {links.map((row) => (
-              <tr key={`${row.sf_id}-${row.zoho_id}`} className="border-b border-border/40 last:border-0">
-                <td className="py-2.5 px-3 font-mono text-slate-300">{row.sf_id}</td>
-                <td className="py-2.5 px-3 text-slate-200">{row.zoho_name ?? row.zoho_id}</td>
+              <tr
+                key={`${row.flow_type}-${row.source_id}-${row.target_id}`}
+                className="border-b border-border/40 last:border-0"
+              >
+                <td className="py-2.5 px-3 text-muted-foreground font-mono">{row.flow_type}</td>
+                <td className="py-2.5 px-3">
+                  <div className="text-slate-400">{providerLabel(row.source_provider)}</div>
+                  <div className="font-mono text-slate-300">{row.source_id}</div>
+                </td>
+                <td className="py-2.5 px-3">
+                  <div className="text-slate-400">{providerLabel(row.target_provider)}</div>
+                  <div className="text-slate-200">{row.target_name ?? row.target_id}</div>
+                </td>
                 <td className="py-2.5 px-3 text-muted-foreground whitespace-nowrap">
                   {row.last_synced_at}
                 </td>

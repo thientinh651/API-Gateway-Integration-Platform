@@ -173,6 +173,12 @@ pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
     tracing::info!(max_connections = max, "postgres pool");
     PgPoolOptions::new()
         .max_connections(max)
+        // Pool cạn → trả lỗi sạch sau 10s thay vì treo 30s (mặc định) tới nginx → 502.
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        // Thu hồi connection nhàn rỗi / cũ, tránh dùng phải conn chết sau khi Postgres restart.
+        .idle_timeout(std::time::Duration::from_secs(300))
+        .max_lifetime(std::time::Duration::from_secs(1800))
+        .test_before_acquire(true)
         .connect(url)
         .await
 }
@@ -961,9 +967,54 @@ pub struct TransactionLogRow {
     pub outcome: String,
     pub reason: String,
     pub upstream: Option<String>,
+    pub route_id: Option<i64>,
     pub created_at: String,
 }
 
+/// Full request/response capture for a single proxied transaction.
+/// Bodies are already truncated + sensitive headers redacted by the caller.
+#[derive(Debug, Clone, Default)]
+pub struct TransactionDetail {
+    pub route_id: Option<i64>,
+    pub upstream_url: Option<String>,
+    pub req_headers: Option<String>,
+    pub req_body: Option<String>,
+    pub req_bytes: Option<i64>,
+    pub req_truncated: bool,
+    pub resp_headers: Option<String>,
+    pub resp_body: Option<String>,
+    pub resp_bytes: Option<i64>,
+    pub resp_truncated: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct TransactionDetailRow {
+    pub id: i64,
+    pub request_id: String,
+    pub method: String,
+    pub path: String,
+    pub status: i32,
+    pub duration_ms: i64,
+    pub client_ip: Option<String>,
+    pub api_key_masked: Option<String>,
+    pub client_key_id: Option<i64>,
+    pub outcome: String,
+    pub reason: String,
+    pub upstream: Option<String>,
+    pub upstream_url: Option<String>,
+    pub route_id: Option<i64>,
+    pub req_headers: Option<String>,
+    pub req_body: Option<String>,
+    pub req_bytes: Option<i64>,
+    pub req_truncated: Option<bool>,
+    pub resp_headers: Option<String>,
+    pub resp_body: Option<String>,
+    pub resp_bytes: Option<i64>,
+    pub resp_truncated: Option<bool>,
+    pub created_at: String,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_transaction_log(
     pool: &PgPool,
     tenant_id: Option<i64>,
@@ -978,11 +1029,14 @@ pub async fn insert_transaction_log(
     outcome: &str,
     reason: &str,
     upstream: Option<&str>,
+    detail: Option<&TransactionDetail>,
 ) -> Result<(), sqlx::Error> {
+    let d = detail.cloned().unwrap_or_default();
     sqlx::query(
         "INSERT INTO gateway_transaction_logs
-         (tenant_id, request_id, method, path, status, duration_ms, client_ip, api_key_masked, client_key_id, outcome, reason, upstream)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+         (tenant_id, request_id, method, path, status, duration_ms, client_ip, api_key_masked, client_key_id, outcome, reason, upstream,
+          route_id, upstream_url, req_headers, req_body, req_bytes, req_truncated, resp_headers, resp_body, resp_bytes, resp_truncated)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)",
     )
     .bind(tenant_id)
     .bind(request_id)
@@ -996,9 +1050,39 @@ pub async fn insert_transaction_log(
     .bind(outcome)
     .bind(reason)
     .bind(upstream)
+    .bind(d.route_id)
+    .bind(d.upstream_url)
+    .bind(d.req_headers)
+    .bind(d.req_body)
+    .bind(d.req_bytes)
+    .bind(d.req_truncated)
+    .bind(d.resp_headers)
+    .bind(d.resp_body)
+    .bind(d.resp_bytes)
+    .bind(d.resp_truncated)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+pub async fn get_transaction_detail(
+    pool: &PgPool,
+    tenant_id: i64,
+    id: i64,
+) -> Result<Option<TransactionDetailRow>, sqlx::Error> {
+    sqlx::query_as::<_, TransactionDetailRow>(
+        "SELECT id, request_id, method, path, status, duration_ms, client_ip, api_key_masked,
+                client_key_id, outcome, reason, upstream, upstream_url, route_id,
+                req_headers, req_body, req_bytes, req_truncated,
+                resp_headers, resp_body, resp_bytes, resp_truncated,
+                created_at::text AS created_at
+         FROM gateway_transaction_logs
+         WHERE id = $1 AND tenant_id = $2",
+    )
+    .bind(id)
+    .bind(tenant_id)
+    .fetch_optional(pool)
+    .await
 }
 
 pub async fn list_transaction_logs(
@@ -1016,7 +1100,7 @@ pub async fn list_transaction_logs(
     let lim = limit.clamp(1, 500);
     let mut n: i32 = 2;
     let mut sql = String::from(
-        "SELECT id, tenant_id, request_id, method, path, status, duration_ms, client_ip, api_key_masked, client_key_id, outcome, reason, upstream, created_at::text AS created_at
+        "SELECT id, tenant_id, request_id, method, path, status, duration_ms, client_ip, api_key_masked, client_key_id, outcome, reason, upstream, route_id, created_at::text AS created_at
          FROM gateway_transaction_logs WHERE tenant_id = $1",
     );
     if method.filter(|m| !m.is_empty() && *m != "all").is_some() {
@@ -2782,6 +2866,16 @@ pub async fn ping_timed(pool: &PgPool) -> (bool, u128) {
     (ok, start.elapsed().as_millis())
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct SyncLogInsert {
+    pub event_type: Option<String>,
+    pub flow_type: Option<String>,
+    pub source_provider: Option<String>,
+    pub target_provider: Option<String>,
+    pub correlation_id: Option<String>,
+    pub metadata_json: Option<String>,
+}
+
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct SyncLogRow {
     pub id: i64,
@@ -2789,6 +2883,12 @@ pub struct SyncLogRow {
     pub status: String,
     pub message: String,
     pub error_detail: Option<String>,
+    pub event_type: Option<String>,
+    pub flow_type: Option<String>,
+    pub source_provider: Option<String>,
+    pub target_provider: Option<String>,
+    pub correlation_id: Option<String>,
+    pub metadata_json: Option<String>,
     pub created_at: String,
 }
 
@@ -2798,16 +2898,27 @@ pub async fn insert_sync_log(
     status: &str,
     message: &str,
     error_detail: Option<&str>,
+    meta: SyncLogInsert,
 ) -> Result<i64, sqlx::Error> {
     let row: (i64,) = sqlx::query_as(
-        "INSERT INTO sync_logs (tenant_id, status, message, error_detail)
-         VALUES ($1, $2, $3, $4)
+        "INSERT INTO sync_logs (
+            tenant_id, status, message, error_detail,
+            event_type, flow_type, source_provider, target_provider,
+            correlation_id, metadata_json
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING id",
     )
     .bind(tenant_id)
     .bind(status)
     .bind(message)
     .bind(error_detail)
+    .bind(meta.event_type)
+    .bind(meta.flow_type)
+    .bind(meta.source_provider)
+    .bind(meta.target_provider)
+    .bind(meta.correlation_id)
+    .bind(meta.metadata_json)
     .fetch_one(pool)
     .await?;
     Ok(row.0)
@@ -2819,7 +2930,10 @@ pub async fn list_sync_logs(
     limit: i64,
 ) -> Result<Vec<SyncLogRow>, sqlx::Error> {
     sqlx::query_as::<_, SyncLogRow>(
-        "SELECT id, tenant_id, status, message, error_detail, created_at::text AS created_at
+        "SELECT id, tenant_id, status, message, error_detail,
+                event_type, flow_type, source_provider, target_provider,
+                correlation_id, metadata_json,
+                created_at::text AS created_at
          FROM sync_logs
          WHERE tenant_id = $1
          ORDER BY id DESC
@@ -2851,26 +2965,39 @@ pub async fn prune_sync_logs(pool: &PgPool, tenant_id: i64, retain: i64) -> Resu
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct EntityLinkRow {
-    pub sf_entity_type: String,
-    pub sf_id: String,
-    pub zoho_id: String,
-    pub zoho_name: Option<String>,
+    pub flow_type: String,
+    pub source_provider: String,
+    pub source_entity_type: String,
+    pub source_id: String,
+    pub target_provider: String,
+    pub target_entity_type: String,
+    pub target_id: String,
+    pub target_name: Option<String>,
 }
 
 pub async fn fetch_entity_link(
     pool: &PgPool,
     tenant_id: i64,
-    sf_entity_type: &str,
-    sf_id: &str,
+    flow_type: &str,
+    source_provider: &str,
+    source_entity_type: &str,
+    source_id: &str,
 ) -> Result<Option<EntityLinkRow>, sqlx::Error> {
     sqlx::query_as::<_, EntityLinkRow>(
-        "SELECT sf_entity_type, sf_id, zoho_id, zoho_name
+        "SELECT flow_type, source_provider, source_entity_type, source_id,
+                target_provider, target_entity_type, target_id, target_name
          FROM integration_entity_links
-         WHERE tenant_id = $1 AND sf_entity_type = $2 AND sf_id = $3",
+         WHERE tenant_id = $1
+           AND flow_type = $2
+           AND source_provider = $3
+           AND source_entity_type = $4
+           AND source_id = $5",
     )
     .bind(tenant_id)
-    .bind(sf_entity_type)
-    .bind(sf_id)
+    .bind(flow_type)
+    .bind(source_provider)
+    .bind(source_entity_type)
+    .bind(source_id)
     .fetch_optional(pool)
     .await
 }
@@ -2880,7 +3007,8 @@ pub async fn list_entity_links(
     tenant_id: i64,
 ) -> Result<Vec<EntityLinkRow>, sqlx::Error> {
     sqlx::query_as::<_, EntityLinkRow>(
-        "SELECT sf_entity_type, sf_id, zoho_id, zoho_name
+        "SELECT flow_type, source_provider, source_entity_type, source_id,
+                target_provider, target_entity_type, target_id, target_name
          FROM integration_entity_links
          WHERE tenant_id = $1",
     )
@@ -2892,16 +3020,24 @@ pub async fn list_entity_links(
 pub async fn delete_entity_link(
     pool: &PgPool,
     tenant_id: i64,
-    sf_entity_type: &str,
-    sf_id: &str,
+    flow_type: &str,
+    source_provider: &str,
+    source_entity_type: &str,
+    source_id: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "DELETE FROM integration_entity_links
-         WHERE tenant_id = $1 AND sf_entity_type = $2 AND sf_id = $3",
+         WHERE tenant_id = $1
+           AND flow_type = $2
+           AND source_provider = $3
+           AND source_entity_type = $4
+           AND source_id = $5",
     )
     .bind(tenant_id)
-    .bind(sf_entity_type)
-    .bind(sf_id)
+    .bind(flow_type)
+    .bind(source_provider)
+    .bind(source_entity_type)
+    .bind(source_id)
     .execute(pool)
     .await?;
     Ok(())
@@ -2910,25 +3046,40 @@ pub async fn delete_entity_link(
 pub async fn upsert_entity_link(
     pool: &PgPool,
     tenant_id: i64,
-    sf_entity_type: &str,
-    sf_id: &str,
-    zoho_id: &str,
-    zoho_name: Option<&str>,
+    flow_type: &str,
+    source_provider: &str,
+    source_entity_type: &str,
+    source_id: &str,
+    target_provider: &str,
+    target_entity_type: &str,
+    target_id: &str,
+    target_name: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO integration_entity_links
-           (tenant_id, sf_entity_type, sf_id, zoho_entity_type, zoho_id, zoho_name, last_synced_at)
-         VALUES ($1, $2, $3, 'project', $4, $5, NOW())
-         ON CONFLICT (tenant_id, sf_entity_type, sf_id) DO UPDATE SET
-           zoho_id = excluded.zoho_id,
-           zoho_name = excluded.zoho_name,
+        "INSERT INTO integration_entity_links (
+            tenant_id, flow_type,
+            source_provider, source_entity_type, source_id,
+            target_provider, target_entity_type, target_id, target_name,
+            last_synced_at
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+         ON CONFLICT (tenant_id, flow_type, source_provider, source_entity_type, source_id)
+         DO UPDATE SET
+           target_provider = excluded.target_provider,
+           target_entity_type = excluded.target_entity_type,
+           target_id = excluded.target_id,
+           target_name = excluded.target_name,
            last_synced_at = NOW()",
     )
     .bind(tenant_id)
-    .bind(sf_entity_type)
-    .bind(sf_id)
-    .bind(zoho_id)
-    .bind(zoho_name)
+    .bind(flow_type)
+    .bind(source_provider)
+    .bind(source_entity_type)
+    .bind(source_id)
+    .bind(target_provider)
+    .bind(target_entity_type)
+    .bind(target_id)
+    .bind(target_name)
     .execute(pool)
     .await?;
     Ok(())
@@ -2942,10 +3093,14 @@ pub async fn list_tenant_ids(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct EntityLinkPublic {
-    pub sf_entity_type: String,
-    pub sf_id: String,
-    pub zoho_id: String,
-    pub zoho_name: Option<String>,
+    pub flow_type: String,
+    pub source_provider: String,
+    pub source_entity_type: String,
+    pub source_id: String,
+    pub target_provider: String,
+    pub target_entity_type: String,
+    pub target_id: String,
+    pub target_name: Option<String>,
     pub last_synced_at: String,
 }
 
@@ -2954,13 +3109,57 @@ pub async fn list_entity_links_public(
     tenant_id: i64,
 ) -> Result<Vec<EntityLinkPublic>, sqlx::Error> {
     sqlx::query_as::<_, EntityLinkPublic>(
-        "SELECT sf_entity_type, sf_id, zoho_id, zoho_name,
+        "SELECT flow_type, source_provider, source_entity_type, source_id,
+                target_provider, target_entity_type, target_id, target_name,
                 last_synced_at::text AS last_synced_at
          FROM integration_entity_links
          WHERE tenant_id = $1
          ORDER BY last_synced_at DESC",
     )
     .bind(tenant_id)
+    .fetch_all(pool)
+    .await
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct IntegrationProviderRow {
+    pub id: String,
+    pub display_name: String,
+    pub auth_type: String,
+    pub capabilities_json: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct IntegrationFlowTypeRow {
+    pub id: String,
+    pub display_name: String,
+    pub source_provider: String,
+    pub target_provider: String,
+    pub description: Option<String>,
+    pub enabled: i32,
+}
+
+pub async fn list_integration_providers(
+    pool: &PgPool,
+) -> Result<Vec<IntegrationProviderRow>, sqlx::Error> {
+    sqlx::query_as::<_, IntegrationProviderRow>(
+        "SELECT id, display_name, auth_type, capabilities_json
+         FROM integration_providers
+         ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn list_integration_flow_types(
+    pool: &PgPool,
+) -> Result<Vec<IntegrationFlowTypeRow>, sqlx::Error> {
+    sqlx::query_as::<_, IntegrationFlowTypeRow>(
+        "SELECT id, display_name, source_provider, target_provider, description, enabled
+         FROM integration_flow_types
+         WHERE enabled = 1
+         ORDER BY id",
+    )
     .fetch_all(pool)
     .await
 }

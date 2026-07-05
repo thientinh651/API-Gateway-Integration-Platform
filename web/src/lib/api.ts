@@ -473,8 +473,39 @@ export type TransactionLogRow = {
   outcome: string;
   reason: string;
   upstream: string | null;
+  route_id: number | null;
   created_at: string;
 };
+
+export type TransactionLogDetail = {
+  id: number;
+  request_id: string;
+  method: string;
+  path: string;
+  status: number;
+  duration_ms: number;
+  client_ip: string | null;
+  api_key_masked: string | null;
+  client_key_id: number | null;
+  outcome: string;
+  reason: string;
+  upstream: string | null;
+  upstream_url: string | null;
+  route_id: number | null;
+  req_headers: string | null;
+  req_body: string | null;
+  req_bytes: number | null;
+  req_truncated: boolean | null;
+  resp_headers: string | null;
+  resp_body: string | null;
+  resp_bytes: number | null;
+  resp_truncated: boolean | null;
+  created_at: string;
+};
+
+export function fetchTransactionLogDetail(id: number): Promise<TransactionLogDetail> {
+  return fetchJson<TransactionLogDetail>(`/api/transaction-logs/${id}/detail`);
+}
 
 export type TransactionLogsQuery = {
   limit?: number;
@@ -636,6 +667,12 @@ export type SyncLogRow = {
   status: string;
   message: string;
   error_detail: string | null;
+  event_type: string | null;
+  flow_type: string | null;
+  source_provider: string | null;
+  target_provider: string | null;
+  correlation_id: string | null;
+  metadata_json: string | null;
   created_at: string;
 };
 
@@ -681,12 +718,42 @@ export function fetchIntegrationPipelineStatus(): Promise<IntegrationPipelineSta
 }
 
 export type EntityLinkRow = {
-  sf_entity_type: string;
-  sf_id: string;
-  zoho_id: string;
-  zoho_name: string | null;
+  flow_type: string;
+  source_provider: string;
+  source_entity_type: string;
+  source_id: string;
+  target_provider: string;
+  target_entity_type: string;
+  target_id: string;
+  target_name: string | null;
   last_synced_at: string;
 };
+
+export type IntegrationProviderRow = {
+  id: string;
+  display_name: string;
+  auth_type: string;
+  capabilities_json: string;
+};
+
+export type IntegrationFlowTypeRow = {
+  id: string;
+  display_name: string;
+  source_provider: string;
+  target_provider: string;
+  description: string | null;
+  enabled: number;
+};
+
+export type IntegrationCatalog = {
+  tenant_id: number;
+  providers: IntegrationProviderRow[];
+  flow_types: IntegrationFlowTypeRow[];
+};
+
+export function fetchIntegrationCatalog(): Promise<IntegrationCatalog> {
+  return fetchJson<IntegrationCatalog>('/api/integrations/catalog');
+}
 
 export function fetchEntityLinks(): Promise<EntityLinkRow[]> {
   return fetchJson<EntityLinkRow[]>('/api/integrations/entity-links');

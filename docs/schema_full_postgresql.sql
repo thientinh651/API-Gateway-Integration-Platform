@@ -164,17 +164,45 @@ CREATE TABLE sync_logs (
     status TEXT NOT NULL,
     message TEXT NOT NULL,
     error_detail TEXT,
+    event_type TEXT,
+    flow_type TEXT DEFAULT 'sales_to_delivery',
+    source_provider TEXT,
+    target_provider TEXT,
+    correlation_id TEXT,
+    metadata_json TEXT,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE integration_providers (
+    id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    auth_type TEXT NOT NULL DEFAULT 'oauth2',
+    capabilities_json TEXT NOT NULL DEFAULT '[]',
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE integration_flow_types (
+    id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    source_provider TEXT NOT NULL REFERENCES integration_providers (id),
+    target_provider TEXT NOT NULL REFERENCES integration_providers (id),
+    description TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    config_schema_json TEXT,
     created_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE TABLE integration_entity_links (
     id BIGSERIAL PRIMARY KEY,
     tenant_id BIGINT REFERENCES tenants (id) NOT NULL,
-    sf_entity_type TEXT NOT NULL,
-    sf_id TEXT NOT NULL,
-    zoho_entity_type TEXT NOT NULL,
-    zoho_id TEXT NOT NULL,
-    zoho_name TEXT,
+    flow_type TEXT NOT NULL DEFAULT 'sales_to_delivery',
+    source_provider TEXT NOT NULL DEFAULT 'salesforce',
+    source_entity_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    target_provider TEXT NOT NULL DEFAULT 'zoho_projects',
+    target_entity_type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    target_name TEXT,
     last_synced_at TIMESTAMPTZ NOT NULL
 );
 
@@ -209,8 +237,8 @@ CREATE UNIQUE INDEX idx_integrations_tenant_provider
 CREATE UNIQUE INDEX idx_integration_provider_configs_tenant_provider
     ON integration_provider_configs (tenant_id, provider);
 
-CREATE UNIQUE INDEX idx_entity_links_tenant_sf
-    ON integration_entity_links (tenant_id, sf_entity_type, sf_id);
+CREATE UNIQUE INDEX idx_entity_links_source_unique
+    ON integration_entity_links (tenant_id, flow_type, source_provider, source_entity_type, source_id);
 
 CREATE UNIQUE INDEX idx_integration_documents_tenant_sf_provider
     ON integration_documents (tenant_id, sf_entity_type, sf_id, source_provider);

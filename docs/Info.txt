@@ -1,0 +1,13 @@
+Để biết chip gì:
+lscpu
+
+Ram:
+free -h
+
+Ổ cứng:
+df -h
+
+
+Manager: 
+htop
+

@@ -60,6 +60,12 @@ describe('integrationPipeline', () => {
         status: 'SUCCESS',
         message: 'Middleware: "006" → Zoho "Deal A"',
         error_detail: null,
+        event_type: 'entity_pushed',
+        flow_type: 'sales_to_delivery',
+        source_provider: 'salesforce',
+        target_provider: 'zoho_projects',
+        correlation_id: 'abc-123',
+        metadata_json: null,
         created_at: '2026-01-01',
       },
     ];
