@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import { Copy, FlaskConical, Gauge, KeyRound, Route, Shield, UserCheck, Activity, Ban } from 'lucide-react';
+import { Copy, FlaskConical, Gauge, KeyRound, Shield, UserCheck, Activity, Ban } from 'lucide-react';
 import { toast } from 'sonner';
 import type { GatewayRouteRow } from '../../../lib/gatewayRoutes';
 import {
@@ -52,6 +52,7 @@ export function ClientKeyConfigSheet({
   onSaved,
   canManage,
 }: Props) {
+  const [name, setName] = useState('');
   const [active, setActive] = useState(true);
   const [rateLimit, setRateLimit] = useState('0');
   const [rateLimitDefault, setRateLimitDefault] = useState('0');
@@ -63,19 +64,30 @@ export function ClientKeyConfigSheet({
   const [rotatedSecret, setRotatedSecret] = useState('');
   const [rotateDialogOpen, setRotateDialogOpen] = useState(false);
   const [traffic, setTraffic] = useState<ClientKeyTrafficStats | null>(null);
+  const [trafficLoading, setTrafficLoading] = useState(false);
+  const [trafficError, setTrafficError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open || !client) {
       setTraffic(null);
+      setTrafficLoading(false);
+      setTrafficError(null);
       return;
     }
+    setTrafficLoading(true);
+    setTrafficError(null);
     void fetchClientKeyTraffic(Number(client.id))
       .then(setTraffic)
-      .catch(() => setTraffic(null));
+      .catch((e) => {
+        setTraffic(null);
+        setTrafficError(e instanceof Error ? e.message : 'Không tải được thống kê traffic');
+      })
+      .finally(() => setTrafficLoading(false));
   }, [open, client]);
 
   useEffect(() => {
     if (!client) return;
+    setName(client.name);
     setActive(client.isActive);
     const rl = String(client.rateLimitPerMinute);
     setRateLimit(rl);
@@ -97,6 +109,11 @@ export function ClientKeyConfigSheet({
 
   const handleSave = async () => {
     if (!client || !canManage) return;
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      toast.error('Nhập tên client');
+      return;
+    }
     const rl = Number.parseInt(parseDefaultNumber(rateLimit, rateLimitDefault), 10);
     if (!Number.isFinite(rl) || rl < 0 || rl > 1_000_000) {
       toast.error('Rate limit phải từ 0 đến 1.000.000 req/phút');
@@ -109,6 +126,7 @@ export function ClientKeyConfigSheet({
     setSaving(true);
     try {
       await patchClientKey(Number(client.id), {
+        name: trimmedName,
         status: active ? 'active' : 'disabled',
         rate_limit_per_min: rl,
       });
@@ -118,7 +136,7 @@ export function ClientKeyConfigSheet({
       );
       onSaved();
       onOpenChange(false);
-      toast.success('Đã cập nhật chính sách client');
+      toast.success('Đã cập nhật client');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -160,7 +178,7 @@ export function ClientKeyConfigSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="bg-card border-border w-full sm:max-w-lg overflow-y-auto px-6 pb-6">
         <SheetHeader className="text-left border-b border-border pb-4 px-0">
-          <SheetTitle className="text-white">{client.name}</SheetTitle>
+          <SheetTitle className="text-white">{name.trim() || client.name}</SheetTitle>
         </SheetHeader>
 
         <div className="space-y-6 py-6">
@@ -170,6 +188,16 @@ export function ClientKeyConfigSheet({
               Authentication
             </div>
             <div className="rounded-lg border border-border bg-slate-950/50 p-3 space-y-2 text-xs">
+              <div>
+                <Label className="text-xs text-muted-foreground">Tên client</Label>
+                <Input
+                  value={name}
+                  disabled={!canManage}
+                  onChange={(e) => setName(e.target.value)}
+                  className="mt-1.5 bg-input border-border"
+                  placeholder="VD: weather-web-demo"
+                />
+              </div>
               <div className="flex justify-between gap-2">
                 <span className="text-muted-foreground">Client ID</span>
                 <code className="text-slate-300 font-mono truncate max-w-[200px]">
@@ -186,6 +214,9 @@ export function ClientKeyConfigSheet({
                 <span className="text-muted-foreground">Loại client</span>
                 <span className="text-slate-300">{integrationTypeLabel(client.integrationType)}</span>
               </div>
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                Sửa được tên hiển thị. <strong>Client ID</strong>, phương thức auth và loại client giữ cố định sau khi tạo.
+              </p>
               <div className="flex justify-between gap-2">
                 <span className="text-muted-foreground">Lần gọi gần nhất</span>
                 <span className="text-slate-300">
@@ -240,7 +271,14 @@ export function ClientKeyConfigSheet({
                 <Link to={`/logs?kind=traffic&client_key_id=${client.id}`}>Xem log</Link>
               </Button>
             </div>
-            {traffic ? (
+            {trafficLoading ? (
+              <p className="text-xs text-muted-foreground">Đang tải thống kê…</p>
+            ) : trafficError ? (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-300 space-y-2">
+                <p>Không tải được thống kê traffic 24h.</p>
+                <p className="text-amber-200/80 break-words">{trafficError}</p>
+              </div>
+            ) : traffic ? (
               <div className="rounded-lg border border-border bg-slate-950/50 p-3 space-y-2 text-xs">
                 <div className="flex flex-wrap gap-3">
                   <span className="text-slate-300">
@@ -269,7 +307,7 @@ export function ClientKeyConfigSheet({
                 )}
               </div>
             ) : (
-              <p className="text-xs text-muted-foreground">Đang tải thống kê…</p>
+              <p className="text-xs text-muted-foreground">Chưa có dữ liệu traffic 24h.</p>
             )}
           </section>
 
@@ -289,6 +327,9 @@ export function ClientKeyConfigSheet({
                 Client active — cho phép gọi data plane
               </label>
             </div>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              Tắt mục này là khóa toàn bộ client. Bật mục này chỉ cho phép client hoạt động, chưa quyết định client được gọi route nào.
+            </p>
             <div className="flex items-center gap-2.5 text-sm text-slate-300">
               <Checkbox
                 id="client-acl"
@@ -312,7 +353,11 @@ export function ClientKeyConfigSheet({
               <p className="text-xs text-sky-300/80 leading-relaxed">
                 ACL rỗng — client gọi được <strong>mọi route</strong> trong tenant (mặc định an toàn cho demo).
               </p>
-            ) : null}
+            ) : (
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                Bật ACL không cần tắt <strong>Client active</strong>. Khi active và có ACL, client chỉ gọi được các route đã chọn bên dưới.
+              </p>
+            )}
             <div className="space-y-2">
               {canManage && routes.length > 0 && restrictRoutes ? (
                 <div className="flex gap-2 text-[11px]">

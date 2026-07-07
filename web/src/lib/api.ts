@@ -982,7 +982,7 @@ export async function deleteClientKey(id: number): Promise<void> {
 
 export async function patchClientKey(
   id: number,
-  body: { status?: 'active' | 'disabled'; rate_limit_per_min?: number }
+  body: { name?: string; status?: 'active' | 'disabled'; rate_limit_per_min?: number }
 ): Promise<void> {
   return fetchOk(`/api/client-keys/${id}`, {
     method: 'PATCH',

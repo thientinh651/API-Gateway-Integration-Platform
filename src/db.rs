@@ -1794,11 +1794,60 @@ pub async fn update_client_key_registry(
     pool: &PgPool,
     id: i64,
     tenant_id: i64,
+    name: Option<&str>,
     status: Option<&str>,
     rate_limit_per_min: Option<i32>,
 ) -> Result<u64, sqlx::Error> {
-    match (status, rate_limit_per_min) {
-        (Some(s), Some(rl)) => {
+    match (name, status, rate_limit_per_min) {
+        (Some(name), Some(s), Some(rl)) => {
+            let r = sqlx::query(
+                "UPDATE gateway_client_keys SET name = $3, status = $4, rate_limit_per_min = $5 WHERE id = $1 AND tenant_id = $2",
+            )
+            .bind(id)
+            .bind(tenant_id)
+            .bind(name)
+            .bind(s)
+            .bind(rl)
+            .execute(pool)
+            .await?;
+            Ok(r.rows_affected())
+        }
+        (Some(name), Some(s), None) => {
+            let r = sqlx::query(
+                "UPDATE gateway_client_keys SET name = $3, status = $4 WHERE id = $1 AND tenant_id = $2",
+            )
+            .bind(id)
+            .bind(tenant_id)
+            .bind(name)
+            .bind(s)
+            .execute(pool)
+            .await?;
+            Ok(r.rows_affected())
+        }
+        (Some(name), None, Some(rl)) => {
+            let r = sqlx::query(
+                "UPDATE gateway_client_keys SET name = $3, rate_limit_per_min = $4 WHERE id = $1 AND tenant_id = $2",
+            )
+            .bind(id)
+            .bind(tenant_id)
+            .bind(name)
+            .bind(rl)
+            .execute(pool)
+            .await?;
+            Ok(r.rows_affected())
+        }
+        (Some(name), None, None) => {
+            let r = sqlx::query(
+                "UPDATE gateway_client_keys SET name = $3 WHERE id = $1 AND tenant_id = $2",
+            )
+            .bind(id)
+            .bind(tenant_id)
+            .bind(name)
+            .execute(pool)
+            .await?;
+            Ok(r.rows_affected())
+        }
+        (None, Some(s), Some(rl)) => {
             let r = sqlx::query(
                 "UPDATE gateway_client_keys SET status = $3, rate_limit_per_min = $4 WHERE id = $1 AND tenant_id = $2",
             )
@@ -1810,7 +1859,7 @@ pub async fn update_client_key_registry(
             .await?;
             Ok(r.rows_affected())
         }
-        (Some(s), None) => {
+        (None, Some(s), None) => {
             let r = sqlx::query(
                 "UPDATE gateway_client_keys SET status = $3 WHERE id = $1 AND tenant_id = $2",
             )
@@ -1821,7 +1870,7 @@ pub async fn update_client_key_registry(
             .await?;
             Ok(r.rows_affected())
         }
-        (None, Some(rl)) => {
+        (None, None, Some(rl)) => {
             let r = sqlx::query(
                 "UPDATE gateway_client_keys SET rate_limit_per_min = $3 WHERE id = $1 AND tenant_id = $2",
             )
@@ -1832,7 +1881,7 @@ pub async fn update_client_key_registry(
             .await?;
             Ok(r.rows_affected())
         }
-        (None, None) => Ok(0),
+        (None, None, None) => Ok(0),
     }
 }
 

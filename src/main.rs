@@ -4371,6 +4371,13 @@ async fn api_patch_client_key(
         }
     }
     let mut fields = serde_json::Map::new();
+    let name = body.name.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if body.name.is_some() && name.is_none() {
+        fields.insert(
+            "name".into(),
+            serde_json::Value::String("Nhập tên client".into()),
+        );
+    }
     let status = body.status.as_deref().map(str::trim).filter(|s| !s.is_empty());
     if let Some(s) = status {
         if s != "active" && s != "disabled" {
@@ -4388,10 +4395,10 @@ async fn api_patch_client_key(
             );
         }
     }
-    if status.is_none() && body.rate_limit_per_min.is_none() {
+    if name.is_none() && status.is_none() && body.rate_limit_per_min.is_none() {
         fields.insert(
             "_form".into(),
-            serde_json::Value::String("Gửi status và/hoặc rate_limit_per_min".into()),
+            serde_json::Value::String("Gửi name, status và/hoặc rate_limit_per_min".into()),
         );
     }
     if !fields.is_empty() {
@@ -4406,6 +4413,7 @@ async fn api_patch_client_key(
         &st.pool,
         id,
         ctx.tenant_id,
+        name,
         status,
         body.rate_limit_per_min,
     )
@@ -4425,7 +4433,7 @@ async fn api_patch_client_key(
                 &format!("key:{id}"),
                 "success",
                 None,
-                status,
+                name.or(status),
             )
             .await;
             StatusCode::NO_CONTENT.into_response()
@@ -4440,6 +4448,7 @@ async fn api_patch_client_key(
 
 #[derive(Debug, Deserialize)]
 struct PatchClientKeyBody {
+    name: Option<String>,
     status: Option<String>,
     rate_limit_per_min: Option<i32>,
 }
