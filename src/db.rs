@@ -1069,6 +1069,7 @@ pub async fn get_transaction_detail(
     pool: &PgPool,
     tenant_id: i64,
     id: i64,
+    include_unattributed: bool,
 ) -> Result<Option<TransactionDetailRow>, sqlx::Error> {
     sqlx::query_as::<_, TransactionDetailRow>(
         "SELECT id, request_id, method, path, status, duration_ms, client_ip, api_key_masked,
@@ -1077,10 +1078,11 @@ pub async fn get_transaction_detail(
                 resp_headers, resp_body, resp_bytes, resp_truncated,
                 created_at::text AS created_at
          FROM gateway_transaction_logs
-         WHERE id = $1 AND tenant_id = $2",
+         WHERE id = $1 AND (tenant_id = $2 OR ($3 AND tenant_id IS NULL))",
     )
     .bind(id)
     .bind(tenant_id)
+    .bind(include_unattributed)
     .fetch_optional(pool)
     .await
 }
@@ -1096,12 +1098,21 @@ pub async fn list_transaction_logs(
     search: Option<&str>,
     reason: Option<&str>,
     client_key_id: Option<i64>,
+    include_unattributed: bool,
 ) -> Result<Vec<TransactionLogRow>, sqlx::Error> {
     let lim = limit.clamp(1, 500);
     let mut n: i32 = 2;
-    let mut sql = String::from(
+    // Denied/edge rejections (sai key, token hết hạn, replay, rate-limit) được ghi với
+    // tenant_id = NULL vì chưa xác định được tenant. Admin cần thấy các lượt gọi này để
+    // tracking bên ngoài gọi vào gateway → include khi include_unattributed = true.
+    let tenant_clause = if include_unattributed {
+        "WHERE (tenant_id = $1 OR tenant_id IS NULL)"
+    } else {
+        "WHERE tenant_id = $1"
+    };
+    let mut sql = format!(
         "SELECT id, tenant_id, request_id, method, path, status, duration_ms, client_ip, api_key_masked, client_key_id, outcome, reason, upstream, route_id, created_at::text AS created_at
-         FROM gateway_transaction_logs WHERE tenant_id = $1",
+         FROM gateway_transaction_logs {tenant_clause}"
     );
     if method.filter(|m| !m.is_empty() && *m != "all").is_some() {
         sql.push_str(&format!(" AND method = ${n}"));

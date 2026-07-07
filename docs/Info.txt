@@ -11,3 +11,158 @@ df -h
 Manager: 
 htop
 
+
+========================================
+CPU / PHẦN CỨNG
+========================================
+Thông tin CPU chi tiết:
+cat /proc/cpuinfo
+
+Số nhân CPU:
+nproc
+
+Tải hệ thống (load average 1/5/15 phút):
+uptime
+
+Nhiệt độ CPU (nếu có sensors):
+sensors
+
+Thông tin phần cứng tổng quát:
+sudo lshw -short
+
+Model máy / mainboard:
+sudo dmidecode -t system
+sudo dmidecode -t baseboard
+
+
+========================================
+RAM / BỘ NHỚ
+========================================
+Chi tiết bộ nhớ:
+cat /proc/meminfo
+
+Thanh RAM đang cắm (dung lượng, tốc độ):
+sudo dmidecode -t memory
+
+Tiến trình ngốn RAM nhất (top 10):
+ps aux --sort=-%mem | head -n 11
+
+Dùng swap:
+swapon --show
+
+
+========================================
+Ổ CỨNG / DISK
+========================================
+Danh sách ổ đĩa & phân vùng:
+lsblk
+
+Kiểu ổ (SSD/HDD) - 0 = SSD:
+cat /sys/block/sda/queue/rotational
+
+Dung lượng theo thư mục (top thư mục nặng):
+du -sh /* 2>/dev/null | sort -rh | head -n 15
+
+Inode còn trống:
+df -i
+
+Kiểm tra I/O ổ đĩa realtime:
+iostat -x 1
+iotop
+
+
+========================================
+MẠNG / NETWORK
+========================================
+IP & card mạng:
+ip a
+
+Cổng đang mở / dịch vụ lắng nghe:
+sudo ss -tulpn
+
+Kết nối mạng hiện tại:
+ss -s
+
+Kiểm tra kết nối internet:
+ping -c 4 8.8.8.8
+
+Băng thông realtime (cần cài):
+iftop
+nload
+
+Bảng định tuyến:
+ip route
+
+
+========================================
+HỆ ĐIỀU HÀNH / KERNEL
+========================================
+Phiên bản OS:
+cat /etc/os-release
+
+Phiên bản kernel:
+uname -a
+
+Thời gian bật máy:
+uptime -p
+
+Kiến trúc hệ thống:
+arch
+
+
+========================================
+TIẾN TRÌNH / DỊCH VỤ
+========================================
+Cây tiến trình:
+ps auxf
+
+Top CPU (top 10):
+ps aux --sort=-%cpu | head -n 11
+
+Dịch vụ systemd đang chạy:
+systemctl list-units --type=service --state=running
+
+Trạng thái 1 dịch vụ (vd docker):
+systemctl status docker
+
+Log hệ thống realtime:
+journalctl -f
+
+Log 1 dịch vụ:
+journalctl -u docker -n 100
+
+
+========================================
+DOCKER (nếu dùng)
+========================================
+Container đang chạy:
+docker ps
+
+Tất cả container:
+docker ps -a
+
+Thống kê tài nguyên container realtime:
+docker stats
+
+Dung lượng docker chiếm:
+docker system df
+
+Log container:
+docker logs -f <container>
+
+
+========================================
+USER / BẢO MẬT
+========================================
+User đang đăng nhập:
+who
+w
+
+Lịch sử đăng nhập:
+last
+
+Ai có quyền sudo:
+getent group sudo
+
+Firewall (ufw):
+sudo ufw status verbose

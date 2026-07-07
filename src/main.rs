@@ -733,7 +733,7 @@ fn log_gateway_transaction_detailed(
         let upstream = upstream.map(|s| s.to_string());
         let client_ip = client_ip.map(|s| s.to_string());
         tokio::spawn(async move {
-            let _ = db::insert_transaction_log(
+            if let Err(e) = db::insert_transaction_log(
                 &pool,
                 tenant_id,
                 &req_id,
@@ -749,7 +749,10 @@ fn log_gateway_transaction_detailed(
                 upstream.as_deref(),
                 detail.as_ref(),
             )
-            .await;
+            .await
+            {
+                tracing::warn!(error = %e, path = %path, "insert_transaction_log failed — traffic log dropped");
+            }
         });
     }
 }
@@ -5476,6 +5479,7 @@ async fn api_list_transaction_logs(
         query.search.as_deref(),
         query.reason.as_deref(),
         query.client_key_id,
+        ctx.is_admin(),
     )
     .await
     {
@@ -5502,7 +5506,7 @@ async fn api_get_transaction_detail(
                 .into_response();
         }
     };
-    match db::get_transaction_detail(&st.pool, ctx.tenant_id, id).await {
+    match db::get_transaction_detail(&st.pool, ctx.tenant_id, id, ctx.is_admin()).await {
         Ok(Some(row)) => Json(row).into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
