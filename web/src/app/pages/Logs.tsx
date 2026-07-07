@@ -58,9 +58,6 @@ export function Logs() {
   return (
     <>
       <div className="mb-6 sm:mb-8">
-        <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1">
-          Observability
-        </p>
         <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Log vận hành</h1>
         <p className="text-sm text-muted-foreground">
           Quản trị · Route/Traffic · Tích hợp.

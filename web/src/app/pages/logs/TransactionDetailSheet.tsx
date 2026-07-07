@@ -210,9 +210,9 @@ export function TransactionDetailSheet({ logId, open, onOpenChange }: Props) {
 
               <div className="space-y-3">
                 <p className="text-xs font-bold text-white">Request</p>
-                <HeadersBlock title="Request headers" json={detail.req_headers} />
+                <HeadersBlock title="Headers" json={detail.req_headers} />
                 <BodyBlock
-                  title="Request body"
+                  title="Body"
                   body={detail.req_body}
                   bytes={detail.req_bytes}
                   truncated={detail.req_truncated}
@@ -221,9 +221,9 @@ export function TransactionDetailSheet({ logId, open, onOpenChange }: Props) {
 
               <div className="space-y-3">
                 <p className="text-xs font-bold text-white">Response</p>
-                <HeadersBlock title="Response headers" json={detail.resp_headers} />
+                <HeadersBlock title="Headers" json={detail.resp_headers} />
                 <BodyBlock
-                  title="Response body"
+                  title="Body"
                   body={detail.resp_body}
                   bytes={detail.resp_bytes}
                   truncated={detail.resp_truncated}
