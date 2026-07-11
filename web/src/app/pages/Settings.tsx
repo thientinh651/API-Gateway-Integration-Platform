@@ -27,6 +27,7 @@ import {
   handleFormApiError,
 } from '../../lib/formValidation';
 import { FieldError } from '../components/forms/FieldError';
+import { EnterSubmitForm } from '../components/forms/EnterSubmitForm';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import { canEditSettings } from '../../lib/rbac';
 import { defaultNumberHandlers, parseDefaultNumber } from '../../lib/zeroDefaultNumberInput';
@@ -212,6 +213,12 @@ export function Settings() {
         }
       />
 
+      <EnterSubmitForm
+        id="gateway-settings-form"
+        className="contents"
+        disabled={loading || saving || readOnly || !isDirty}
+        onSubmit={() => void handleSaveSettings()}
+      >
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 lg:gap-8 mb-24">
         <Card className="rounded-2xl bg-card/80 border-border overflow-hidden">
           <div className="px-5 sm:px-6 py-4 border-b border-border flex items-center gap-2">
@@ -327,6 +334,7 @@ export function Settings() {
           </div>
         </Card>
       </div>
+      </EnterSubmitForm>
 
       {(isDirty || !readOnly) && settings && snapshot ? (
         <div className="fixed bottom-0 left-0 right-0 z-30 border-t border-border bg-background/95 backdrop-blur-md px-4 sm:px-6 lg:px-8 py-3">
@@ -352,7 +360,8 @@ export function Settings() {
                 Hoàn tác
               </Button>
               <Button
-                onClick={() => void handleSaveSettings()}
+                type="submit"
+                form="gateway-settings-form"
                 className="flex-1 sm:flex-none bg-primary hover:bg-primary/90 min-w-[8rem]"
                 disabled={loading || saving || readOnly || !isDirty}
               >

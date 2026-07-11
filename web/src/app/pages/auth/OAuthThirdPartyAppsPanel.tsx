@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { Copy, ExternalLink, RefreshCw } from 'lucide-react';
+import { Copy, ExternalLink, Pencil, RefreshCw } from 'lucide-react';
 import { Card } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
-import { fetchOAuthApps, type OAuthThirdPartyAppRow } from '../../../lib/api';
+import { ConfirmDangerButton } from '../../components/forms/ConfirmDangerButton';
+import { deleteOAuthApp, fetchOAuthApps, type OAuthThirdPartyAppRow } from '../../../lib/api';
 import { toastApiError } from '../../../lib/apiClientError';
 import { formatDbTimestamp } from '../../../lib/formatDbTimestamp';
+import { parseRedirectUrisInput } from '../../../lib/oauthAppUris';
 import { CreateOAuthAppDialog } from './CreateOAuthAppDialog';
+import { EditOAuthAppDialog } from './EditOAuthAppDialog';
 import { apiUrl } from '../../../lib/api';
 import {
   defaultOAuthDemoRedirectUri,
@@ -17,13 +20,13 @@ import {
 } from '../../../lib/pkce';
 
 type Props = {
-  canCreate: boolean;
+  canManage: boolean;
 };
 
 function parseUris(json: string): string[] {
   try {
     const arr = JSON.parse(json) as string[];
-    return Array.isArray(arr) ? arr : [];
+    return parseRedirectUrisInput(Array.isArray(arr) ? arr.join('\n') : '');
   } catch {
     return [];
   }
@@ -35,10 +38,12 @@ function pickDemoRedirectUri(uris: string[]): string {
   return uris[0] ?? demo;
 }
 
-export function OAuthThirdPartyAppsPanel({ canCreate }: Props) {
+export function OAuthThirdPartyAppsPanel({ canManage }: Props) {
   const [apps, setApps] = useState<OAuthThirdPartyAppRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [authorizingId, setAuthorizingId] = useState<string | null>(null);
+  const [editApp, setEditApp] = useState<OAuthThirdPartyAppRow | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -94,22 +99,25 @@ export function OAuthThirdPartyAppsPanel({ canCreate }: Props) {
 
   const demoRedirectHint = defaultOAuthDemoRedirectUri();
 
+  const openEdit = (app: OAuthThirdPartyAppRow) => {
+    setEditApp(app);
+    setEditOpen(true);
+  };
+
+  const handleDelete = async (app: OAuthThirdPartyAppRow) => {
+    try {
+      await deleteOAuthApp(app.id);
+      toast.success(`Đã xóa app "${app.name}"`);
+      await reload();
+    } catch (e) {
+      toastApiError(e, 'Xóa app thất bại');
+    }
+  };
+
   return (
     <div className="space-y-4">
-      <div className="rounded-lg border border-border/60 bg-slate-950/40 px-4 py-3 text-sm text-muted-foreground leading-relaxed">
-        App bên thứ 3 dùng <strong className="text-slate-300 font-medium">Authorization Code + PKCE (S256)</strong>{' '}
-        — user dashboard đăng nhập, consent, nhận <code className="text-slate-400">code</code>, đổi JWT với{' '}
-        <code className="text-slate-400">code_verifier</code> tại token endpoint. Khác machine client (client_credentials).
-      </div>
-
-      <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3 text-xs text-muted-foreground leading-relaxed">
-        Demo redirect URI khuyến nghị:{' '}
-        <code className="text-primary break-all">{demoRedirectHint}</code> — đăng ký URL này khi tạo app để thử end-to-end
-        trên dashboard.
-      </div>
-
       <div className="flex flex-wrap items-center gap-3">
-        {canCreate ? <CreateOAuthAppDialog onCreated={() => void reload()} /> : null}
+        {canManage ? <CreateOAuthAppDialog onCreated={() => void reload()} /> : null}
         <Button variant="outline" size="sm" className="border-border" onClick={() => void reload()}>
           <RefreshCw className="w-4 h-4 mr-2" />
           Làm mới
@@ -143,6 +151,15 @@ export function OAuthThirdPartyAppsPanel({ canCreate }: Props) {
                       <Badge variant="outline" className="text-emerald-400/90 border-emerald-500/30">
                         PKCE S256
                       </Badge>
+                      {app.has_secret ? (
+                        <Badge variant="outline" className="text-sky-400/90 border-sky-500/30">
+                          confidential
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-slate-500 border-border">
+                          public
+                        </Badge>
+                      )}
                     </div>
                   </div>
                   <p className="text-xs text-muted-foreground">
@@ -163,6 +180,30 @@ export function OAuthThirdPartyAppsPanel({ canCreate }: Props) {
                   </div>
                   {redirectUri ? (
                     <div className="flex flex-wrap gap-2 pt-1">
+                      {canManage ? (
+                        <>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="border-border text-xs h-8"
+                            onClick={() => openEdit(app)}
+                          >
+                            <Pencil className="w-3.5 h-3.5 mr-1" />
+                            Sửa
+                          </Button>
+                          <ConfirmDangerButton
+                            title={`Xóa app "${app.name}"?`}
+                            description="Client ID sẽ vô hiệu — consent và auth code liên quan bị xóa."
+                            confirmLabel="Xóa app"
+                            variant="outline"
+                            size="sm"
+                            className="border-red-500/30 text-red-400 hover:bg-red-500/10 h-8 text-xs"
+                            onConfirm={() => handleDelete(app)}
+                          >
+                            Xóa
+                          </ConfirmDangerButton>
+                        </>
+                      ) : null}
                       <Button
                         variant="outline"
                         size="sm"
@@ -198,6 +239,13 @@ export function OAuthThirdPartyAppsPanel({ canCreate }: Props) {
           </ul>
         )}
       </Card>
+
+      <EditOAuthAppDialog
+        app={editApp}
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        onSaved={() => void reload()}
+      />
     </div>
   );
 }

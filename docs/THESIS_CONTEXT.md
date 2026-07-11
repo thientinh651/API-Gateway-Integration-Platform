@@ -68,14 +68,15 @@ Longest prefix, `{id}`, method filter, header transform, timeout, upstream proxy
 **Đã có (code chạy được):**
 - Đăng ký app bên thứ 3: `POST /api/oauth/apps`
 - `GET /oauth/authorize?client_id&redirect_uri&response_type=code&scope&state&code_challenge&code_challenge_method=S256`
+- Chưa session → redirect `/login?return_to=/oauth/authorize?...` → login xong tiếp tục authorize (kiểu Google)
 - Consent HTML + `POST /oauth/consent` (approve/deny)
 - Lưu consent `oauth_user_consents`; phát `authorization_code` + PKCE challenge → redirect
 - Đổi code: `POST /api/oauth/token` `grant_type=authorization_code` + `code_verifier` (RFC 7636)
 - UI: tab **App bên thứ 3** + **Thử authorize (PKCE)** + `/oauth/demo-callback`
 
 **Giới hạn / không phải OAuth provider production:**
-- User phải **đã login dashboard** (cookie `gw_sid`) — không có login page OAuth riêng cho end-user bên thứ 3
-- App bên thứ 3 **tách** khỏi machine client (Client Registry)
+- Login dùng trang dashboard (`/login`) + cookie `gw_sid` — chưa có IdP riêng (email verify, social login…)
+- App bên thứ 3 **tách** khỏi machine client (Client Registry); admin vẫn đăng ký app + redirect URI (không auto-create)
 - Token nhận được là **user JWT**, không phải client_credentials machine token
 
 **Demo bảo vệ:** Có thể demo nếu cùng browser đã login admin + redirect URI đăng ký + curl đổi code. **Không** cam kết full OAuth2 provider đa tenant như Auth0. **Core demo:** `client_credentials` + Proxy Try.

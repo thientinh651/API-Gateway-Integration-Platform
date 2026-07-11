@@ -7,6 +7,7 @@ import { ConfirmDangerButton } from '../../components/forms/ConfirmDangerButton'
 import { Card } from '../../components/ui/card';
 import { Badge } from '../../components/ui/badge';
 import { Checkbox } from '../../components/ui/checkbox';
+import { Switch } from '../../components/ui/switch';
 import type { GatewayRouteRow } from '../../../lib/gatewayRoutes';
 import { formatDbTimestamp, formatDbTimestampForExport } from '../../../lib/formatDbTimestamp';
 import {
@@ -63,6 +64,7 @@ type Props = {
   onConfigure: (client: ClientRegistryRow) => void;
   onDelete: (id: string) => void;
   onBulkStatus?: (ids: string[], status: 'active' | 'disabled') => Promise<void>;
+  onStatusChange?: (id: string, active: boolean) => Promise<void>;
   onBulkDelete?: (ids: string[]) => Promise<void>;
   canDelete?: boolean;
   canManage?: boolean;
@@ -75,6 +77,7 @@ export function ClientRegistryTable({
   onConfigure,
   onDelete,
   onBulkStatus,
+  onStatusChange,
   onBulkDelete,
   canDelete = true,
   canManage = false,
@@ -82,6 +85,7 @@ export function ClientRegistryTable({
   const navigate = useNavigate();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [statusBusy, setStatusBusy] = useState<Set<string>>(new Set());
 
   const allSelected = clients.length > 0 && selected.size === clients.length;
   const someSelected = selected.size > 0;
@@ -129,6 +133,20 @@ export function ClientRegistryTable({
       setSelected(new Set());
     } finally {
       setBulkBusy(false);
+    }
+  };
+
+  const toggleStatus = async (client: ClientRegistryRow, active: boolean) => {
+    if (!onStatusChange || statusBusy.has(client.id)) return;
+    setStatusBusy((prev) => new Set(prev).add(client.id));
+    try {
+      await onStatusChange(client.id, active);
+    } finally {
+      setStatusBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(client.id);
+        return next;
+      });
     }
   };
 
@@ -337,7 +355,23 @@ export function ClientRegistryTable({
                   {client.lastUsedAt ? formatDbTimestamp(client.lastUsedAt) : '—'}
                 </td>
                 <td className="px-3 py-3 align-middle">
-                  {client.isActive ? (
+                  {canManage && onStatusChange ? (
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        checked={client.isActive}
+                        disabled={statusBusy.has(client.id)}
+                        onCheckedChange={(checked) => void toggleStatus(client, checked)}
+                        aria-label={client.isActive ? 'Tắt client' : 'Bật client'}
+                      />
+                      <span
+                        className={`text-[10px] whitespace-nowrap ${
+                          client.isActive ? 'text-emerald-400' : 'text-slate-400'
+                        }`}
+                      >
+                        {client.isActive ? 'Active' : 'Tắt'}
+                      </span>
+                    </div>
+                  ) : client.isActive ? (
                     <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/25 border text-[10px] whitespace-nowrap">
                       Active
                     </Badge>

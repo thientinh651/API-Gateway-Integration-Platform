@@ -98,14 +98,6 @@ export function IntegrationPipelinePanel({ steps, onScrollLogs }: Props) {
           );
         })}
       </div>
-
-      <p className="text-[11px] text-muted-foreground mt-4 pt-4 border-t border-border/60">
-        Worker loopback:{' '}
-        <Link to="/logs?kind=traffic" className="text-primary hover:underline">
-          Transaction Logs
-        </Link>{' '}
-        — lọc path hoặc client chứa <code className="text-[10px]">avaso_pk_sync_worker</code>
-      </p>
     </Card>
   );
 }

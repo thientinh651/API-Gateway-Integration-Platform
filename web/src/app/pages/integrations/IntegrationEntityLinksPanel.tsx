@@ -1,6 +1,7 @@
 import { Link2 } from 'lucide-react';
 import { Card } from '../../components/ui/card';
 import type { EntityLinkRow } from '../../../lib/api';
+import { formatDbTimestamp } from '../../../lib/formatDbTimestamp';
 
 function providerLabel(id: string) {
   switch (id) {
@@ -57,7 +58,7 @@ export function IntegrationEntityLinksPanel({ links }: Props) {
                   <div className="text-slate-200">{row.target_name ?? row.target_id}</div>
                 </td>
                 <td className="py-2.5 px-3 text-muted-foreground whitespace-nowrap">
-                  {row.last_synced_at}
+                  {formatDbTimestamp(row.last_synced_at)}
                 </td>
               </tr>
             ))}

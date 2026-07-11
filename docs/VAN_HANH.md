@@ -30,9 +30,9 @@ sudo systemctl enable --now avaso-gateway
 | 2 | OAuth **Zoho Projects** (không Zoho CRM) |
 | 3 | Nhập **Zoho Office** API key (PDF) |
 | 4 | **Đồng bộ snapshot** SF + Zoho |
-| 5 | **Sync Now** hoặc chờ worker 15 phút |
+| 5 | **Sync Now** hoặc chờ worker tự động (mặc định 15 phút) |
 
-Worker nền: `INTEGRATION_SYNC_INTERVAL_MINS=15` (0 = tắt). Log:
+Worker nền: chu kỳ lưu `gateway_settings.integration_sync_interval_mins` — chỉnh trên trang **Tích hợp → Tự động đồng bộ** (0/5/15/30/60 phút). Lần đầu chưa có DB dùng env `INTEGRATION_SYNC_INTERVAL_MINS` (mặc định 15). Log:
 
 ```bash
 journalctl -u avaso-gateway -f | grep -i integration

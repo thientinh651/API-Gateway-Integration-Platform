@@ -14,6 +14,8 @@ import {
   DialogTrigger,
 } from '../../components/ui/dialog';
 import { Checkbox } from '../../components/ui/checkbox';
+import { EnterSubmitForm } from '../../components/forms/EnterSubmitForm';
+import { parseRedirectUrisInput } from '../../../lib/oauthAppUris';
 import { defaultOAuthDemoRedirectUri } from '../../../lib/pkce';
 
 type Props = {
@@ -46,10 +48,7 @@ export function CreateOAuthAppDialog({ onCreated }: Props) {
 
   const handleCreate = async () => {
     const appName = name.trim();
-    const redirect_uris = urisText
-      .split('\n')
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const redirect_uris = parseRedirectUrisInput(urisText);
     if (!appName || redirect_uris.length === 0) {
       toast.error('Nhập tên app và ít nhất một redirect URI');
       return;
@@ -129,7 +128,7 @@ export function CreateOAuthAppDialog({ onCreated }: Props) {
             </p>
           </div>
         ) : (
-          <div className="space-y-4">
+          <EnterSubmitForm className="space-y-4" disabled={pending} onSubmit={() => void handleCreate()}>
             <div>
               <Label className="text-foreground">Tên app</Label>
               <Input
@@ -140,7 +139,7 @@ export function CreateOAuthAppDialog({ onCreated }: Props) {
               />
             </div>
             <div>
-              <Label className="text-foreground">Redirect URI (mỗi dòng một URL)</Label>
+              <Label className="text-foreground">Redirect URI</Label>
               <textarea
                 value={urisText}
                 onChange={(e) => setUrisText(e.target.value)}
@@ -150,12 +149,12 @@ export function CreateOAuthAppDialog({ onCreated }: Props) {
             </div>
             <label className="flex items-center gap-2 text-sm text-slate-300">
               <Checkbox checked={withSecret} onCheckedChange={(v) => setWithSecret(v === true)} />
-              Tạo client secret (confidential app)
+              Tạo client secret
             </label>
-            <Button className="w-full" disabled={pending} onClick={() => void handleCreate()}>
+            <Button type="submit" className="w-full" disabled={pending}>
               {pending ? 'Đang tạo…' : 'Tạo app'}
             </Button>
-          </div>
+          </EnterSubmitForm>
         )}
       </DialogContent>
     </Dialog>

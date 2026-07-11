@@ -1132,6 +1132,10 @@ async fn main() {
         .await
         .expect("reload config after sync worker client ensure");
 
+    integrations::ensure_integration_sync_setting(&pool)
+        .await
+        .expect("seed integration sync schedule setting");
+
     let session_store = session::init_session_store().await;
     let rate_limiter = Arc::new(rate_limit::RateLimiter::new(session_store.redis()));
     let proxy_queue = proxy_ext::ProxyQueue::new(pool.clone());
@@ -1235,6 +1239,10 @@ async fn main() {
         )
         .route("/integrations/sync-now", post(api_sync_now))
         .route(
+            "/integrations/sync-schedule",
+            get(api_get_integration_sync_schedule).put(api_update_integration_sync_schedule),
+        )
+        .route(
             "/integrations/pipeline-status",
             get(api_integration_pipeline_status),
         )
@@ -1249,6 +1257,10 @@ async fn main() {
         .route("/oauth/tokens", get(api_oauth_tokens_list))
         .route("/oauth/tokens/revoke", post(api_oauth_revoke_jti_handler))
         .route("/oauth/apps", get(api_oauth_apps_list).post(api_oauth_apps_create))
+        .route(
+            "/oauth/apps/:id",
+            put(api_oauth_apps_update).delete(api_oauth_apps_delete),
+        )
         .layer(middleware::from_fn(rbac_middleware))
         .layer(middleware::from_fn(admin_auth_middleware));
 
@@ -1752,6 +1764,27 @@ async fn api_oauth_apps_create(
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "state");
     };
     oauth_handlers::api_create_oauth_app(&oauth_handler_state(st), &ctx, body).await
+}
+
+async fn api_oauth_apps_update(
+    Extension(ctx): Extension<AdminCtx>,
+    Path(id): Path<i64>,
+    Json(body): Json<oauth_handlers::UpdateOAuthAppBody>,
+) -> impl IntoResponse {
+    let Some(st) = STATE.get() else {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "state");
+    };
+    oauth_handlers::api_update_oauth_app(&oauth_handler_state(st), &ctx, id, body).await
+}
+
+async fn api_oauth_apps_delete(
+    Extension(ctx): Extension<AdminCtx>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    let Some(st) = STATE.get() else {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "state");
+    };
+    oauth_handlers::api_delete_oauth_app(&oauth_handler_state(st), &ctx, id).await
 }
 
 async fn api_client_key_revoke_tokens(
@@ -2691,7 +2724,11 @@ async fn api_verify_reset_otp(Json(body): Json<VerifyResetOtpBody>) -> impl Into
     }
 }
 
-async fn api_reset_password(Json(body): Json<ResetPasswordBody>) -> impl IntoResponse {
+async fn api_reset_password(
+    Extension(admin_auth::ResolvedClientIp(resolved_ip)): Extension<admin_auth::ResolvedClientIp>,
+    headers: HeaderMap,
+    Json(body): Json<ResetPasswordBody>,
+) -> impl IntoResponse {
     let token = body.reset_token.trim();
     let pass = body.password.trim();
     let mut fields = serde_json::Map::new();
@@ -2768,6 +2805,9 @@ async fn api_reset_password(Json(body): Json<ResetPasswordBody>) -> impl IntoRes
             let _ = db::bump_user_token_version(&st.pool, user_id).await;
             let _ = st.session_store.revoke_all_for_user(user_id).await;
             if let Ok(Some(u)) = db::fetch_admin_user_by_id_any(&st.pool, user_id).await {
+                let ip = resolved_ip
+                    .clone()
+                    .or_else(|| admin_auth::client_ip(&headers));
                 write_audit_event(
                     &st.pool,
                     u.tenant_id.unwrap_or(1),
@@ -2776,7 +2816,7 @@ async fn api_reset_password(Json(body): Json<ResetPasswordBody>) -> impl IntoRes
                     "reset_password",
                     "session",
                     "success",
-                    None,
+                    ip.as_deref(),
                     Some("otp_verified"),
                 )
                 .await;
@@ -3237,6 +3277,12 @@ async fn admin_api_ping() -> Json<serde_json::Value> {
 }
 
 #[derive(Debug, Deserialize)]
+struct PaginationQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
 struct MetricsQuery {
     format: Option<String>,
 }
@@ -3438,7 +3484,10 @@ async fn proxy_handler() -> impl IntoResponse {
     }
 }
 
-async fn api_routes(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+async fn api_routes(
+    Extension(ctx): Extension<AdminCtx>,
+    axum::extract::Query(pq): axum::extract::Query<PaginationQuery>,
+) -> impl IntoResponse {
     let st = match STATE.get() {
         Some(s) => s.clone(),
         None => {
@@ -3450,7 +3499,12 @@ async fn api_routes(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
         }
     };
     match db::list_routes_for_tenant(&st.pool, ctx.tenant_id).await {
-        Ok(rows) => Json(rows).into_response(),
+        Ok(rows) => {
+            let offset = pq.offset.unwrap_or(0);
+            let limit = pq.limit.unwrap_or(500).min(1000);
+            let page: Vec<_> = rows.into_iter().skip(offset).take(limit).collect();
+            Json(page).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": format!("{e}") })),
@@ -3835,7 +3889,10 @@ async fn api_client_keys_traffic_summary(Extension(ctx): Extension<AdminCtx>) ->
     }
 }
 
-async fn api_list_client_keys(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+async fn api_list_client_keys(
+    Extension(ctx): Extension<AdminCtx>,
+    axum::extract::Query(pq): axum::extract::Query<PaginationQuery>,
+) -> impl IntoResponse {
     if !admin_auth::can_access_client_keys(&ctx.role) {
         return admin_auth::forbidden_response();
     }
@@ -3851,7 +3908,12 @@ async fn api_list_client_keys(Extension(ctx): Extension<AdminCtx>) -> impl IntoR
     };
     let admin_scope = ctx.is_admin();
     match db::list_client_keys_scoped(&st.pool, ctx.tenant_id, Some(ctx.user_id), admin_scope).await {
-        Ok(rows) => Json(rows).into_response(),
+        Ok(rows) => {
+            let offset = pq.offset.unwrap_or(0);
+            let limit = pq.limit.unwrap_or(500).min(1000);
+            let page: Vec<_> = rows.into_iter().skip(offset).take(limit).collect();
+            Json(page).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": format!("{e}") })),
@@ -4793,7 +4855,10 @@ fn default_user_active() -> bool {
     true
 }
 
-async fn api_list_users(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
+async fn api_list_users(
+    Extension(ctx): Extension<AdminCtx>,
+    axum::extract::Query(pq): axum::extract::Query<PaginationQuery>,
+) -> impl IntoResponse {
     let st = match STATE.get() {
         Some(s) => s.clone(),
         None => {
@@ -4805,7 +4870,12 @@ async fn api_list_users(Extension(ctx): Extension<AdminCtx>) -> impl IntoRespons
         }
     };
     match db::list_dashboard_users_for_tenant(&st.pool, ctx.tenant_id).await {
-        Ok(rows) => Json(rows).into_response(),
+        Ok(rows) => {
+            let offset = pq.offset.unwrap_or(0);
+            let limit = pq.limit.unwrap_or(500).min(1000);
+            let page: Vec<_> = rows.into_iter().skip(offset).take(limit).collect();
+            Json(page).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": format!("{e}") })),
@@ -5353,16 +5423,40 @@ async fn api_bulk_delete_proxy_queue(
         )
             .into_response();
     }
+    let summaries = st
+        .proxy_queue
+        .fetch_discard_summaries(ctx.tenant_id, &ids)
+        .await;
     let deleted = st.proxy_queue.remove_many(ctx.tenant_id, &ids).await;
     if deleted > 0 {
+        let detail_lines: Vec<String> = if summaries.is_empty() {
+            vec![format!("(không đọc được method/path trước khi xóa)")]
+        } else {
+            summaries
+                .iter()
+                .map(|(method, path, reason)| {
+                    let r = if reason.is_empty() {
+                        "—"
+                    } else {
+                        reason.as_str()
+                    };
+                    format!("{method} {path} · {r}")
+                })
+                .collect()
+        };
+        let details = format!(
+            "Đã xóa {deleted}/{} bản ghi Proxy Queue (DLQ)\n{}",
+            ids.len(),
+            detail_lines.join("\n")
+        );
         write_audit(
             &st.pool,
             &ctx,
             "proxy_queue_bulk_discard",
-            &format!("count={deleted}"),
+            "proxy_queue",
             "success",
             None,
-            Some(&ids.join(",")),
+            Some(&details),
         )
         .await;
     }
@@ -5380,15 +5474,28 @@ async fn api_delete_proxy_queue(
         )
             .into_response();
     };
+    let summary = st
+        .proxy_queue
+        .fetch_discard_summaries(ctx.tenant_id, &[id.clone()])
+        .await
+        .into_iter()
+        .next();
     if st.proxy_queue.remove(ctx.tenant_id, &id).await {
+        let details = match summary {
+            Some((method, path, reason)) => {
+                let r = if reason.is_empty() { "—" } else { reason.as_str() };
+                format!("Đã xóa 1 bản ghi Proxy Queue (DLQ)\n{method} {path} · {r}")
+            }
+            None => "Đã xóa 1 bản ghi Proxy Queue (DLQ)".to_string(),
+        };
         write_audit(
             &st.pool,
             &ctx,
             "proxy_queue_discard",
-            &id,
+            "proxy_queue",
             "success",
             None,
-            None,
+            Some(&details),
         )
         .await;
         Json(serde_json::json!({ "status": "discarded" })).into_response()
@@ -5695,6 +5802,25 @@ async fn api_sync_now(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse 
         return audit_admin_denied(&ctx, "integrations/sync-now").await;
     }
     integrations::api_sync_now(&ctx).await
+}
+
+async fn api_get_integration_sync_schedule(
+    Extension(ctx): Extension<AdminCtx>,
+) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/sync-schedule").await;
+    }
+    integrations::api_get_integration_sync_schedule(&ctx).await
+}
+
+async fn api_update_integration_sync_schedule(
+    Extension(ctx): Extension<AdminCtx>,
+    Json(body): Json<integrations::UpdateIntegrationSyncScheduleBody>,
+) -> impl IntoResponse {
+    if !ctx.is_admin() {
+        return audit_admin_denied(&ctx, "integrations/sync-schedule").await;
+    }
+    integrations::api_update_integration_sync_schedule(&ctx, body).await
 }
 
 async fn api_integration_pipeline_status(

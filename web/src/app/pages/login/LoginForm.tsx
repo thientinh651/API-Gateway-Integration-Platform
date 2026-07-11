@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -9,6 +9,7 @@ import { adminLogin, ApiClientError } from '../../../lib/api';
 import { useAdminAuth } from '../../../contexts/AdminAuthContext';
 import { useGatewayFeatures } from '../../../contexts/GatewayFeaturesContext';
 import { getSavedUsername, setSavedUsername, SAVED_USERNAME_KEY } from '../../../lib/demoAuthStorage';
+import { goAfterLogin } from '../../../lib/safeReturnTo';
 
 type FieldErrors = {
   username?: string;
@@ -30,8 +31,10 @@ function applyApiFieldErrors(fields?: Record<string, string>): FieldErrors {
 export function LoginForm() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const { refresh } = useAdminAuth();
   const { features } = useGatewayFeatures();
+  const returnTo = searchParams.get('return_to');
   const registrationDisabled = Boolean(
     (location.state as { registrationDisabled?: boolean } | null)?.registrationDisabled,
   );
@@ -84,7 +87,7 @@ export function LoginForm() {
       else setSavedUsername(null);
       await refresh();
       toast.success('Đăng nhập thành công.');
-      navigate('/');
+      goAfterLogin(returnTo, (to, opts) => navigate(to, opts));
     } catch (err) {
       if (import.meta.env.DEV) console.debug('login failed', err);
 

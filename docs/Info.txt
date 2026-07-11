@@ -1,4 +1,4 @@
-Để biết chip gì:
+Chip:
 lscpu
 
 Ram:
@@ -20,12 +20,6 @@ cat /proc/cpuinfo
 
 Số nhân CPU:
 nproc
-
-Tải hệ thống (load average 1/5/15 phút):
-uptime
-
-Nhiệt độ CPU (nếu có sensors):
-sensors
 
 Thông tin phần cứng tổng quát:
 sudo lshw -short

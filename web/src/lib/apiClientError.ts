@@ -82,10 +82,9 @@ export function formatApiErrorToast(e: unknown): string {
   return String(e);
 }
 
-/** 404 do backend production cũ — không phải lỗi X-API-Key. */
+/** 404 do backend production cũ — không phải lỗi X-API-Key hay resource không tồn tại. */
 export function isMissingBackendApi(e: unknown): boolean {
   if (!(e instanceof ApiClientError) || e.status !== 404) return false;
-  if (e.code === 'not_found') return true;
   return e.message.includes('Admin API is mounted');
 }
 

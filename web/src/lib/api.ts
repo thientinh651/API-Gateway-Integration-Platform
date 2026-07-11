@@ -763,6 +763,32 @@ export function integrationSyncNow(): Promise<SyncNowResult> {
   return fetchJson<SyncNowResult>('/api/integrations/sync-now', { method: 'POST' });
 }
 
+export type IntegrationSyncSchedule = {
+  enabled: boolean;
+  interval_mins: number;
+  allowed_intervals: number[];
+  env_default_mins: number;
+  sf_connected: boolean;
+  zoho_connected: boolean;
+  both_connected: boolean;
+  last_pipeline_sync_at: string | null;
+  last_auto_sync_at: string | null;
+};
+
+export function fetchIntegrationSyncSchedule(): Promise<IntegrationSyncSchedule> {
+  return fetchJson<IntegrationSyncSchedule>('/api/integrations/sync-schedule');
+}
+
+export function updateIntegrationSyncSchedule(
+  interval_mins: number,
+): Promise<IntegrationSyncSchedule> {
+  return fetchJson<IntegrationSyncSchedule>('/api/integrations/sync-schedule', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ interval_mins }),
+  });
+}
+
 export function resetIntegrationSync(): Promise<{
   status: string;
   entity_links_deleted: number;
@@ -1100,6 +1126,7 @@ export type OAuthThirdPartyAppRow = {
   name: string;
   redirect_uris_json: string;
   scopes: string;
+  has_secret: boolean;
   created_at: string;
 };
 
@@ -1122,4 +1149,26 @@ export function createOAuthApp(body: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+export function updateOAuthApp(
+  id: number,
+  body: { name: string; redirect_uris: string[]; rotate_secret?: boolean },
+): Promise<{
+  status: string;
+  id: number;
+  name: string;
+  redirect_uris: string[];
+  client_secret: string | null;
+}> {
+  return fetchJson(`/api/oauth/apps/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteOAuthApp(id: number): Promise<{ status: string; id: number }> {
+  await fetchOk(`/api/oauth/apps/${id}`, { method: 'DELETE' });
+  return { status: 'deleted', id };
 }

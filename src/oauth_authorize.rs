@@ -14,6 +14,7 @@ pub struct ThirdPartyAppRow {
     pub name: String,
     pub redirect_uris_json: String,
     pub scopes: String,
+    pub has_secret: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -32,12 +33,33 @@ pub fn parse_redirect_uris(json: &str) -> Vec<String> {
     serde_json::from_str::<Vec<String>>(json).unwrap_or_default()
 }
 
+pub fn normalize_redirect_uris(uris: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for u in uris {
+        let t = u.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if !out.iter().any(|x| x == t) {
+            out.push(t.to_string());
+        }
+    }
+    out
+}
+
+pub fn valid_redirect_uri(uri: &str) -> bool {
+    let t = uri.trim();
+    t.starts_with("https://") || t.starts_with("http://127.0.0.1") || t.starts_with("http://localhost")
+}
+
 pub async fn list_third_party_apps(
     pool: &PgPool,
     tenant_id: i64,
 ) -> Result<Vec<ThirdPartyAppRow>, sqlx::Error> {
     sqlx::query_as::<_, ThirdPartyAppRow>(
-        "SELECT id, tenant_id, client_id, name, redirect_uris_json, scopes, created_at
+        "SELECT id, tenant_id, client_id, name, redirect_uris_json, scopes,
+                (client_secret_encrypted IS NOT NULL AND client_secret_encrypted != '') AS has_secret,
+                created_at
          FROM oauth_third_party_apps WHERE tenant_id = $1 ORDER BY id",
     )
     .bind(tenant_id)
@@ -103,6 +125,117 @@ pub async fn insert_third_party_app(
     .execute(pool)
     .await?;
     Ok((client_id, secret))
+}
+
+#[derive(Debug, Clone)]
+pub struct ThirdPartyAppMeta {
+    pub id: i64,
+    pub client_id: String,
+    pub name: String,
+}
+
+pub async fn fetch_third_party_app_meta(
+    pool: &PgPool,
+    id: i64,
+    tenant_id: i64,
+) -> Result<Option<ThirdPartyAppMeta>, sqlx::Error> {
+    let row: Option<(i64, String, String)> = sqlx::query_as(
+        "SELECT id, client_id, name FROM oauth_third_party_apps
+         WHERE id = $1 AND tenant_id = $2 LIMIT 1",
+    )
+    .bind(id)
+    .bind(tenant_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(id, client_id, name)| ThirdPartyAppMeta {
+        id,
+        client_id,
+        name,
+    }))
+}
+
+/// Chi tiết audit log — đọc được ngay trên UI (không chỉ id số).
+pub fn audit_app_details(meta: &ThirdPartyAppMeta, extra: Option<&str>) -> String {
+    let mut s = format!(
+        "app=\"{}\" client_id={} id={}",
+        meta.name, meta.client_id, meta.id
+    );
+    if let Some(e) = extra.filter(|x| !x.is_empty()) {
+        s.push(' ');
+        s.push_str(e);
+    }
+    s
+}
+
+pub async fn update_third_party_app(
+    pool: &PgPool,
+    id: i64,
+    tenant_id: i64,
+    name: &str,
+    redirect_uris: &[String],
+) -> Result<bool, sqlx::Error> {
+    let uris_json = serde_json::to_string(redirect_uris).unwrap_or_else(|_| "[]".into());
+    let r = sqlx::query(
+        "UPDATE oauth_third_party_apps SET name = $3, redirect_uris_json = $4
+         WHERE id = $1 AND tenant_id = $2",
+    )
+    .bind(id)
+    .bind(tenant_id)
+    .bind(name)
+    .bind(&uris_json)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected() > 0)
+}
+
+pub async fn rotate_third_party_app_secret(
+    pool: &PgPool,
+    id: i64,
+    tenant_id: i64,
+) -> Result<Option<String>, sqlx::Error> {
+    let secret = db::random_secret_key();
+    let enc = crate::crypto::encrypt_secret(&secret)
+        .map_err(|e| sqlx::Error::Protocol(format!("encrypt secret: {e}")))?;
+    let r = sqlx::query(
+        "UPDATE oauth_third_party_apps SET client_secret_encrypted = $3
+         WHERE id = $1 AND tenant_id = $2",
+    )
+    .bind(id)
+    .bind(tenant_id)
+    .bind(&enc)
+    .execute(pool)
+    .await?;
+    if r.rows_affected() == 0 {
+        return Ok(None);
+    }
+    Ok(Some(secret))
+}
+
+pub async fn delete_third_party_app(
+    pool: &PgPool,
+    id: i64,
+    tenant_id: i64,
+) -> Result<Option<ThirdPartyAppMeta>, sqlx::Error> {
+    let Some(meta) = fetch_third_party_app_meta(pool, id, tenant_id).await? else {
+        return Ok(None);
+    };
+    sqlx::query("DELETE FROM oauth_user_consents WHERE app_client_id = $1")
+        .bind(&meta.client_id)
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM oauth_authorization_codes WHERE app_client_id = $1")
+        .bind(&meta.client_id)
+        .execute(pool)
+        .await?;
+    let r = sqlx::query("DELETE FROM oauth_third_party_apps WHERE id = $1 AND tenant_id = $2")
+        .bind(id)
+        .bind(tenant_id)
+        .execute(pool)
+        .await?;
+    if r.rows_affected() == 0 {
+        return Ok(None);
+    }
+    Ok(Some(meta))
 }
 
 pub fn redirect_uri_allowed(app: &ThirdPartyApp, redirect_uri: &str) -> bool {

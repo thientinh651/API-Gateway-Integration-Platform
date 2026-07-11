@@ -128,7 +128,7 @@ Mỗi JWT có `jti` (ID duy nhất) và `tv` (token version).
 | Logout Bearer | `POST /api/oauth/logout` + `Authorization: Bearer` | Revoke token đang dùng |
 | Revoke toàn bộ client | `POST /api/client-keys/{id}/revoke-tokens` | Tăng `token_version` → mọi JWT cũ vô hiệu ngay |
 | Audit token đang live | `GET /api/oauth/tokens?active_only=true` | Admin/operator — bảng `oauth_access_tokens` |
-| Authorization Code + **PKCE S256** | `GET /oauth/authorize?code_challenge&code_challenge_method=S256` → consent → `POST /api/oauth/token` với `code_verifier` | App bên thứ 3 + consent user |
+| Authorization Code + **PKCE S256** | `GET /oauth/authorize?code_challenge&code_challenge_method=S256` → (nếu chưa login: `/login?return_to=…`) → consent → `POST /api/oauth/token` với `code_verifier` | App bên thứ 3 + consent user |
 | Đăng ký app bên thứ 3 | `POST /api/oauth/apps` | `redirect_uris`, optional secret |
 
 **Logout tức thì:** tăng `token_version` trên client/user (rotate secret, đổi mật khẩu, revoke-tokens) — JWT cũ trả `401 token_revoked` dù chưa hết `exp`.

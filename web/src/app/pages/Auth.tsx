@@ -18,6 +18,7 @@ import {
   fetchClientKeys,
   fetchClientKeysTrafficSummary,
   fetchGatewayRoutes,
+  patchClientKey,
   type ClientKeyMeta,
 } from '../../lib/api';
 import type { GatewayRouteRow } from '../../lib/gatewayRoutes';
@@ -181,6 +182,19 @@ function AuthAdmin() {
     }
   };
 
+  const handleToggleStatus = async (id: string, active: boolean) => {
+    try {
+      await patchClientKey(Number(id), { status: active ? 'active' : 'disabled' });
+      setClients((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, isActive: active } : c)),
+      );
+      toast.success(active ? 'Đã bật client' : 'Đã tắt client');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+      throw e;
+    }
+  };
+
   const handleBulkDelete = async (ids: string[]) => {
     const results = await Promise.allSettled(ids.map((id) => deleteClientKey(Number(id))));
     const deleted = results.filter((r) => r.status === 'fulfilled').length;
@@ -299,6 +313,7 @@ function AuthAdmin() {
               onConfigure={openConfig}
               onDelete={(id) => void handleDelete(id)}
               onBulkStatus={allowCreateKeys ? handleBulkStatus : undefined}
+              onStatusChange={allowCreateKeys ? handleToggleStatus : undefined}
               onBulkDelete={allowDeleteKeys ? handleBulkDelete : undefined}
               canDelete={allowDeleteKeys}
               canManage={allowCreateKeys}
@@ -314,7 +329,7 @@ function AuthAdmin() {
 
         {canViewTokens ? (
           <TabsContent value="apps" className="mt-0">
-            <OAuthThirdPartyAppsPanel canCreate={canManageApps} />
+            <OAuthThirdPartyAppsPanel canManage={canManageApps} />
           </TabsContent>
         ) : null}
       </Tabs>

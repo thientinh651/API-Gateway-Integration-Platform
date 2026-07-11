@@ -1,6 +1,7 @@
 import { Database } from 'lucide-react';
 import { Card } from '../../components/ui/card';
 import type { IntegrationSnapshotSummary } from '../../../lib/api';
+import { formatDbTimestamp } from '../../../lib/formatDbTimestamp';
 
 const ENTITY_LABELS: Record<string, string> = {
   opportunity: 'Opportunity',
@@ -53,7 +54,7 @@ export function IntegrationSnapshotsPanel({ snapshots }: Props) {
               <div className="text-right shrink-0">
                 <span className="text-white font-semibold">{s.record_count}</span>
                 <span className="text-muted-foreground"> bản ghi</span>
-                <p className="text-[10px] text-muted-foreground mt-0.5">{s.fetched_at}</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">{formatDbTimestamp(s.fetched_at)}</p>
               </div>
             </div>
           ))}

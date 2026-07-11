@@ -1212,68 +1212,43 @@ pub async fn client_key_traffic_stats(
         });
     }
 
-    let interval = format!("{hours} hours");
-    let total: i64 = sqlx::query_scalar(&format!(
-        "SELECT COUNT(*) FROM gateway_transaction_logs
-         WHERE tenant_id = $1 AND client_key_id = $2 AND created_at >= NOW() - INTERVAL '{}'",
-        interval
-    ))
+    let (total, success, denied, upstream_error, avg_duration_ms): (
+        i64,
+        i64,
+        i64,
+        i64,
+        Option<f64>,
+    ) = sqlx::query_as(
+        "SELECT
+            COUNT(*)::bigint AS total,
+            COUNT(*) FILTER (WHERE outcome = 'success')::bigint AS success,
+            COUNT(*) FILTER (WHERE outcome = 'denied')::bigint AS denied,
+            COUNT(*) FILTER (WHERE outcome = 'upstream_error')::bigint AS upstream_error,
+            AVG(duration_ms)::float8 AS avg_duration_ms
+         FROM gateway_transaction_logs
+         WHERE tenant_id = $1
+           AND client_key_id = $2
+           AND created_at >= NOW() - ($3::bigint * INTERVAL '1 hour')",
+    )
     .bind(tenant_id)
     .bind(client_key_id)
+    .bind(i64::from(hours))
     .fetch_one(pool)
     .await?;
 
-    let success: i64 = sqlx::query_scalar(&format!(
-        "SELECT COUNT(*) FROM gateway_transaction_logs
-         WHERE tenant_id = $1 AND client_key_id = $2 AND created_at >= NOW() - INTERVAL '{}'
-           AND outcome = 'success'",
-        interval
-    ))
+    let top_paths: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT COALESCE(NULLIF(path, ''), '(không rõ)') AS path, COUNT(*)::bigint AS cnt
+         FROM gateway_transaction_logs
+         WHERE tenant_id = $1
+           AND client_key_id = $2
+           AND created_at >= NOW() - ($3::bigint * INTERVAL '1 hour')
+         GROUP BY path
+         ORDER BY cnt DESC
+         LIMIT 5",
+    )
     .bind(tenant_id)
     .bind(client_key_id)
-    .fetch_one(pool)
-    .await?;
-
-    let denied: i64 = sqlx::query_scalar(&format!(
-        "SELECT COUNT(*) FROM gateway_transaction_logs
-         WHERE tenant_id = $1 AND client_key_id = $2 AND created_at >= NOW() - INTERVAL '{}'
-           AND outcome = 'denied'",
-        interval
-    ))
-    .bind(tenant_id)
-    .bind(client_key_id)
-    .fetch_one(pool)
-    .await?;
-
-    let upstream_error: i64 = sqlx::query_scalar(&format!(
-        "SELECT COUNT(*) FROM gateway_transaction_logs
-         WHERE tenant_id = $1 AND client_key_id = $2 AND created_at >= NOW() - INTERVAL '{}'
-           AND outcome = 'upstream_error'",
-        interval
-    ))
-    .bind(tenant_id)
-    .bind(client_key_id)
-    .fetch_one(pool)
-    .await?;
-
-    let avg_duration_ms: Option<f64> = sqlx::query_scalar(&format!(
-        "SELECT AVG(duration_ms)::float8 FROM gateway_transaction_logs
-         WHERE tenant_id = $1 AND client_key_id = $2 AND created_at >= NOW() - INTERVAL '{}'",
-        interval
-    ))
-    .bind(tenant_id)
-    .bind(client_key_id)
-    .fetch_optional(pool)
-    .await?;
-
-    let top_paths: Vec<(String, i64)> = sqlx::query_as(&format!(
-        "SELECT path, COUNT(*) AS cnt FROM gateway_transaction_logs
-         WHERE tenant_id = $1 AND client_key_id = $2 AND created_at >= NOW() - INTERVAL '{}'
-         GROUP BY path ORDER BY cnt DESC LIMIT 5",
-        interval
-    ))
-    .bind(tenant_id)
-    .bind(client_key_id)
+    .bind(i64::from(hours))
     .fetch_all(pool)
     .await?;
 
@@ -1743,15 +1718,17 @@ pub async fn set_client_key_routes(
         .bind(client_key_id)
         .execute(&mut *tx)
         .await?;
+    let valid_route_ids: std::collections::HashSet<i64> = sqlx::query_scalar(
+        "SELECT id FROM gateway_routes WHERE tenant_id = $1 AND id = ANY($2)",
+    )
+    .bind(tenant_id)
+    .bind(route_ids)
+    .fetch_all(&mut *tx)
+    .await?
+    .into_iter()
+    .collect();
     for rid in route_ids {
-        let ok: Option<i64> = sqlx::query_scalar(
-            "SELECT id FROM gateway_routes WHERE id = $1 AND tenant_id = $2 LIMIT 1",
-        )
-        .bind(rid)
-        .bind(tenant_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if ok.is_some() {
+        if valid_route_ids.contains(rid) {
             sqlx::query(
                 "INSERT INTO gateway_client_key_routes (client_key_id, route_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
             )
@@ -2200,6 +2177,39 @@ impl From<IntegrationRow> for IntegrationPublic {
     }
 }
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct IntegrationPublicRow {
+    id: i64,
+    provider: String,
+    status: String,
+    last_sync_at: Option<String>,
+    last_error: Option<String>,
+    updated_at: String,
+}
+
+impl From<IntegrationPublicRow> for IntegrationPublic {
+    fn from(r: IntegrationPublicRow) -> Self {
+        let label = match r.provider.as_str() {
+            "salesforce" => "Salesforce",
+            "zoho_projects" => "Zoho Projects",
+            "zoho_office" => "Zoho Office Integrator",
+            other => other,
+        }
+        .to_string();
+        Self {
+            id: r.id,
+            provider: r.provider,
+            status: r.status,
+            last_sync_at: r.last_sync_at,
+            last_error: r.last_error,
+            updated_at: r.updated_at,
+            label,
+            available: true,
+            is_demo: false,
+        }
+    }
+}
+
 pub async fn ensure_integration_row(
     pool: &PgPool,
     tenant_id: i64,
@@ -2231,8 +2241,8 @@ pub async fn list_integrations(
     pool: &PgPool,
     tenant_id: i64,
 ) -> Result<Vec<IntegrationPublic>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, IntegrationRow>(
-        "SELECT id, tenant_id, provider, status, config_encrypted, last_sync_at::text AS last_sync_at, last_error, updated_at::text AS updated_at
+    let rows = sqlx::query_as::<_, IntegrationPublicRow>(
+        "SELECT id, provider, status, last_sync_at::text AS last_sync_at, last_error, updated_at::text AS updated_at
          FROM integrations WHERE tenant_id = $1 ORDER BY provider",
     )
     .bind(tenant_id)
@@ -2384,7 +2394,7 @@ pub struct IntegrationSnapshotRow {
     pub fetched_at: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 pub struct IntegrationSnapshotSummary {
     pub provider: String,
     pub entity_type: String,
@@ -2448,42 +2458,36 @@ pub async fn list_integration_snapshot_summaries(
     tenant_id: i64,
     provider: Option<&str>,
 ) -> Result<Vec<IntegrationSnapshotSummary>, sqlx::Error> {
-    let rows = if let Some(p) = provider {
-        sqlx::query_as::<_, IntegrationSnapshotRow>(
-            "SELECT id, tenant_id, provider, entity_type, payload_json, record_count, fetched_at::text AS fetched_at
+    if let Some(p) = provider {
+        sqlx::query_as::<_, IntegrationSnapshotSummary>(
+            "SELECT DISTINCT ON (provider, entity_type)
+                provider,
+                entity_type,
+                record_count,
+                fetched_at::text AS fetched_at
              FROM integration_snapshots
              WHERE tenant_id = $1 AND provider = $2
-             ORDER BY fetched_at DESC, id DESC",
+             ORDER BY provider, entity_type, fetched_at DESC, id DESC",
         )
         .bind(tenant_id)
         .bind(p)
         .fetch_all(pool)
-        .await?
+        .await
     } else {
-        sqlx::query_as::<_, IntegrationSnapshotRow>(
-            "SELECT id, tenant_id, provider, entity_type, payload_json, record_count, fetched_at::text AS fetched_at
+        sqlx::query_as::<_, IntegrationSnapshotSummary>(
+            "SELECT DISTINCT ON (provider, entity_type)
+                provider,
+                entity_type,
+                record_count,
+                fetched_at::text AS fetched_at
              FROM integration_snapshots
              WHERE tenant_id = $1
-             ORDER BY fetched_at DESC, id DESC",
+             ORDER BY provider, entity_type, fetched_at DESC, id DESC",
         )
         .bind(tenant_id)
         .fetch_all(pool)
-        .await?
-    };
-    let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for r in rows {
-        let key = format!("{}:{}", r.provider, r.entity_type);
-        if seen.insert(key) {
-            out.push(IntegrationSnapshotSummary {
-                provider: r.provider,
-                entity_type: r.entity_type,
-                record_count: r.record_count,
-                fetched_at: r.fetched_at,
-            });
-        }
+        .await
     }
-    Ok(out)
 }
 
 pub async fn fetch_latest_integration_snapshot(
@@ -2757,9 +2761,9 @@ pub async fn list_integration_snapshots_recent(
     pool: &PgPool,
     tenant_id: i64,
     limit: i64,
-) -> Result<Vec<IntegrationSnapshotRow>, sqlx::Error> {
-    sqlx::query_as::<_, IntegrationSnapshotRow>(
-        "SELECT id, tenant_id, provider, entity_type, payload_json, record_count, fetched_at::text AS fetched_at
+) -> Result<Vec<IntegrationSnapshotSummary>, sqlx::Error> {
+    sqlx::query_as::<_, IntegrationSnapshotSummary>(
+        "SELECT provider, entity_type, record_count, fetched_at::text AS fetched_at
          FROM integration_snapshots
          WHERE tenant_id = $1
          ORDER BY fetched_at DESC, id DESC
@@ -2885,7 +2889,7 @@ pub async fn traffic_top_paths_24h(
     limit: i64,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
     sqlx::query_as(&format!(
-        "SELECT path, COUNT(*) AS cnt
+        "SELECT COALESCE(NULLIF(path, ''), '(không rõ)') AS path, COUNT(*) AS cnt
          FROM gateway_transaction_logs
          WHERE {}
          GROUP BY path
@@ -2982,6 +2986,21 @@ pub async fn insert_sync_log(
     .fetch_one(pool)
     .await?;
     Ok(row.0)
+}
+
+pub async fn latest_pipeline_sync_at(
+    pool: &PgPool,
+    tenant_id: i64,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT created_at::text FROM sync_logs
+         WHERE tenant_id = $1 AND event_type = 'pipeline_completed'
+         ORDER BY id DESC
+         LIMIT 1",
+    )
+    .bind(tenant_id)
+    .fetch_optional(pool)
+    .await
 }
 
 pub async fn list_sync_logs(

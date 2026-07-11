@@ -327,6 +327,28 @@ impl ProxyQueue {
             .unwrap_or(false)
     }
 
+    /// Method / path / failure_reason trước khi xóa — để audit log đọc được.
+    pub async fn fetch_discard_summaries(
+        &self,
+        tenant_id: i64,
+        ids: &[String],
+    ) -> Vec<(String, String, String)> {
+        if ids.is_empty() {
+            return Vec::new();
+        }
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT method, path, failure_reason FROM gateway_proxy_queue
+             WHERE tenant_id = $1 AND id = ANY($2)
+             ORDER BY created_at ASC",
+        )
+        .bind(tenant_id)
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+        rows
+    }
+
     pub async fn remove_many(&self, tenant_id: i64, ids: &[String]) -> u64 {
         if ids.is_empty() {
             return 0;

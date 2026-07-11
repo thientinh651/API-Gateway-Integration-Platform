@@ -1,10 +1,20 @@
-/** SQLite `datetime('now')` = UTC, dạng `YYYY-MM-DD HH:MM:SS` — hiển thị giờ máy user. */
+/** SQLite `datetime('now')` = UTC; PostgreSQL `::text` = `YYYY-MM-DD HH:MM:SS.µs+00`. */
 function parseDbTimestamp(value: string): Date | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
   // SQLite UTC without timezone suffix
   if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(trimmed)) {
     const d = new Date(`${trimmed.replace(' ', 'T')}Z`);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  // PostgreSQL timestamptz text: space separator, optional fractional seconds, +00 or +07:00
+  const pg = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d+)?)(Z|[+-]\d{2}(?::\d{2})?)?$/.exec(trimmed);
+  if (pg) {
+    const [, date, time, tzRaw] = pg;
+    let tz = tzRaw ?? 'Z';
+    if (/^[+-]\d{2}$/.test(tz)) tz = `${tz}:00`;
+    const iso = tz === 'Z' ? `${date}T${time}Z` : `${date}T${time}${tz}`;
+    const d = new Date(iso);
     return Number.isNaN(d.getTime()) ? null : d;
   }
   const d = new Date(trimmed);

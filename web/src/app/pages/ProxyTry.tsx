@@ -269,7 +269,14 @@ export function ProxyTry() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <form autoComplete="off" onSubmit={(e) => e.preventDefault()} data-form-type="other">
+              <form
+                autoComplete="off"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!busy) void run('with_token');
+                }}
+                data-form-type="other"
+              >
                 <PasswordManagerTrap />
                 {registryClients.length > 0 ? (
                   <div className="mb-3">
@@ -324,10 +331,9 @@ export function ProxyTry() {
 
                 <div className="flex flex-col gap-2 pt-4">
                   <Button
-                    type="button"
+                    type="submit"
                     disabled={busy}
                     className="w-full bg-primary hover:bg-primary/90 h-10"
-                    onClick={() => void run('with_token')}
                   >
                     <Send className="w-4 h-4 mr-2" />
                     {busy ? 'Đang gửi qua middleware…' : 'Gửi có Bearer JWT'}

@@ -29,6 +29,7 @@ import {
   DialogTitle,
 } from '../../components/ui/dialog';
 import { ConfirmDangerButton } from '../../components/forms/ConfirmDangerButton';
+import { EnterSubmitForm } from '../../components/forms/EnterSubmitForm';
 import { Checkbox } from '../../components/ui/checkbox';
 import type { ClientRegistryRow } from './clientRegistryTypes';
 import { authModeLabel } from './clientRegistryTypes';
@@ -78,9 +79,9 @@ export function ClientKeyConfigSheet({
     setTrafficError(null);
     void fetchClientKeyTraffic(Number(client.id))
       .then(setTraffic)
-      .catch((e) => {
+      .catch(() => {
         setTraffic(null);
-        setTrafficError(e instanceof Error ? e.message : 'Không tải được thống kê traffic');
+        setTrafficError('load_failed');
       })
       .finally(() => setTrafficLoading(false));
   }, [open, client]);
@@ -181,6 +182,11 @@ export function ClientKeyConfigSheet({
           <SheetTitle className="text-white">{name.trim() || client.name}</SheetTitle>
         </SheetHeader>
 
+        <EnterSubmitForm
+          className="flex flex-col min-h-0"
+          disabled={saving || !canManage}
+          onSubmit={() => void handleSave()}
+        >
         <div className="space-y-6 py-6">
           <section className="space-y-3">
             <div className="flex items-center gap-2 text-sm font-semibold text-white">
@@ -214,9 +220,6 @@ export function ClientKeyConfigSheet({
                 <span className="text-muted-foreground">Loại client</span>
                 <span className="text-slate-300">{integrationTypeLabel(client.integrationType)}</span>
               </div>
-              <p className="text-[11px] text-muted-foreground leading-relaxed">
-                Sửa được tên hiển thị. <strong>Client ID</strong>, phương thức auth và loại client giữ cố định sau khi tạo.
-              </p>
               <div className="flex justify-between gap-2">
                 <span className="text-muted-foreground">Lần gọi gần nhất</span>
                 <span className="text-slate-300">
@@ -274,11 +277,10 @@ export function ClientKeyConfigSheet({
             {trafficLoading ? (
               <p className="text-xs text-muted-foreground">Đang tải thống kê…</p>
             ) : trafficError ? (
-              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-300 space-y-2">
-                <p>Không tải được thống kê traffic 24h.</p>
-                <p className="text-amber-200/80 break-words">{trafficError}</p>
-              </div>
-            ) : traffic ? (
+              <p className="text-xs text-muted-foreground">
+                Không tải được thống kê. Thử đóng rồi mở lại, hoặc bấm &quot;Xem log&quot; bên trên.
+              </p>
+            ) : traffic && traffic.total > 0 ? (
               <div className="rounded-lg border border-border bg-slate-950/50 p-3 space-y-2 text-xs">
                 <div className="flex flex-wrap gap-3">
                   <span className="text-slate-300">
@@ -302,12 +304,12 @@ export function ClientKeyConfigSheet({
                       </li>
                     ))}
                   </ul>
-                ) : (
-                  <p className="text-muted-foreground">Chưa có traffic gắn client_key_id (log mới).</p>
-                )}
+                ) : null}
               </div>
             ) : (
-              <p className="text-xs text-muted-foreground">Chưa có dữ liệu traffic 24h.</p>
+              <p className="text-xs text-muted-foreground">
+                Chưa có request nào trong 24h qua cho client này.
+              </p>
             )}
           </section>
 
@@ -327,9 +329,6 @@ export function ClientKeyConfigSheet({
                 Client active — cho phép gọi data plane
               </label>
             </div>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              Tắt mục này là khóa toàn bộ client. Bật mục này chỉ cho phép client hoạt động, chưa quyết định client được gọi route nào.
-            </p>
             <div className="flex items-center gap-2.5 text-sm text-slate-300">
               <Checkbox
                 id="client-acl"
@@ -351,7 +350,7 @@ export function ClientKeyConfigSheet({
             </div>
             {!restrictRoutes ? (
               <p className="text-xs text-sky-300/80 leading-relaxed">
-                ACL rỗng — client gọi được <strong>mọi route</strong> trong tenant (mặc định an toàn cho demo).
+                ACL rỗng — client gọi được <strong>mọi route</strong>
               </p>
             ) : (
               <p className="text-xs text-muted-foreground leading-relaxed">
@@ -409,7 +408,7 @@ export function ClientKeyConfigSheet({
               Rate limiting
             </div>
             <div>
-              <Label className="text-xs text-muted-foreground">Giới hạn riêng (req/phút)</Label>
+              <Label className="text-xs text-muted-foreground">Giới hạn (req/phút)</Label>
               <Input
                 type="number"
                 min={0}
@@ -451,17 +450,18 @@ export function ClientKeyConfigSheet({
         {canManage ? (
           <div className="flex gap-2 pt-4 border-t border-border px-0">
             <Button
+              type="submit"
               className="flex-1 bg-primary hover:bg-primary/90"
               disabled={saving}
-              onClick={() => void handleSave()}
             >
               {saving ? 'Đang lưu…' : 'Lưu'}
             </Button>
-            <Button variant="outline" className="border-border" onClick={() => onOpenChange(false)}>
+            <Button type="button" variant="outline" className="border-border" onClick={() => onOpenChange(false)}>
               Hủy
             </Button>
           </div>
         ) : null}
+        </EnterSubmitForm>
       </SheetContent>
 
       <Dialog open={rotateDialogOpen} onOpenChange={setRotateDialogOpen}>

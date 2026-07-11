@@ -4045,61 +4045,221 @@ pub async fn create_zoho_task_from_canonical_contact(
     .map_err(|e| format!("serialize: {e}"))
 }
 
-/// Background worker: refresh tokens + full sync every N minutes (default 15).
-pub fn spawn_integration_sync_worker(pool: PgPool) {
-    let interval_mins: u64 = std::env::var("INTEGRATION_SYNC_INTERVAL_MINS")
+pub const INTEGRATION_SYNC_INTERVAL_SETTING: &str = "integration_sync_interval_mins";
+const SYNC_INTERVAL_POLL_SECS: u64 = 60;
+
+pub fn default_integration_sync_interval_mins() -> u64 {
+    std::env::var("INTEGRATION_SYNC_INTERVAL_MINS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(15);
-    if interval_mins == 0 {
-        tracing::info!("integration background sync disabled (INTEGRATION_SYNC_INTERVAL_MINS=0)");
-        return;
+        .unwrap_or(15)
+}
+
+pub fn integration_sync_interval_allowed(mins: u64) -> bool {
+    matches!(mins, 0 | 5 | 15 | 30 | 60)
+}
+
+pub async fn ensure_integration_sync_setting(pool: &PgPool) -> Result<(), sqlx::Error> {
+    if db::load_setting(pool, INTEGRATION_SYNC_INTERVAL_SETTING)
+        .await?
+        .is_none()
+    {
+        let default = default_integration_sync_interval_mins();
+        db::upsert_setting(pool, INTEGRATION_SYNC_INTERVAL_SETTING, &default.to_string()).await?;
     }
-    tokio::spawn(async move {
-        let period = Duration::from_secs(interval_mins * 60);
-        let mut ticker = tokio::time::interval(period);
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            let tenants = db::list_tenant_ids(&pool).await.unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "list tenants for sync worker failed");
-                vec![1]
-            });
-            for tenant_id in tenants {
-                let (sf_connected, zoho_connected, both_connected) =
-                    integration_connection_flags(&pool, tenant_id).await;
-                // Refresh token cho provider nào đang connected — không phụ thuộc
-                // provider kia. Trước đây chỉ refresh khi cả hai connected, nên
-                // token Zoho hết hạn (~1h) khi Salesforce chưa kết nối.
-                if sf_connected || zoho_connected {
-                    refresh_integration_tokens_if_needed(&pool, tenant_id).await;
-                }
-                if !both_connected {
-                    continue;
-                }
-                match run_full_sync_pipeline(&pool, tenant_id).await {
-                    Ok(summary) => {
-                        tracing::info!(
-                            tenant_id,
-                            push_created = summary
-                                .get("push")
-                                .and_then(|p| p.get("created"))
-                                .and_then(|v| v.as_i64())
-                                .unwrap_or(0),
-                            "background integration sync ok"
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(tenant_id, error = %e, "background integration sync failed");
-                    }
-                }
+    Ok(())
+}
+
+pub async fn resolve_integration_sync_interval_mins(pool: &PgPool) -> u64 {
+    match db::load_setting(pool, INTEGRATION_SYNC_INTERVAL_SETTING).await {
+        Ok(Some(v)) => v.parse().unwrap_or_else(|_| default_integration_sync_interval_mins()),
+        _ => default_integration_sync_interval_mins(),
+    }
+}
+
+pub async fn set_integration_sync_interval_mins(
+    pool: &PgPool,
+    mins: u64,
+) -> Result<(), String> {
+    if !integration_sync_interval_allowed(mins) {
+        return Err("interval_mins phải là 0, 5, 15, 30 hoặc 60".into());
+    }
+    db::upsert_setting(pool, INTEGRATION_SYNC_INTERVAL_SETTING, &mins.to_string())
+        .await
+        .map_err(|e| format!("db: {e}"))
+}
+
+fn last_auto_sync_setting_key(tenant_id: i64) -> String {
+    format!("integration_last_auto_sync_at:{tenant_id}")
+}
+
+async fn touch_last_auto_sync(pool: &PgPool, tenant_id: i64) {
+    let key = last_auto_sync_setting_key(tenant_id);
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Err(e) = db::upsert_setting(pool, &key, &now).await {
+        tracing::warn!(tenant_id, error = %e, "touch last auto sync failed");
+    }
+}
+
+async fn load_last_auto_sync_at(pool: &PgPool, tenant_id: i64) -> Option<String> {
+    let key = last_auto_sync_setting_key(tenant_id);
+    db::load_setting(pool, &key).await.ok().flatten()
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct IntegrationSyncSchedule {
+    pub enabled: bool,
+    pub interval_mins: u64,
+    pub allowed_intervals: Vec<u64>,
+    pub env_default_mins: u64,
+    pub sf_connected: bool,
+    pub zoho_connected: bool,
+    pub both_connected: bool,
+    pub last_pipeline_sync_at: Option<String>,
+    pub last_auto_sync_at: Option<String>,
+}
+
+pub async fn fetch_integration_sync_schedule(
+    pool: &PgPool,
+    tenant_id: i64,
+) -> IntegrationSyncSchedule {
+    let interval_mins = resolve_integration_sync_interval_mins(pool).await;
+    let (sf_connected, zoho_connected, both_connected) =
+        integration_connection_flags(pool, tenant_id).await;
+    let last_pipeline_sync_at = db::latest_pipeline_sync_at(pool, tenant_id)
+        .await
+        .ok()
+        .flatten();
+    let last_auto_sync_at = load_last_auto_sync_at(pool, tenant_id).await;
+    IntegrationSyncSchedule {
+        enabled: interval_mins > 0,
+        interval_mins,
+        allowed_intervals: vec![0, 5, 15, 30, 60],
+        env_default_mins: default_integration_sync_interval_mins(),
+        sf_connected,
+        zoho_connected,
+        both_connected,
+        last_pipeline_sync_at,
+        last_auto_sync_at,
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateIntegrationSyncScheduleBody {
+    pub interval_mins: u64,
+}
+
+pub async fn api_get_integration_sync_schedule(ctx: &AdminCtx) -> Response {
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "state not initialized",
+        );
+    };
+    let schedule = fetch_integration_sync_schedule(&st.pool, ctx.tenant_id).await;
+    (StatusCode::OK, axum::Json(schedule)).into_response()
+}
+
+pub async fn api_update_integration_sync_schedule(
+    ctx: &AdminCtx,
+    body: UpdateIntegrationSyncScheduleBody,
+) -> Response {
+    let Some(st) = STATE.get() else {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "state not initialized",
+        );
+    };
+    if !integration_sync_interval_allowed(body.interval_mins) {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_interval",
+            "interval_mins phải là 0, 5, 15, 30 hoặc 60",
+        );
+    }
+    if let Err(e) = set_integration_sync_interval_mins(&st.pool, body.interval_mins).await {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "save_failed", &e);
+    }
+    write_audit(
+        &st.pool,
+        ctx,
+        "integration.sync_schedule",
+        "gateway_settings",
+        "success",
+        None,
+        Some(&format!("interval_mins={}", body.interval_mins)),
+    )
+    .await;
+    let schedule = fetch_integration_sync_schedule(&st.pool, ctx.tenant_id).await;
+    (StatusCode::OK, axum::Json(schedule)).into_response()
+}
+
+async fn run_background_integration_sync(pool: &PgPool) {
+    let tenants = db::list_tenant_ids(pool).await.unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "list tenants for sync worker failed");
+        vec![1]
+    });
+    for tenant_id in tenants {
+        let (sf_connected, zoho_connected, both_connected) =
+            integration_connection_flags(pool, tenant_id).await;
+        if sf_connected || zoho_connected {
+            refresh_integration_tokens_if_needed(pool, tenant_id).await;
+        }
+        if !both_connected {
+            continue;
+        }
+        match run_full_sync_pipeline(pool, tenant_id).await {
+            Ok(summary) => {
+                touch_last_auto_sync(pool, tenant_id).await;
+                tracing::info!(
+                    tenant_id,
+                    push_created = summary
+                        .get("push")
+                        .and_then(|p| p.get("created"))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0),
+                    "background integration sync ok"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(tenant_id, error = %e, "background integration sync failed");
             }
         }
+    }
+}
+
+/// Background worker: refresh tokens + full sync every N minutes (configurable via gateway_settings).
+pub fn spawn_integration_sync_worker(pool: PgPool) {
+    tokio::spawn(async move {
+        let mut elapsed_since_sync = Duration::ZERO;
+        loop {
+            let interval_mins = resolve_integration_sync_interval_mins(&pool).await;
+            if interval_mins == 0 {
+                if elapsed_since_sync > Duration::ZERO {
+                    tracing::info!("integration background sync disabled (interval_mins=0)");
+                    elapsed_since_sync = Duration::ZERO;
+                }
+                tokio::time::sleep(Duration::from_secs(SYNC_INTERVAL_POLL_SECS)).await;
+                continue;
+            }
+            let period = Duration::from_secs(interval_mins * 60);
+            if elapsed_since_sync >= period {
+                run_background_integration_sync(&pool).await;
+                elapsed_since_sync = Duration::ZERO;
+            }
+            let sleep_for = if elapsed_since_sync.is_zero() {
+                period
+            } else {
+                period.saturating_sub(elapsed_since_sync)
+            };
+            let step = sleep_for.min(Duration::from_secs(SYNC_INTERVAL_POLL_SECS));
+            tokio::time::sleep(step).await;
+            elapsed_since_sync += step;
+        }
     });
-    tracing::info!(
-        interval_mins,
-        "integration background sync worker started"
-    );
+    tracing::info!("integration background sync worker started");
 }
 
 #[cfg(test)]

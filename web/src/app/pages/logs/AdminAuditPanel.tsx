@@ -11,10 +11,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../../components/ui/select';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from '../../components/ui/dialog';
 import { fetchAuditLogs, type AuditLogRow } from '../../../lib/api';
 import { toastApiError } from '../../../lib/apiClientError';
-import { toast } from 'sonner';
 import { formatDbTimestamp, formatDbTimestampForExport } from '../../../lib/formatDbTimestamp';
+import { formatAuditDetails, type AuditDetailRow } from '../../../lib/formatAuditDetails';
 
 function exportCsv(rows: AuditLogRow[]) {
   const header = ['created_at', 'actor', 'role', 'action', 'resource', 'result', 'source_ip', 'details'];
@@ -44,22 +51,53 @@ const GRID = 'grid w-full min-w-0 grid-cols-[26%_14%_24%_13%_13%] items-center';
 const CELL = 'px-4 sm:px-6 py-3 min-w-0';
 const HEAD = 'text-[10px] uppercase text-muted-foreground font-bold whitespace-nowrap bg-slate-950';
 
-const DETAIL_MAX = 60;
+type DetailDialogState = {
+  action: string;
+  summary: string;
+  rows: AuditDetailRow[];
+} | null;
 
-function DetailText({ text }: { text: string }) {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-  if (trimmed.length <= DETAIL_MAX) return <span className="break-words">{trimmed}</span>;
+function methodBadgeClass(method: string): string {
+  switch (method.toUpperCase()) {
+    case 'GET':
+      return 'bg-sky-500/15 text-sky-300 border-sky-500/30';
+    case 'POST':
+      return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30';
+    case 'PUT':
+    case 'PATCH':
+      return 'bg-amber-500/15 text-amber-300 border-amber-500/30';
+    case 'DELETE':
+      return 'bg-red-500/15 text-red-300 border-red-500/30';
+    default:
+      return 'bg-slate-500/15 text-slate-300 border-slate-500/30';
+  }
+}
+
+function DetailText({
+  text,
+  action,
+  onOpenFull,
+}: {
+  text: string;
+  action: string;
+  onOpenFull: (summary: string, rows: AuditDetailRow[]) => void;
+}) {
+  const formatted = formatAuditDetails(text, action);
+  if (!formatted) return null;
+  const canOpen = !formatted.hideIds && formatted.rows.length > 0;
+
   return (
     <span className="inline-flex flex-wrap items-center gap-x-1.5 min-w-0">
-      <span className="break-words">{trimmed.slice(0, DETAIL_MAX).trim()}…</span>
-      <button
-        type="button"
-        className="shrink-0 text-[10px] text-primary hover:underline"
-        onClick={() => toast.message('Chi tiết thao tác', { description: trimmed, duration: 10_000 })}
-      >
-        Xem đủ
-      </button>
+      <span className="break-words">{formatted.preview}</span>
+      {canOpen ? (
+        <button
+          type="button"
+          className="shrink-0 text-[10px] text-primary hover:underline"
+          onClick={() => onOpenFull(formatted.summary, formatted.rows)}
+        >
+          Xem chi tiết
+        </button>
+      ) : null}
     </span>
   );
 }
@@ -71,6 +109,7 @@ export function AdminAuditPanel() {
   const loadGenRef = useRef(0);
   const [searchTerm, setSearchTerm] = useState('');
   const [resultFilter, setResultFilter] = useState<'all' | 'success' | 'failure'>('all');
+  const [detailDialog, setDetailDialog] = useState<DetailDialogState>(null);
 
   const load = useCallback(async () => {
     const gen = ++loadGenRef.current;
@@ -96,105 +135,166 @@ export function AdminAuditPanel() {
   }, [load, searchTerm]);
 
   return (
-    <Card className="rounded-2xl bg-card/80 backdrop-blur-sm border-border p-0 min-w-0">
-      <div className="sticky top-0 z-30 isolate rounded-t-2xl bg-card shadow-[0_12px_28px_-14px_rgba(0,0,0,0.65)]">
-        <div className="p-4 sm:p-6 space-y-4 border-b border-border/80 bg-card/98 backdrop-blur-md">
-          <div className="flex flex-wrap gap-3">
-            <div className="relative flex-1 min-w-[200px]">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input
-                placeholder="Tìm user, action, resource, IP…"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10 bg-input border-border text-foreground"
-              />
-            </div>
-            <Select value={resultFilter} onValueChange={(v) => setResultFilter(v as typeof resultFilter)}>
-              <SelectTrigger className="w-[140px] bg-input border-border">
-                <SelectValue placeholder="Kết quả" />
-              </SelectTrigger>
-              <SelectContent className="bg-card border-border">
-                <SelectItem value="all">Mọi kết quả</SelectItem>
-                <SelectItem value="success">Thành công</SelectItem>
-                <SelectItem value="failure">Thất bại</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button variant="outline" className="border-border" onClick={() => void load()} disabled={refreshing}>
-              <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
-              Làm mới
-            </Button>
-            <Button variant="outline" className="border-border" onClick={() => exportCsv(rows)} disabled={rows.length === 0}>
-              <Download className="w-4 h-4 mr-2" />
-              Xuất CSV
-            </Button>
-          </div>
-        </div>
-
-        <div className={`${GRID} border-b border-slate-700/60 bg-slate-950`}>
-          <div className={`${CELL} ${HEAD}`}>Thao tác</div>
-          <div className={`${CELL} ${HEAD}`}>Thời gian</div>
-          <div className={`${CELL} ${HEAD} hidden sm:block`}>Người / Chi tiết</div>
-          <div className={`${CELL} ${HEAD} hidden sm:block`}>IP</div>
-          <div className={`${CELL} ${HEAD}`}>Kết quả</div>
-        </div>
-      </div>
-
-      <div className="relative text-sm min-h-[12rem]">
-        {refreshing && rows.length > 0 ? (
-          <div className="absolute inset-0 z-10 flex items-start justify-center pt-20 pointer-events-none bg-slate-950/25" aria-hidden>
-            <RefreshCw className="w-5 h-5 animate-spin text-primary/80" />
-          </div>
-        ) : null}
-        {initialLoading && rows.length === 0 ? (
-          <p className="px-6 py-10 text-center text-muted-foreground">Đang tải…</p>
-        ) : rows.length === 0 ? (
-          <p className="px-6 py-10 text-center text-muted-foreground">Chưa có log quản trị.</p>
-        ) : (
-          <div className={refreshing ? 'opacity-60 transition-opacity duration-150' : 'transition-opacity duration-150'}>
-            {rows.map((log) => (
-              <div key={log.id} className={`${GRID} border-b border-border/50 hover:bg-primary/5`}>
-                <div className={CELL}>
-                  <p className="font-mono text-xs text-primary break-words">{log.action}</p>
-                  <p className="text-xs text-slate-400 truncate max-w-[16rem]">{log.resource}</p>
-                </div>
-                <div className={`${CELL} text-slate-400 font-mono text-xs whitespace-nowrap`}>
-                  {formatDbTimestamp(log.created_at)}
-                </div>
-                <div className={`${CELL} hidden sm:block text-xs text-slate-400 min-w-0`}>
-                  <p className="break-words">
-                    {log.actor}
-                    <span className="text-muted-foreground"> · {log.role}</span>
-                  </p>
-                  {log.details ? (
-                    <p className="mt-0.5 text-slate-500">
-                      <DetailText text={log.details} />
-                    </p>
-                  ) : null}
-                </div>
-                <div className={`${CELL} hidden sm:block font-mono text-xs text-slate-500 whitespace-nowrap`}>
-                  {log.source_ip ?? '—'}
-                </div>
-                <div className={CELL}>
-                  <Badge
-                    className={
-                      log.result === 'success'
-                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                        : 'bg-red-500/10 text-red-400 border-red-500/20'
-                    }
-                  >
-                    {log.result === 'success' ? (
-                      <CheckCircle2 className="w-3 h-3 mr-1" />
-                    ) : (
-                      <XCircle className="w-3 h-3 mr-1" />
-                    )}
-                    {log.result}
-                  </Badge>
-                </div>
+    <>
+      <Card className="rounded-2xl bg-card/80 backdrop-blur-sm border-border p-0 min-w-0">
+        <div className="sticky top-0 z-30 isolate rounded-t-2xl bg-card shadow-[0_12px_28px_-14px_rgba(0,0,0,0.65)]">
+          <div className="p-4 sm:p-6 space-y-4 border-b border-border/80 bg-card/98 backdrop-blur-md">
+            <div className="flex flex-wrap gap-3">
+              <div className="relative flex-1 min-w-[200px]">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Input
+                  placeholder="Tìm user, action, resource, IP…"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-10 bg-input border-border text-foreground"
+                />
               </div>
-            ))}
+              <Select value={resultFilter} onValueChange={(v) => setResultFilter(v as typeof resultFilter)}>
+                <SelectTrigger className="w-[140px] bg-input border-border">
+                  <SelectValue placeholder="Kết quả" />
+                </SelectTrigger>
+                <SelectContent className="bg-card border-border">
+                  <SelectItem value="all">Mọi kết quả</SelectItem>
+                  <SelectItem value="success">Thành công</SelectItem>
+                  <SelectItem value="failure">Thất bại</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button variant="outline" className="border-border" onClick={() => void load()} disabled={refreshing}>
+                <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
+                Làm mới
+              </Button>
+              <Button variant="outline" className="border-border" onClick={() => exportCsv(rows)} disabled={rows.length === 0}>
+                <Download className="w-4 h-4 mr-2" />
+                Xuất CSV
+              </Button>
+            </div>
           </div>
-        )}
-      </div>
-    </Card>
+
+          <div className={`${GRID} border-b border-slate-700/60 bg-slate-950`}>
+            <div className={`${CELL} ${HEAD}`}>Thao tác</div>
+            <div className={`${CELL} ${HEAD}`}>Thời gian</div>
+            <div className={`${CELL} ${HEAD} hidden sm:block`}>Chi tiết</div>
+            <div className={`${CELL} ${HEAD} hidden sm:block`}>IP</div>
+            <div className={`${CELL} ${HEAD}`}>Kết quả</div>
+          </div>
+        </div>
+
+        <div className="relative text-sm min-h-[12rem]">
+          {refreshing && rows.length > 0 ? (
+            <div className="absolute inset-0 z-10 flex items-start justify-center pt-20 pointer-events-none bg-slate-950/25" aria-hidden>
+              <RefreshCw className="w-5 h-5 animate-spin text-primary/80" />
+            </div>
+          ) : null}
+          {initialLoading && rows.length === 0 ? (
+            <p className="px-6 py-10 text-center text-muted-foreground">Đang tải…</p>
+          ) : rows.length === 0 ? (
+            <p className="px-6 py-10 text-center text-muted-foreground">Chưa có log quản trị.</p>
+          ) : (
+            <div className={refreshing ? 'opacity-60 transition-opacity duration-150' : 'transition-opacity duration-150'}>
+              {rows.map((log) => (
+                <div key={log.id} className={`${GRID} border-b border-border/50 hover:bg-primary/5`}>
+                  <div className={CELL}>
+                    <p className="font-mono text-xs text-primary break-words">{log.action}</p>
+                    <p className="text-xs text-slate-400 truncate max-w-[16rem]">{log.resource}</p>
+                  </div>
+                  <div className={`${CELL} text-slate-400 font-mono text-xs whitespace-nowrap`}>
+                    {formatDbTimestamp(log.created_at)}
+                  </div>
+                  <div className={`${CELL} hidden sm:block text-xs text-slate-400 min-w-0`}>
+                    <p className="break-words">
+                      {log.actor}
+                      <span className="text-muted-foreground"> · {log.role}</span>
+                    </p>
+                    {log.details ? (
+                      <p className="mt-0.5 text-slate-500">
+                        <DetailText
+                          text={log.details}
+                          action={log.action}
+                          onOpenFull={(summary, detailRows) =>
+                            setDetailDialog({ action: log.action, summary, rows: detailRows })
+                          }
+                        />
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className={`${CELL} hidden sm:block font-mono text-xs text-slate-500 whitespace-nowrap`}>
+                    {log.source_ip ?? '—'}
+                  </div>
+                  <div className={CELL}>
+                    <Badge
+                      className={
+                        log.result === 'success'
+                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                          : 'bg-red-500/10 text-red-400 border-red-500/20'
+                      }
+                    >
+                      {log.result === 'success' ? (
+                        <CheckCircle2 className="w-3 h-3 mr-1" />
+                      ) : (
+                        <XCircle className="w-3 h-3 mr-1" />
+                      )}
+                      {log.result}
+                    </Badge>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </Card>
+
+      <Dialog open={detailDialog != null} onOpenChange={(open) => !open && setDetailDialog(null)}>
+        <DialogContent className="bg-card border-border sm:max-w-xl max-h-[85vh] overflow-hidden flex flex-col gap-0 p-0">
+          <DialogHeader className="px-5 pt-5 pb-3 border-b border-border/60 space-y-2">
+            <DialogTitle className="text-white text-lg">Chi tiết thao tác</DialogTitle>
+            {detailDialog ? (
+              <DialogDescription asChild>
+                <div className="space-y-1.5 text-left">
+                  <p className="font-mono text-[11px] text-primary tracking-wide">{detailDialog.action}</p>
+                  <p className="text-sm text-slate-200 font-medium">{detailDialog.summary}</p>
+                </div>
+              </DialogDescription>
+            ) : null}
+          </DialogHeader>
+
+          {detailDialog ? (
+            <div className="px-5 py-4 overflow-y-auto space-y-2 flex-1 min-h-0">
+              {detailDialog.rows.map((row, idx) => (
+                <div
+                  key={`${idx}-${row.path ?? row.text.slice(0, 20)}`}
+                  className="rounded-xl border border-border/70 bg-slate-950/55 px-3.5 py-3"
+                >
+                  {row.method && row.path ? (
+                    <div className="space-y-1.5 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-bold font-mono ${methodBadgeClass(row.method)}`}
+                        >
+                          {row.method}
+                        </span>
+                        <span className="text-sm text-slate-100 font-mono break-all">{row.path}</span>
+                      </div>
+                      {row.reason ? (
+                        <p className="text-xs text-slate-400">
+                          Lý do fail: <span className="text-amber-200/90 font-mono">{row.reason}</span>
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-300 break-words whitespace-pre-wrap">{row.text}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="px-5 py-4 border-t border-border/60">
+            <Button type="button" className="w-full" onClick={() => setDetailDialog(null)}>
+              Đóng
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

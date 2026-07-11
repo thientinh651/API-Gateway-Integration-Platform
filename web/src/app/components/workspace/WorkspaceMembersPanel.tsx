@@ -23,6 +23,7 @@ import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Card } from '../ui/card';
 import { ConfirmDangerButton } from '../forms/ConfirmDangerButton';
+import { EnterSubmitForm } from '../forms/EnterSubmitForm';
 import { FieldError } from '../forms/FieldError';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
@@ -150,7 +151,11 @@ export function WorkspaceMembersPanel() {
               <UserPlus className="w-4 h-4 text-primary" />
               Mời vào workspace
             </h4>
-            <div className="grid sm:grid-cols-[1fr_auto_auto] gap-3 items-end">
+            <EnterSubmitForm
+              className="grid sm:grid-cols-[1fr_auto_auto] gap-3 items-end"
+              disabled={inviting}
+              onSubmit={() => void onInvite()}
+            >
               <div>
                 <Label className="text-foreground">Username (đã đăng ký)</Label>
                 <Input
@@ -183,15 +188,14 @@ export function WorkspaceMembersPanel() {
                 </Select>
               </div>
               <Button
-                type="button"
+                type="submit"
                 className="bg-primary hover:bg-primary/90"
                 disabled={inviting}
-                onClick={() => void onInvite()}
               >
                 <Plus className="w-4 h-4 mr-1" />
                 {inviting ? 'Đang mời…' : 'Mời'}
               </Button>
-            </div>
+            </EnterSubmitForm>
             <p className="text-[11px] text-muted-foreground mt-2">
               User phải có tài khoản trước khi được mời. Mời Admin chỉ khi bạn là chủ workspace.
             </p>

@@ -2,6 +2,7 @@ import { ScrollText } from 'lucide-react';
 import { Badge } from '../../components/ui/badge';
 import { Card } from '../../components/ui/card';
 import type { SyncLogRow } from '../../../lib/api';
+import { formatDbTimestamp } from '../../../lib/formatDbTimestamp';
 
 function logBadgeClass(status: string) {
   switch (status) {
@@ -56,7 +57,7 @@ export function IntegrationSyncLogsPanel({ logs, emptyHint }: Props) {
                     trace {log.correlation_id.slice(0, 8)}
                   </span>
                 ) : null}
-                <span className="text-muted-foreground">{log.created_at}</span>
+                <span className="text-muted-foreground">{formatDbTimestamp(log.created_at)}</span>
               </div>
               <p className="text-slate-200 leading-relaxed">{log.message}</p>
               {log.error_detail ? (

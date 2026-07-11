@@ -2,6 +2,7 @@ import { CheckCircle2, Circle } from 'lucide-react';
 import { Badge } from '../../components/ui/badge';
 import { Card } from '../../components/ui/card';
 import type { IntegrationRow } from '../../../lib/api';
+import { formatDbTimestamp } from '../../../lib/formatDbTimestamp';
 
 type Props = {
   sf?: IntegrationRow;
@@ -45,7 +46,9 @@ function ConnectorPill({
           ) : null}
         </div>
         {connected && lastSync ? (
-          <p className="text-[11px] text-muted-foreground mt-0.5 truncate">Sync: {lastSync}</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
+            Sync: {formatDbTimestamp(lastSync)}
+          </p>
         ) : null}
       </div>
     </div>

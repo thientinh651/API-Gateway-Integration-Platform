@@ -32,6 +32,14 @@ describe('formatDbTimestamp', () => {
     expect(formatDbTimestamp(iso)).toContain('2026');
   });
 
+  it('parses PostgreSQL timestamptz text with microseconds', () => {
+    const pg = '2026-07-10 04:35:17.367968+00';
+    const out = formatDbTimestamp(pg);
+    expect(out).toContain('2026');
+    expect(out).not.toContain('367968');
+    expect(out).not.toBe(pg);
+  });
+
   it('returns raw string when unparseable', () => {
     expect(formatDbTimestamp('not-a-date')).toBe('not-a-date');
   });

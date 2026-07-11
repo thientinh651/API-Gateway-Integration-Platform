@@ -18,6 +18,7 @@ import {
   fieldInputErrorClass,
 } from '../../../lib/formValidation';
 import { FieldError } from '../../components/forms/FieldError';
+import { EnterSubmitForm } from '../../components/forms/EnterSubmitForm';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -208,7 +209,11 @@ export function CreateApiKeyDialog({
         </DialogHeader>
 
         {!created ? (
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-5 pb-6 space-y-5">
+          <EnterSubmitForm
+            className="min-h-0 flex-1 overflow-y-auto px-6 pt-5 pb-6 space-y-5"
+            disabled={pending}
+            onSubmit={() => void handleCreate()}
+          >
             {fieldErrors._form ? (
               <p className="text-sm text-red-400 border border-red-500/30 rounded-lg bg-red-500/10 px-3 py-2">
                 {fieldErrors._form}
@@ -353,13 +358,13 @@ export function CreateApiKeyDialog({
             </Collapsible>
 
             <Button
-              onClick={() => void handleCreate()}
+              type="submit"
               className="w-full bg-primary hover:bg-primary/90"
               disabled={pending}
             >
               {pending ? 'Đang đăng ký…' : 'Đăng ký client'}
             </Button>
-          </div>
+          </EnterSubmitForm>
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-5 pb-6 space-y-4">
             <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 flex gap-2">

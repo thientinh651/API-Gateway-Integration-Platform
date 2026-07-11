@@ -43,6 +43,7 @@ import {
   isValidEmail,
 } from '../../lib/formValidation';
 import { FieldError } from '../components/forms/FieldError';
+import { EnterSubmitForm } from '../components/forms/EnterSubmitForm';
 
 function uiRoleFromApi(role: string): 'Admin' | 'Operator' | 'Viewer' {
   const r = role.toLowerCase();
@@ -255,7 +256,11 @@ function UsersAdmin() {
                 {editingUser ? 'Chỉnh sửa thành viên' : 'Thêm thành viên tổ chức'}
               </DialogTitle>
             </DialogHeader>
-            <div className="space-y-4 mt-4">
+            <EnterSubmitForm
+              className="space-y-4 mt-4"
+              disabled={!formData.username || (!editingUser && formData.password.length < 6)}
+              onSubmit={() => void (editingUser ? handleUpdate() : handleCreate())}
+            >
               <div>
                 <Label className="text-foreground">Username</Label>
                 <Input
@@ -326,13 +331,13 @@ function UsersAdmin() {
                 <FieldError message={fieldErrors.role} />
               </div>
               <Button
-                onClick={() => void (editingUser ? handleUpdate() : handleCreate())}
+                type="submit"
                 className="w-full bg-primary hover:bg-primary/90"
                 disabled={!formData.username || (!editingUser && formData.password.length < 6)}
               >
                 {editingUser ? 'Cập nhật' : 'Tạo'}
               </Button>
-            </div>
+            </EnterSubmitForm>
           </DialogContent>
         </Dialog>
       </div>

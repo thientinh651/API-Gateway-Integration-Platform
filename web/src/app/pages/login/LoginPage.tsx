@@ -5,15 +5,19 @@ import { toast } from 'sonner';
 import { TechPanel } from '../../components/tech/TechPanel';
 import { LoginForm } from './LoginForm';
 import { useAdminAuth } from '../../../contexts/AdminAuthContext';
+import { goAfterLogin } from '../../../lib/safeReturnTo';
 
 export function LoginPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { user, loading } = useAdminAuth();
+  const returnTo = searchParams.get('return_to');
 
   useEffect(() => {
-    if (!loading && user) navigate('/', { replace: true });
-  }, [loading, user, navigate]);
+    if (!loading && user) {
+      goAfterLogin(returnTo, (to, opts) => navigate(to, opts));
+    }
+  }, [loading, user, navigate, returnTo]);
 
   useEffect(() => {
     if (searchParams.get('expired') === '1') {
@@ -41,6 +45,11 @@ export function LoginPage() {
 
       <TechPanel className="relative z-[1] w-full max-w-md p-6 sm:p-8">
         <h1 className="text-2xl font-bold text-white mb-1">Đăng nhập</h1>
+        {returnTo?.startsWith('/oauth/') ? (
+          <p className="text-sm text-muted-foreground mb-4">
+            Đăng nhập để tiếp tục kết nối app bên thứ 3 (OAuth).
+          </p>
+        ) : null}
         <LoginForm />
         <p className="mt-6 text-center text-xs text-muted-foreground font-mono-tech">
           <Link to="/" className="text-primary hover:underline">

@@ -10,6 +10,7 @@ import {
   CollapsibleTrigger,
 } from '../../components/ui/collapsible';
 import type { IntegrationRow } from '../../../lib/api';
+import { formatDbTimestamp } from '../../../lib/formatDbTimestamp';
 
 export type ProviderKind = 'salesforce' | 'zoho_projects';
 
@@ -69,7 +70,9 @@ export function IntegrationConnectorCard({
               ) : null}
             </div>
             {row.last_sync_at ? (
-              <p className="text-xs text-muted-foreground mt-1">Sync gần nhất: {row.last_sync_at}</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Sync gần nhất: {formatDbTimestamp(row.last_sync_at)}
+              </p>
             ) : (
               <p className="text-xs text-muted-foreground mt-1">OAuth qua gateway proxy</p>
             )}

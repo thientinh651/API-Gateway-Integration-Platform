@@ -18,6 +18,7 @@ import {
   zohoTasks,
   fetchIntegrationSnapshots,
   fetchIntegrationPipelineStatus,
+  fetchIntegrationSyncSchedule,
   fetchSyncLogs,
   fetchEntityLinks,
   integrationSyncNow,
@@ -29,6 +30,7 @@ import {
   type IntegrationRow,
   type IntegrationSnapshotSummary,
   type IntegrationPipelineStatus,
+  type IntegrationSyncSchedule,
   type EntityLinkRow,
   type SyncLogRow,
 } from '../../lib/api';
@@ -48,6 +50,8 @@ import {
   type ProviderKind,
 } from './integrations/IntegrationConnectorCard';
 import { IntegrationPipelinePanel } from './integrations/IntegrationPipelinePanel';
+import { IntegrationAutoSyncPanel } from './integrations/IntegrationAutoSyncPanel';
+import { EnterSubmitForm } from '../components/forms/EnterSubmitForm';
 import { IntegrationStatusStrip } from './integrations/IntegrationStatusStrip';
 import { IntegrationEntityLinksPanel } from './integrations/IntegrationEntityLinksPanel';
 import { IntegrationSyncLogsPanel } from './integrations/IntegrationSyncLogsPanel';
@@ -137,6 +141,7 @@ function IntegrationsAdmin() {
   const [syncLogs, setSyncLogs] = useState<SyncLogRow[]>([]);
   const [entityLinks, setEntityLinks] = useState<EntityLinkRow[]>([]);
   const [pipelineStatus, setPipelineStatus] = useState<IntegrationPipelineStatus | null>(null);
+  const [syncSchedule, setSyncSchedule] = useState<IntegrationSyncSchedule | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [cfgLoading, setCfgLoading] = useState<Partial<Record<ProviderKind, boolean>>>({});
   const [connecting, setConnecting] = useState<Partial<Record<ProviderKind, boolean>>>({});
@@ -167,16 +172,18 @@ function IntegrationsAdmin() {
       const list = await fetchIntegrations();
       setRows(list);
       if (isAdmin) {
-        const [snaps, logs, pipeline, links] = await Promise.all([
+        const [snaps, logs, pipeline, links, schedule] = await Promise.all([
           fetchIntegrationSnapshots(),
           fetchSyncLogs().catch(() => [] as SyncLogRow[]),
           fetchIntegrationPipelineStatus().catch(() => null),
           fetchEntityLinks().catch(() => [] as EntityLinkRow[]),
+          fetchIntegrationSyncSchedule().catch(() => null),
         ]);
         setSnapshots(snaps);
         setSyncLogs(logs);
         setPipelineStatus(pipeline);
         setEntityLinks(links);
+        setSyncSchedule(schedule);
       }
     } catch (e) {
       toastApiError(e);
@@ -675,19 +682,23 @@ function IntegrationsAdmin() {
         </div>
 
         {isAdmin ? (
-          <>
+          <EnterSubmitForm
+            className="space-y-0"
+            disabled={connecting[kind]}
+            onSubmit={() => void handleConnect(kind)}
+          >
             {kind === 'salesforce' ? renderSfConfigForm() : renderZohoConfigForm()}
             <div className="mt-6 pt-4 border-t border-dashed border-border">
               <Button
+                type="submit"
                 className="w-full sm:w-auto bg-primary hover:bg-primary/90"
                 disabled={connecting[kind]}
-                onClick={() => void handleConnect(kind)}
               >
                 <Plug className="w-4 h-4 mr-2" />
                 {connecting[kind] ? 'Đang chuyển OAuth…' : `Kết nối ${meta.label}`}
               </Button>
             </div>
-          </>
+          </EnterSubmitForm>
         ) : (
           <p className="text-sm text-muted-foreground">Chỉ admin cấu hình và kết nối.</p>
         )}
@@ -755,6 +766,15 @@ function IntegrationsAdmin() {
       ) : (
         <div className="space-y-8">
           <IntegrationStatusStrip sf={sf} zoho={zoho} />
+
+          {isAdmin && syncSchedule ? (
+            <section className="space-y-3">
+              <IntegrationAutoSyncPanel
+                schedule={syncSchedule}
+                onUpdated={setSyncSchedule}
+              />
+            </section>
+          ) : null}
 
           {showPipeline ? (
             <section className="space-y-3">
