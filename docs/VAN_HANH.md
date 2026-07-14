@@ -32,7 +32,7 @@ sudo systemctl enable --now avaso-gateway
 | 4 | **Đồng bộ snapshot** SF + Zoho |
 | 5 | **Sync Now** hoặc chờ worker tự động (mặc định 15 phút) |
 
-Worker nền: chu kỳ lưu `gateway_settings.integration_sync_interval_mins` — chỉnh trên trang **Tích hợp → Tự động đồng bộ** (0/5/15/30/60 phút). Lần đầu chưa có DB dùng env `INTEGRATION_SYNC_INTERVAL_MINS` (mặc định 15). Log:
+Worker nền: lịch lưu `gateway_settings.integration_sync_interval_mins` — chỉnh trên trang **Tích hợp → Tự động đồng bộ** (`off` / mỗi N phút / mỗi ngày lúc HH:MM UTC+7). Lần đầu chưa có DB dùng env `INTEGRATION_SYNC_INTERVAL_MINS` (mặc định 15). Log:
 
 ```bash
 journalctl -u avaso-gateway -f | grep -i integration

@@ -1,13 +1,34 @@
 //! Dashboard aggregation: integrations, snapshots, audit.
 
-use axum::{http::StatusCode, response::{IntoResponse, Response}, Json};
-use serde::Serialize;
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 use crate::admin_auth::AdminCtx;
 use crate::db;
 use crate::integrations;
 use crate::{json_error, STATE};
+
+#[derive(Debug, Deserialize)]
+pub struct DashboardStatsQuery {
+    /// Window length: 1 | 24 | 72 | 168 (default 24).
+    pub hours: Option<i32>,
+}
+
+const ALLOWED_WINDOWS: [i32; 4] = [1, 24, 72, 168];
+
+pub fn normalize_dashboard_hours(raw: Option<i32>) -> i32 {
+    let h = raw.unwrap_or(24);
+    if ALLOWED_WINDOWS.contains(&h) {
+        h
+    } else {
+        24
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct LabelCount {
@@ -33,14 +54,14 @@ pub struct SnapshotTimelinePoint {
 }
 
 #[derive(Debug, Serialize)]
-pub struct Audit24h {
+pub struct AuditWindow {
     pub total: i64,
     pub success: i64,
     pub failure: i64,
 }
 
 #[derive(Debug, Serialize)]
-pub struct Traffic24h {
+pub struct TrafficWindow {
     pub total: i64,
     pub success: i64,
     pub denied: i64,
@@ -65,17 +86,20 @@ pub struct ClientTrafficTopPublic {
 
 #[derive(Debug, Serialize)]
 pub struct DashboardStats {
+    /// Selected window in hours (1 / 24 / 72 / 168).
+    pub window_hours: i32,
     pub routes_count: i64,
     pub client_keys_count: i64,
     pub client_registry: ClientRegistryStats,
-    pub traffic_24h: Traffic24h,
+    /// Kept as `traffic_24h` for API compatibility — counts match `window_hours`.
+    pub traffic_24h: TrafficWindow,
     pub traffic_status_buckets: Vec<LabelCount>,
     pub traffic_hourly: Vec<LabelCount>,
     pub traffic_top_paths: Vec<LabelCount>,
     pub traffic_methods: Vec<LabelCount>,
     pub traffic_denial_reasons: Vec<LabelCount>,
     pub client_traffic_top: Vec<ClientTrafficTopPublic>,
-    pub audit_24h: Audit24h,
+    pub audit_24h: AuditWindow,
     pub audit_top_actions: Vec<LabelCount>,
     pub audit_hourly: Vec<LabelCount>,
     pub integrations: Vec<db::IntegrationPublic>,
@@ -121,17 +145,19 @@ pub async fn build_dashboard_stats(
     pool: &PgPool,
     tenant_id: i64,
     include_integrations: bool,
+    hours: i32,
 ) -> Result<DashboardStats, sqlx::Error> {
+    let hours = normalize_dashboard_hours(Some(hours));
     let routes = db::list_routes_for_tenant(pool, tenant_id).await?;
     let client_keys_count = db::count_client_keys_for_tenant(pool, tenant_id).await?;
     let (client_active, client_disabled) = db::count_client_keys_by_status(pool, tenant_id).await?;
-    let denial_rows = db::traffic_denial_reasons_24h(pool, tenant_id, 8).await?;
+    let denial_rows = db::traffic_denial_reasons(pool, tenant_id, hours, 8).await?;
     let traffic_denial_reasons: Vec<LabelCount> = denial_rows
         .into_iter()
         .map(|(label, count)| LabelCount { label, count })
         .collect();
     let client_traffic_top: Vec<ClientTrafficTopPublic> =
-        db::client_traffic_top_24h(pool, tenant_id, 8)
+        db::client_traffic_top(pool, tenant_id, hours, 8)
             .await?
             .into_iter()
             .map(|r| ClientTrafficTopPublic {
@@ -140,43 +166,37 @@ pub async fn build_dashboard_stats(
                 total: r.total,
             })
             .collect();
-    let audit_24h = db::audit_counts_24h(pool, tenant_id).await?;
-    let traffic_counts = db::traffic_outcome_counts_24h(pool, tenant_id).await?;
-    let traffic_status_rows = db::traffic_status_buckets_24h(pool, tenant_id).await?;
+    let audit_counts = db::audit_counts(pool, tenant_id, hours).await?;
+    let traffic_counts = db::traffic_outcome_counts(pool, tenant_id, hours).await?;
+    let traffic_status_rows = db::traffic_status_buckets(pool, tenant_id, hours).await?;
     let traffic_status_buckets: Vec<LabelCount> = traffic_status_rows
         .into_iter()
         .map(|(label, count)| LabelCount { label, count })
         .collect();
-    let traffic_hourly_rows = db::traffic_hourly_24h(pool, tenant_id).await?;
+    let traffic_hourly_rows = db::traffic_series(pool, tenant_id, hours).await?;
     let traffic_hourly: Vec<LabelCount> = traffic_hourly_rows
         .into_iter()
-        .map(|(label, count)| LabelCount {
-            label: format!("{label}"),
-            count,
-        })
+        .map(|(label, count)| LabelCount { label, count })
         .collect();
-    let traffic_path_rows = db::traffic_top_paths_24h(pool, tenant_id, 8).await?;
+    let traffic_path_rows = db::traffic_top_paths(pool, tenant_id, hours, 8).await?;
     let traffic_top_paths: Vec<LabelCount> = traffic_path_rows
         .into_iter()
         .map(|(label, count)| LabelCount { label, count })
         .collect();
-    let traffic_method_rows = db::traffic_method_counts_24h(pool, tenant_id).await?;
+    let traffic_method_rows = db::traffic_method_counts(pool, tenant_id, hours).await?;
     let traffic_methods: Vec<LabelCount> = traffic_method_rows
         .into_iter()
         .map(|(label, count)| LabelCount { label, count })
         .collect();
-    let audit_action_rows = db::audit_top_actions_24h(pool, tenant_id, 8).await?;
+    let audit_action_rows = db::audit_top_actions(pool, tenant_id, hours, 8).await?;
     let audit_top_actions: Vec<LabelCount> = audit_action_rows
         .into_iter()
         .map(|(label, count)| LabelCount { label, count })
         .collect();
-    let audit_hourly_rows = db::audit_hourly_24h(pool, tenant_id).await?;
+    let audit_hourly_rows = db::audit_series(pool, tenant_id, hours).await?;
     let audit_hourly: Vec<LabelCount> = audit_hourly_rows
         .into_iter()
-        .map(|(label, count)| LabelCount {
-            label: format!("{label}"),
-            count,
-        })
+        .map(|(label, count)| LabelCount { label, count })
         .collect();
     let (
         integrations,
@@ -267,6 +287,7 @@ pub async fn build_dashboard_stats(
     };
 
     Ok(DashboardStats {
+        window_hours: hours,
         routes_count: routes.len() as i64,
         client_keys_count,
         client_registry: ClientRegistryStats {
@@ -274,7 +295,7 @@ pub async fn build_dashboard_stats(
             active: client_active,
             disabled: client_disabled,
         },
-        traffic_24h: Traffic24h {
+        traffic_24h: TrafficWindow {
             total: traffic_counts.0,
             success: traffic_counts.1,
             denied: traffic_counts.2,
@@ -288,10 +309,10 @@ pub async fn build_dashboard_stats(
         traffic_methods,
         traffic_denial_reasons,
         client_traffic_top,
-        audit_24h: Audit24h {
-            total: audit_24h.0,
-            success: audit_24h.1,
-            failure: audit_24h.2,
+        audit_24h: AuditWindow {
+            total: audit_counts.0,
+            success: audit_counts.1,
+            failure: audit_counts.2,
         },
         audit_top_actions,
         audit_hourly,
@@ -304,7 +325,7 @@ pub async fn build_dashboard_stats(
     })
 }
 
-pub async fn api_dashboard_stats(ctx: &AdminCtx) -> Response {
+pub async fn api_dashboard_stats(ctx: &AdminCtx, hours: Option<i32>) -> Response {
     let Some(st) = STATE.get() else {
         return json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -312,7 +333,8 @@ pub async fn api_dashboard_stats(ctx: &AdminCtx) -> Response {
             "state not initialized",
         );
     };
-    match build_dashboard_stats(&st.pool, ctx.tenant_id, ctx.is_admin()).await {
+    let hours = normalize_dashboard_hours(hours);
+    match build_dashboard_stats(&st.pool, ctx.tenant_id, ctx.is_admin(), hours).await {
         Ok(stats) => (StatusCode::OK, Json(stats)).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -58,21 +58,21 @@ const CAPABILITIES = [
     title: 'Routing Engine',
     text: 'Longest prefix, {id}, ACL client ↔ route, proxy upstream qua Tokio async.',
     tag: 'Core',
-    to: '/api-docs',
+    to: '/api-docs#routing',
   },
   {
     icon: Shield,
     title: 'JWT Identity',
     text: 'POST /oauth/token → Bearer trên /v1/api/* — Token Bucket rate limit + RBAC admin.',
     tag: 'Security',
-    to: '/api-docs',
+    to: '/api-docs#authentication',
   },
   {
     icon: Zap,
     title: 'Benchmark hiệu năng',
     text: 'wrk/k6 so sánh /health vs JWT data plane — overhead thấp nhờ Rust.',
     tag: 'NFR',
-    to: '/api-docs',
+    to: '/api-docs#quick-start',
   },
   {
     icon: Lock,
@@ -480,7 +480,7 @@ export function OverviewGuest() {
             >
               <Link to="/api-docs">
                 <FileCode className="w-4 h-4 mr-2" />
-                OpenAPI & curl
+                Tài liệu API
               </Link>
             </Button>
           </div>

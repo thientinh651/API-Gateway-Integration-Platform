@@ -119,7 +119,7 @@ Admin / Operator / Viewer. **Hai lớp:** backend `admin_auth.rs` = enforcement;
 - RED metrics toàn diện
 
 ### 4.11 Dashboard SPA
-Tổng quan, Route, OAuth & Clients (3 tab), Proxy Try, Proxy Queue, API Docs, Integrations, Users, Logs, Settings.
+Tổng quan, Route, OAuth & Clients (3 tab), Proxy Try, Proxy Queue, Tài liệu API (`/api-docs` — hướng dẫn + reference), Integrations, Users, Logs, Settings.
 
 ### 4.12 Deploy
 systemd + Nginx production; Docker Compose dev/HA demo.

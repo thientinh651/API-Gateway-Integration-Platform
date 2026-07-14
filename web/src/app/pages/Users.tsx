@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { ConfirmDangerButton } from '../components/forms/ConfirmDangerButton';
@@ -45,7 +45,9 @@ import {
 import { FieldError } from '../components/forms/FieldError';
 import { EnterSubmitForm } from '../components/forms/EnterSubmitForm';
 
-function uiRoleFromApi(role: string): 'Admin' | 'Operator' | 'Viewer' {
+type UiRole = 'Admin' | 'Operator' | 'Viewer';
+
+function uiRoleFromApi(role: string): UiRole {
   const r = role.toLowerCase();
   if (r === 'admin') return 'Admin';
   if (r === 'operator') return 'Operator';
@@ -56,19 +58,34 @@ function apiRole(ui: string): string {
   return ui.toLowerCase();
 }
 
+type FormData = {
+  username: string;
+  email: string;
+  password: string;
+  current_password: string;
+  role: UiRole;
+};
+
+const EMPTY_FORM: FormData = {
+  username: '',
+  email: '',
+  password: '',
+  current_password: '',
+  role: 'Viewer',
+};
+
 function UsersAdmin() {
   const { user: me } = useAdminAuth();
   const [users, setUsers] = useState<AdminUserRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [isOpen, setIsOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<AdminUserRow | null>(null);
-  const [formData, setFormData] = useState({
-    username: '',
-    email: '',
-    password: '',
-    role: 'Viewer' as 'Admin' | 'Operator' | 'Viewer',
-  });
+  const [formData, setFormData] = useState<FormData>(EMPTY_FORM);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [attempted, setAttempted] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const editingSelf = editingUser != null && me?.user_id === editingUser.id;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -85,29 +102,76 @@ function UsersAdmin() {
     void load();
   }, [load]);
 
-  const validateForm = (): Record<string, string> => {
-    const errors: Record<string, string> = {};
-    if (!formData.username.trim()) {
-      errors.username = 'Nhập username';
-    }
-    if (!editingUser && formData.password.length < 6) {
-      errors.password = 'Mật khẩu tối thiểu 6 ký tự';
-    }
-    if (editingUser && formData.password.trim() && formData.password.trim().length < 6) {
-      errors.password = 'Mật khẩu tối thiểu 6 ký tự';
-    }
-    if (formData.email.trim() && !isValidEmail(formData.email.trim())) {
-      errors.email = 'Email không hợp lệ';
-    }
-    return errors;
+  const validateForm = useCallback(
+    (data: FormData): Record<string, string> => {
+      const errors: Record<string, string> = {};
+      if (!data.username.trim()) {
+        errors.username = 'Nhập username';
+      }
+      if (!editingUser) {
+        if (data.password.length < 6) {
+          errors.password = 'Mật khẩu tối thiểu 6 ký tự';
+        }
+      } else if (data.password.trim()) {
+        if (data.password.trim().length < 6) {
+          errors.password = 'Mật khẩu tối thiểu 6 ký tự';
+        }
+        if (editingSelf && !data.current_password.trim()) {
+          errors.current_password = 'Nhập mật khẩu hiện tại';
+        }
+      } else if (editingSelf && data.current_password.trim() && !data.password.trim()) {
+        errors.password = 'Nhập mật khẩu mới';
+      }
+      if (data.email.trim() && !isValidEmail(data.email.trim())) {
+        errors.email = 'Email không hợp lệ';
+      }
+      return errors;
+    },
+    [editingUser, editingSelf],
+  );
+
+  const isDirty = useMemo(() => {
+    if (!editingUser) return true;
+    const origEmail = editingUser.email ?? '';
+    if (formData.username.trim() !== editingUser.username) return true;
+    if (formData.email.trim() !== origEmail) return true;
+    if (formData.password.trim()) return true;
+    if (!editingSelf && formData.role !== uiRoleFromApi(editingUser.role)) return true;
+    return false;
+  }, [editingUser, editingSelf, formData]);
+
+  const clientErrors = useMemo(() => validateForm(formData), [validateForm, formData]);
+  const formValid = Object.keys(clientErrors).length === 0;
+  const canSubmit = editingUser ? isDirty && formValid && !saving : formValid && !saving;
+
+  const showFieldHints =
+    attempted ||
+    (editingUser ? isDirty : formData.username.length > 0 || formData.password.length > 0 || formData.email.length > 0);
+
+  const displayErrors = useMemo(() => {
+    if (!showFieldHints) return fieldErrors;
+    return { ...fieldErrors, ...clientErrors };
+  }, [showFieldHints, fieldErrors, clientErrors]);
+
+  const resetForm = () => {
+    setFormData(EMPTY_FORM);
+    setFieldErrors({});
+    setAttempted(false);
+  };
+
+  const patchForm = (patch: Partial<FormData>, clearKey?: string) => {
+    setFormData((prev) => ({ ...prev, ...patch }));
+    if (clearKey) clearOneFieldError(setFieldErrors, clearKey);
   };
 
   const handleCreate = async () => {
-    const clientErrors = validateForm();
-    if (Object.keys(clientErrors).length > 0) {
-      failClientValidation(setFieldErrors, clientErrors);
+    setAttempted(true);
+    const errors = validateForm(formData);
+    if (Object.keys(errors).length > 0) {
+      failClientValidation(setFieldErrors, errors);
       return;
     }
+    setSaving(true);
     try {
       const created = await createAdminUser({
         username: formData.username.trim(),
@@ -122,26 +186,37 @@ function UsersAdmin() {
       await load();
       setIsOpen(false);
       resetForm();
-      setFieldErrors({});
       toast.success(`Đã thêm "${created.username}" (${roleLabel(created.role)})`);
     } catch (e) {
       handleFormApiError(e, setFieldErrors);
+    } finally {
+      setSaving(false);
     }
   };
 
   const handleUpdate = async () => {
     if (!editingUser) return;
-    const clientErrors = validateForm();
-    if (Object.keys(clientErrors).length > 0) {
-      failClientValidation(setFieldErrors, clientErrors);
+    setAttempted(true);
+    const errors = validateForm(formData);
+    if (Object.keys(errors).length > 0) {
+      failClientValidation(setFieldErrors, errors);
       return;
     }
+    if (!isDirty) return;
+    setSaving(true);
     try {
+      const newPassword = formData.password.trim() || undefined;
+      // Role: không gửi đổi khi tự sửa — luôn giữ role hiện tại.
+      const roleToSave = editingSelf
+        ? editingUser.role
+        : apiRole(formData.role);
       const updated = await updateAdminUser(editingUser.id, {
         username: formData.username.trim(),
-        role: apiRole(formData.role),
+        role: roleToSave,
         is_active: editingUser.is_active,
-        password: formData.password.trim() || undefined,
+        password: newPassword,
+        current_password:
+          editingSelf && newPassword ? formData.current_password : undefined,
         email: formData.email.trim(),
       });
       setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
@@ -149,10 +224,11 @@ function UsersAdmin() {
       setIsOpen(false);
       setEditingUser(null);
       resetForm();
-      setFieldErrors({});
       toast.success('User đã được cập nhật');
     } catch (e) {
       handleFormApiError(e, setFieldErrors);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -172,8 +248,11 @@ function UsersAdmin() {
       username: user.username,
       email: user.email ?? '',
       password: '',
+      current_password: '',
       role: uiRoleFromApi(user.role),
     });
+    setFieldErrors({});
+    setAttempted(false);
     setIsOpen(true);
   };
 
@@ -190,11 +269,6 @@ function UsersAdmin() {
     } catch (e) {
       toastApiError(e);
     }
-  };
-
-  const resetForm = () => {
-    setFormData({ username: '', email: '', password: '', role: 'Viewer' });
-    setFieldErrors({});
   };
 
   const handleDialogClose = (open: boolean) => {
@@ -245,7 +319,13 @@ function UsersAdmin() {
         </div>
         <Dialog open={isOpen} onOpenChange={handleDialogClose}>
           <DialogTrigger asChild>
-            <Button className="bg-primary hover:bg-primary/90">
+            <Button
+              className="bg-primary hover:bg-primary/90"
+              onClick={() => {
+                setEditingUser(null);
+                resetForm();
+              }}
+            >
               <Plus className="w-4 h-4 mr-2" />
               Thêm thành viên
             </Button>
@@ -253,12 +333,12 @@ function UsersAdmin() {
           <DialogContent className="bg-card border-border">
             <DialogHeader>
               <DialogTitle className="text-white">
-                {editingUser ? 'Chỉnh sửa thành viên' : 'Thêm thành viên tổ chức'}
+                {editingUser ? 'Chỉnh sửa User' : 'Thêm User'}
               </DialogTitle>
             </DialogHeader>
             <EnterSubmitForm
               className="space-y-4 mt-4"
-              disabled={!formData.username || (!editingUser && formData.password.length < 6)}
+              disabled={!canSubmit}
               onSubmit={() => void (editingUser ? handleUpdate() : handleCreate())}
             >
               <div>
@@ -266,76 +346,117 @@ function UsersAdmin() {
                 <Input
                   placeholder="username"
                   value={formData.username}
-                  onChange={(e) => {
-                    setFormData({ ...formData, username: e.target.value });
-                    clearOneFieldError(setFieldErrors, 'username');
-                  }}
-                  aria-invalid={Boolean(fieldErrors.username)}
-                  className={fieldInputErrorClass(Boolean(fieldErrors.username), 'bg-input border-border text-foreground')}
+                  onChange={(e) => patchForm({ username: e.target.value }, 'username')}
+                  aria-invalid={Boolean(displayErrors.username)}
+                  className={fieldInputErrorClass(
+                    Boolean(displayErrors.username),
+                    'bg-input border-border text-foreground'
+                  )}
                   autoComplete="off"
                 />
-                <FieldError message={fieldErrors.username} />
+                <FieldError message={displayErrors.username} />
               </div>
               <div>
-                <Label className="text-foreground">Email (OTP quên mật khẩu)</Label>
+                <Label className="text-foreground">Email</Label>
                 <Input
                   type="email"
                   placeholder="user@company.com"
                   value={formData.email}
-                  onChange={(e) => {
-                    setFormData({ ...formData, email: e.target.value });
-                    clearOneFieldError(setFieldErrors, 'email');
-                  }}
-                  aria-invalid={Boolean(fieldErrors.email)}
-                  className={fieldInputErrorClass(Boolean(fieldErrors.email), 'bg-input border-border text-foreground')}
+                  onChange={(e) => patchForm({ email: e.target.value }, 'email')}
+                  aria-invalid={Boolean(displayErrors.email)}
+                  className={fieldInputErrorClass(
+                    Boolean(displayErrors.email),
+                    'bg-input border-border text-foreground'
+                  )}
                   autoComplete="off"
                 />
-                <FieldError message={fieldErrors.email} />
+                <FieldError message={displayErrors.email} />
               </div>
+              {editingSelf ? (
+                <div>
+                  <Label className="text-foreground">Mật khẩu hiện tại</Label>
+                  <Input
+                    type="password"
+                    placeholder="********"
+                    value={formData.current_password}
+                    onChange={(e) =>
+                      patchForm({ current_password: e.target.value }, 'current_password')
+                    }
+                    aria-invalid={Boolean(displayErrors.current_password)}
+                    className={fieldInputErrorClass(
+                      Boolean(displayErrors.current_password),
+                      'bg-input border-border text-foreground'
+                    )}
+                    autoComplete="current-password"
+                  />
+                  <FieldError message={displayErrors.current_password} />
+                </div>
+              ) : null}
               <div>
                 <Label className="text-foreground">
-                  Password {editingUser && '(để trống nếu không đổi)'}
+                  {editingUser ? 'Mật khẩu mới' : 'Password'}
                 </Label>
                 <Input
                   type="password"
                   placeholder="********"
                   value={formData.password}
                   onChange={(e) => {
-                    setFormData({ ...formData, password: e.target.value });
+                    const password = e.target.value;
+                    setFormData((prev) => ({ ...prev, password }));
                     clearOneFieldError(setFieldErrors, 'password');
+                    if (!password.trim()) {
+                      clearOneFieldError(setFieldErrors, 'current_password');
+                    }
                   }}
-                  aria-invalid={Boolean(fieldErrors.password)}
-                  className={fieldInputErrorClass(Boolean(fieldErrors.password), 'bg-input border-border text-foreground')}
+                  aria-invalid={Boolean(displayErrors.password)}
+                  className={fieldInputErrorClass(
+                    Boolean(displayErrors.password),
+                    'bg-input border-border text-foreground'
+                  )}
                   autoComplete="new-password"
                 />
-                <FieldError message={fieldErrors.password} />
+                <FieldError message={displayErrors.password} />
               </div>
               <div>
                 <Label className="text-foreground">Role</Label>
-                <Select
-                  value={formData.role}
-                  onValueChange={(v: 'Admin' | 'Operator' | 'Viewer') => {
-                    setFormData({ ...formData, role: v });
-                    clearOneFieldError(setFieldErrors, 'role');
-                  }}
-                >
-                  <SelectTrigger className="bg-input border-border text-foreground">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-card border-border">
-                    <SelectItem value="Admin">Admin — full</SelectItem>
-                    <SelectItem value="Operator">Operator — key, sửa route</SelectItem>
-                    <SelectItem value="Viewer">Viewer — chỉ đọc</SelectItem>
-                  </SelectContent>
-                </Select>
-                <FieldError message={fieldErrors.role} />
+                {editingSelf ? (
+                  <>
+                    <div className="h-9 px-3 flex items-center rounded-md border border-border bg-muted/40 text-sm text-slate-300">
+                      {roleLabel(formData.role)}
+                    </div>
+                    <FieldError message={displayErrors.role} />
+                  </>
+                ) : (
+                  <>
+                    <Select
+                      value={formData.role}
+                      onValueChange={(v: UiRole) => patchForm({ role: v }, 'role')}
+                    >
+                      <SelectTrigger
+                        className={fieldInputErrorClass(
+                          Boolean(displayErrors.role),
+                          'bg-input border-border text-foreground'
+                        )}
+                        aria-invalid={Boolean(displayErrors.role)}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent className="bg-card border-border">
+                        <SelectItem value="Admin">Admin — full</SelectItem>
+                        <SelectItem value="Operator">Operator — key, sửa route</SelectItem>
+                        <SelectItem value="Viewer">Viewer — chỉ đọc</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FieldError message={displayErrors.role} />
+                  </>
+                )}
               </div>
               <Button
                 type="submit"
                 className="w-full bg-primary hover:bg-primary/90"
-                disabled={!formData.username || (!editingUser && formData.password.length < 6)}
+                disabled={!canSubmit}
               >
-                {editingUser ? 'Cập nhật' : 'Tạo'}
+                {saving ? 'Đang lưu…' : editingUser ? 'Cập nhật' : 'Tạo'}
               </Button>
             </EnterSubmitForm>
           </DialogContent>
@@ -345,7 +466,7 @@ function UsersAdmin() {
       <Card className="rounded-2xl overflow-hidden bg-card/80 backdrop-blur-sm border-border">
         <div className="p-6 border-b border-border">
           <h3 className="font-bold text-white text-sm uppercase tracking-wider">
-            Thành viên tổ chức ({loading ? '…' : users.length})
+            Quản lý Users ({loading ? '…' : users.length})
           </h3>
         </div>
         <div className="overflow-x-auto">

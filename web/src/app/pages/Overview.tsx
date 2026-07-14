@@ -19,6 +19,13 @@ import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../components/ui/select';
+import {
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
@@ -27,7 +34,6 @@ import {
 import {
   Activity,
   AlertTriangle,
-  Info,
   Key,
   ListOrdered,
   RefreshCw,
@@ -53,11 +59,23 @@ import { OverviewGuest } from './OverviewGuest';
 import { TechPageHeader } from '../components/tech/TechPageHeader';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
 
 const CHART_COLORS = ['#10b981', '#3b82f6', '#f97316', '#ef4444', '#a855f7', '#fb923c'];
 
 const SYNC_WORKER_CLIENT_NAME = 'avaso_pk_sync_worker';
+
+const DASHBOARD_RANGES = [
+  { hours: 1, label: '1 giờ' },
+  { hours: 24, label: '1 ngày' },
+  { hours: 72, label: '3 ngày' },
+  { hours: 168, label: '1 tuần' },
+] as const;
+
+type DashboardRangeHours = (typeof DASHBOARD_RANGES)[number]['hours'];
+
+function rangeLabel(hours: number): string {
+  return DASHBOARD_RANGES.find((r) => r.hours === hours)?.label ?? `${hours}h`;
+}
 
 const AXIS_TICK = '#94a3b8';
 const GRID_STROKE = '#334155';
@@ -121,14 +139,11 @@ function OverviewCrmIntegrationsCard({
   return (
     <NavCard to="/integrations" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Tích hợp CRM">
       <div className="flex items-start justify-between gap-3 mb-4">
-        <div>
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider">Tích hợp CRM</h3>
-          <p className="text-xs text-muted-foreground mt-1">Salesforce · Zoho Projects · pipeline sync</p>
-        </div>
+        <h3 className="font-bold text-white text-sm uppercase tracking-wider">Tích hợp CRM</h3>
         <span className="text-xs text-primary font-mono-tech shrink-0">Mở →</span>
       </div>
       {integrations.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Chưa kết nối provider — cấu hình OAuth tại trang Tích hợp.</p>
+        <p className="text-sm text-muted-foreground">Chưa kết nối provider.</p>
       ) : (
         <div className="space-y-3">
           {integrations.map((row) => {
@@ -143,8 +158,8 @@ function OverviewCrmIntegrationsCard({
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {row.last_sync_at
-                    ? `Sync gần nhất: ${formatDbTimestamp(row.last_sync_at)}`
-                    : 'Chưa chạy sync'}
+                    ? formatDbTimestamp(row.last_sync_at)
+                    : 'Chưa sync'}
                 </p>
                 {row.last_error && row.status === 'error' ? (
                   <p className="text-xs text-red-300/90 mt-2 line-clamp-2" title={row.last_error}>
@@ -200,6 +215,10 @@ function OverviewAdmin() {
   const [proxyQueueItems, setProxyQueueItems] = useState<ProxyQueueItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [rangeHours, setRangeHours] = useState<DashboardRangeHours>(24);
+  const win = rangeLabel(rangeHours);
+  const dataReady =
+    !loading && stats != null && (stats.window_hours == null || stats.window_hours === rangeHours);
 
   const load = useCallback(async () => {
     if (!user) return;
@@ -207,7 +226,7 @@ function OverviewAdmin() {
     setLoadError(null);
     try {
       const [dash, routeRows, queue] = await Promise.all([
-        fetchDashboardStats(),
+        fetchDashboardStats(rangeHours),
         fetchGatewayRoutes(),
         fetchProxyQueue().catch(() => []),
       ]);
@@ -222,7 +241,7 @@ function OverviewAdmin() {
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user, rangeHours]);
 
   useEffect(() => {
     void load();
@@ -310,13 +329,35 @@ function OverviewAdmin() {
   return (
     <>
       <TechPageHeader
-        codeLine="// dashboard · traffic · 24h"
+        codeLine={`// dashboard · ${win}`}
         title="Tổng quan"
         actions={
-          <Button variant="outline" className="border-border font-mono-tech text-xs" onClick={() => void load()} disabled={loading}>
-            <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-            refresh
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Select
+              value={String(rangeHours)}
+              onValueChange={(v) => setRangeHours(Number(v) as DashboardRangeHours)}
+            >
+              <SelectTrigger className="w-[140px] bg-input border-border font-mono-tech text-xs h-9">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-card border-border">
+                {DASHBOARD_RANGES.map((r) => (
+                  <SelectItem key={r.hours} value={String(r.hours)} className="font-mono-tech text-xs">
+                    {r.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              variant="outline"
+              className="border-border font-mono-tech text-xs"
+              onClick={() => void load()}
+              disabled={loading}
+            >
+              <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+              refresh
+            </Button>
+          </div>
         }
       />
 
@@ -329,125 +370,107 @@ function OverviewAdmin() {
           to="/logs?kind=traffic"
           icon={<Activity className="text-blue-500" />}
           iconBg="bg-blue-500/10"
-          title="Kết nối API 24h"
-          value={loading ? '…' : String(traffic?.total ?? 0)}
-          badge={{
-            text: successRate != null ? `${successRate}% thành công` : '—',
-            variant: successRate != null && successRate >= 90 ? 'success' : 'info',
-          }}
+          title="Kết nối API"
+          value={dataReady ? String(traffic?.total ?? 0) : '…'}
+          badge={
+            dataReady && successRate != null
+              ? {
+                  text: `${successRate}% thành công`,
+                  variant: successRate >= 90 ? 'success' : 'info',
+                }
+              : undefined
+          }
         />
         <StatsCard
           to="/logs?kind=traffic&result=success"
           icon={<Route className="text-emerald-500" />}
           iconBg="bg-emerald-500/10"
           title="Thành công"
-          value={loading ? '…' : String(traffic?.success ?? 0)}
-          badge={{ text: 'outcome: success', variant: 'success' }}
+          value={dataReady ? String(traffic?.success ?? 0) : '…'}
         />
         <StatsCard
           to="/logs?kind=traffic&result=failure"
           icon={<ShieldX className="text-amber-500" />}
           iconBg="bg-amber-500/10"
           title="Từ chối / lỗi"
-          value={loading ? '…' : String((traffic?.denied ?? 0) + (traffic?.upstream_error ?? 0))}
-          badge={{
-            text: traffic
-              ? `${traffic.denied} từ chối · ${traffic.upstream_error} upstream`
-              : '—',
-            variant: traffic && traffic.denied + traffic.upstream_error > 0 ? 'warning' : 'success',
-          }}
+          value={
+            dataReady
+              ? String((traffic?.denied ?? 0) + (traffic?.upstream_error ?? 0))
+              : '…'
+          }
         />
         <StatsCard
           to="/proxy-queue"
           icon={<ListOrdered className="text-red-500" />}
           iconBg="bg-red-500/10"
           title="DLQ / Queue"
-          value={loading ? '…' : String(dlqCounts.total || (traffic?.queued ?? 0))}
-          badge={{
-            text:
-              dlqCounts.total > 0
-                ? `${dlqCounts.pending} pending · ${dlqCounts.replayed} replayed`
-                : traffic?.queued
-                  ? `${traffic.queued} queued 24h`
-                  : 'Trống',
-            variant: dlqCounts.pending > 0 || (traffic?.queued ?? 0) > 0 ? 'warning' : 'success',
-          }}
+          value={dataReady ? String(dlqCounts.total || (traffic?.queued ?? 0)) : '…'}
+          badge={
+            dataReady && dlqCounts.total > 0
+              ? {
+                  text: `${dlqCounts.pending} pending · ${dlqCounts.replayed} replayed`,
+                  variant: dlqCounts.pending > 0 ? 'warning' : 'success',
+                }
+              : undefined
+          }
         />
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <NavCard to="/logs?kind=traffic" className="p-4 bg-card/80 border-border" ariaLabel="Latency gateway — xem log traffic">
-          <div className="flex items-center gap-1.5 text-muted-foreground text-xs uppercase tracking-wider mb-1">
+        <NavCard to="/logs?kind=traffic" className="p-4 bg-card/80 border-border" ariaLabel="Latency gateway">
+          <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
             <Timer className="w-3.5 h-3.5 shrink-0" />
-            <span>Latency gateway TB</span>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  className="inline-flex text-muted-foreground/70 hover:text-muted-foreground"
-                  aria-label="Giải thích latency gateway"
-                >
-                  <Info className="w-3 h-3" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top" className="max-w-[240px] text-xs">
-                Tính từ lúc nhận request đến khi trả response, bao gồm upstream.
-              </TooltipContent>
-            </Tooltip>
+            Latency TB
           </div>
           <p className="text-2xl font-bold text-white">
-            {loading ? '…' : `${traffic?.avg_duration_ms ?? 0} ms`}
+            {dataReady ? `${traffic?.avg_duration_ms ?? 0} ms` : '…'}
           </p>
         </NavCard>
-        <NavCard to="/routes" className="p-4 bg-card/80 border-border" ariaLabel="Routes — quản lý route">
+        <NavCard to="/routes" className="p-4 bg-card/80 border-border" ariaLabel="Routes">
           <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
             <Route className="w-3.5 h-3.5" />
             Routes
           </div>
-          <p className="text-2xl font-bold text-white">{loading ? '…' : String(stats?.routes_count ?? routes.length)}</p>
+          <p className="text-2xl font-bold text-white">
+            {dataReady ? String(stats?.routes_count ?? routes.length) : '…'}
+          </p>
         </NavCard>
         <NavCard to="/auth" className="p-4 bg-card/80 border-border" ariaLabel="Client Registry">
           <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
             <Key className="w-3.5 h-3.5" />
             Client Registry
           </div>
-          <p className="text-2xl font-bold text-white">{loading ? '…' : String(stats?.client_keys_count ?? 0)}</p>
-          {stats?.client_registry ? (
+          <p className="text-2xl font-bold text-white">
+            {dataReady ? String(stats?.client_keys_count ?? 0) : '…'}
+          </p>
+          {dataReady && stats?.client_registry ? (
             <p className="text-xs text-muted-foreground mt-1">
               {stats.client_registry.active} active · {stats.client_registry.disabled} tắt
             </p>
           ) : null}
         </NavCard>
-        <NavCard to="/logs?kind=admin" className="p-4 bg-card/80 border-border" ariaLabel="Audit admin 24h">
+        <NavCard to="/logs?kind=admin" className="p-4 bg-card/80 border-border" ariaLabel="Audit admin">
           <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
             <AlertTriangle className="w-3.5 h-3.5" />
-            Audit admin 24h
+            Audit admin
           </div>
-          <p className="text-2xl font-bold text-white">{loading ? '…' : String(stats?.audit_24h.total ?? 0)}</p>
-          <p className="text-xs text-primary mt-1">Xem audit →</p>
+          <p className="text-2xl font-bold text-white">
+            {dataReady ? String(stats?.audit_24h.total ?? 0) : '…'}
+          </p>
         </NavCard>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 lg:gap-8 mb-8 min-w-0">
-        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border min-w-0" ariaLabel="HTTP status 24h">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
-            HTTP status (24h)
-          </h3>
-          <p className="text-xs text-muted-foreground mb-4">
-            Phân bố mã phản hồi: 2xx OK, 4xx client (401/404…), 5xx upstream.
-          </p>
-          {httpStatusPieData.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Chưa có kết nối — dùng{' '}
-              <Link to="/proxy-try" className="text-primary hover:underline">
-                Thử gọi proxy
-              </Link>{' '}
-              hoặc client thật qua gateway.
-            </p>
+        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border min-w-0" ariaLabel="HTTP status">
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">HTTP status</h3>
+          {!dataReady ? (
+            <p className="text-sm text-muted-foreground">Đang tải…</p>
+          ) : httpStatusPieData.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Chưa có kết nối.</p>
           ) : isMobile ? (
             <MiniCountList rows={httpStatusPieData} />
           ) : (
-            <ChartContainer config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full">
+            <ChartContainer key={`status-${rangeHours}`} config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full">
               <PieChart>
                 <ChartTooltip content={<ChartTooltipContent nameKey="name" />} />
                 <Pie
@@ -471,19 +494,16 @@ function OverviewAdmin() {
           )}
         </NavCard>
 
-        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Kết quả kết nối 24h">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
-            Kết quả kết nối (24h)
-          </h3>
-          <p className="text-xs text-muted-foreground mb-4">
-            Gateway xử lý: thành công, từ chối auth/rate-limit, lỗi upstream, xếp hàng DLQ.
-          </p>
-          {outcomePieData.length === 0 ? (
+        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Kết quả kết nối">
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">Kết quả kết nối</h3>
+          {!dataReady ? (
+            <p className="text-sm text-muted-foreground">Đang tải…</p>
+          ) : outcomePieData.length === 0 ? (
             <p className="text-sm text-muted-foreground">Chưa có dữ liệu.</p>
           ) : isMobile ? (
             <MiniCountList rows={outcomePieData} />
           ) : (
-            <ChartContainer config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full">
+            <ChartContainer key={`outcome-${rangeHours}`} config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full">
               <PieChart>
                 <ChartTooltip content={<ChartTooltipContent nameKey="name" />} />
                 <Pie
@@ -507,15 +527,12 @@ function OverviewAdmin() {
           )}
         </NavCard>
 
-        <NavCard to="/logs?kind=traffic&result=failure" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Middleware denial reasons">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
-            Từ chối middleware (24h)
-          </h3>
-          <p className="text-xs text-muted-foreground mb-4">
-            Lý do outcome=denied — auth, ACL, rate limit.
-          </p>
-          {denialReasonData.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Không có từ chối trong 24h.</p>
+        <NavCard to="/logs?kind=traffic&result=failure" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Từ chối middleware">
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">Từ chối middleware</h3>
+          {!dataReady ? (
+            <p className="text-sm text-muted-foreground">Đang tải…</p>
+          ) : denialReasonData.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Không có từ chối.</p>
           ) : (
             <ul className="space-y-2 text-xs">
               {denialReasonData.map((r) => (
@@ -533,21 +550,12 @@ function OverviewAdmin() {
           )}
         </NavCard>
 
-        <NavCard to="/auth" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Top clients traffic">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
-            Top client (24h)
-          </h3>
-          <p className="text-xs text-muted-foreground mb-4">
-            Request theo Client Registry — cần log có client_key_id.
-          </p>
-          {clientTrafficTop.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Chưa có traffic —{' '}
-              <Link to="/proxy-try" className="text-primary hover:underline">
-                thử gọi proxy
-              </Link>
-              .
-            </p>
+        <NavCard to="/auth" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Top clients">
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">Top client</h3>
+          {!dataReady ? (
+            <p className="text-sm text-muted-foreground">Đang tải…</p>
+          ) : clientTrafficTop.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Chưa có traffic.</p>
           ) : (
             <ul className="space-y-2 text-xs">
               {clientTrafficTop.map((c) => {
@@ -574,7 +582,7 @@ function OverviewAdmin() {
                     </span>
                     <span className="font-mono text-cyan-400 shrink-0">
                       {c.total}
-                      {pct != null ? ` (${pct}%)` : ''}
+                      {pct != null ? ` · ${pct}%` : ''}
                     </span>
                   </li>
                 );
@@ -583,17 +591,16 @@ function OverviewAdmin() {
           )}
         </NavCard>
 
-        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Kết nối theo giờ">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
-            Kết nối theo giờ (24h)
-          </h3>
-          <p className="text-xs text-muted-foreground mb-4">Mật độ request API qua gateway.</p>
-          {trafficHourlyData.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Chưa có traffic trong 24h.</p>
+        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Theo thời gian">
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">Theo thời gian</h3>
+          {!dataReady ? (
+            <p className="text-sm text-muted-foreground">Đang tải…</p>
+          ) : trafficHourlyData.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Chưa có traffic.</p>
           ) : isMobile ? (
             <MiniCountList rows={trafficHourlyData.map((h) => ({ name: h.time, count: h.count }))} />
           ) : (
-            <ChartContainer config={trafficHourlyConfig} className="h-[240px] sm:h-[260px] w-full">
+            <ChartContainer key={`series-${rangeHours}`} config={trafficHourlyConfig} className="h-[240px] sm:h-[260px] w-full">
               <LineChart data={trafficHourlyData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                 <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
                 <XAxis
@@ -623,17 +630,16 @@ function OverviewAdmin() {
           )}
         </NavCard>
 
-        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Top path 24h">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
-            Top path (24h)
-          </h3>
-          <p className="text-xs text-muted-foreground mb-4">Endpoint được gọi nhiều nhất.</p>
-          {topPathsData.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Chưa có path nào.</p>
+        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Top path">
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">Top path</h3>
+          {!dataReady ? (
+            <p className="text-sm text-muted-foreground">Đang tải…</p>
+          ) : topPathsData.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Chưa có path.</p>
           ) : isMobile ? (
             <MiniCountList rows={topPathsData.map((p) => ({ name: p.fullPath, count: p.count }))} />
           ) : (
-            <ChartContainer config={countBarConfig} className="h-[240px] sm:h-[260px] w-full">
+            <ChartContainer key={`paths-${rangeHours}`} config={countBarConfig} className="h-[240px] sm:h-[260px] w-full">
               <BarChart data={topPathsData} margin={{ top: 8, right: 8, left: 0, bottom: 32 }}>
                 <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
                 <XAxis
@@ -669,17 +675,16 @@ function OverviewAdmin() {
           )}
         </NavCard>
 
-        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Method HTTP 24h">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-1">
-            Method HTTP (24h)
-          </h3>
-          <p className="text-xs text-muted-foreground mb-4">GET, POST, PUT…</p>
-          {methodData.length === 0 ? (
+        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Method HTTP">
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">Method HTTP</h3>
+          {!dataReady ? (
+            <p className="text-sm text-muted-foreground">Đang tải…</p>
+          ) : methodData.length === 0 ? (
             <p className="text-sm text-muted-foreground">Chưa có dữ liệu.</p>
           ) : isMobile ? (
             <MiniCountList rows={methodData.map((m) => ({ name: m.label, count: m.count }))} />
           ) : (
-            <ChartContainer config={countBarConfig} className="h-[240px] sm:h-[260px] w-full">
+            <ChartContainer key={`methods-${rangeHours}`} config={countBarConfig} className="h-[240px] sm:h-[260px] w-full">
               <BarChart data={methodData} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
                 <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
                 <XAxis

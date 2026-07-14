@@ -346,7 +346,7 @@ export function Settings() {
                   <span className="text-amber-200">Có thay đổi chưa lưu</span>
                 </>
               ) : (
-                <span>Giá trị đang khớp với server</span>
+                <span>-</span>
               )}
             </p>
             <div className="flex gap-2 sm:gap-3">

@@ -79,7 +79,7 @@ Migration SQL tự chạy khi gateway khởi động (`migrations/`).
 | OAuth & Clients | `/auth` | operator+ | Client registry, tokens, third-party apps, PKCE demo |
 | Proxy Try | `/proxy-try` | admin | Thử gọi data plane với JWT |
 | Proxy Queue | `/proxy-queue` | operator+ | Xem/replay DLQ |
-| API Docs | `/api-docs` | Public | Tài liệu API |
+| Tài liệu API | `/api-docs` | Public | Hướng dẫn + catalog endpoint (tabs) |
 | Integrations | `/integrations` | admin | SF/Zoho connect, pipeline, snapshots, sync logs |
 | Users | `/users` | admin | CRUD user, RBAC |
 | Logs | `/logs` | admin | Audit + transaction logs |

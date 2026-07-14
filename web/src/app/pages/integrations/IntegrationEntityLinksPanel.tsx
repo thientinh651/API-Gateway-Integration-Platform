@@ -26,10 +26,7 @@ export function IntegrationEntityLinksPanel({ links }: Props) {
       <div className="flex items-center gap-2 mb-4">
         <Link2 className="w-4 h-4 text-primary" />
         <div>
-          <h3 className="text-sm font-bold text-white">Entity links (idempotent)</h3>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Ánh xạ nguồn → đích theo flow — bản ghi đã sync không tạo trùng
-          </p>
+          <h3 className="text-sm font-bold text-white">Entity links</h3>
         </div>
       </div>
       <div className="overflow-auto rounded-lg border border-border">

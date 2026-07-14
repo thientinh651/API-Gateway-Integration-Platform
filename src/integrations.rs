@@ -3654,11 +3654,7 @@ pub async fn api_list_entity_links(ctx: &AdminCtx) -> Response {
             "state not initialized",
         );
     };
-    if let Ok(n) = reconcile_entity_links_with_zoho(&st.pool, ctx.tenant_id).await {
-        if n > 0 {
-            tracing::info!(tenant_id = ctx.tenant_id, deleted = n, "reconciled orphan entity links");
-        }
-    }
+    // Không reconcile/gọi Zoho ở GET — chỉ đọc DB. Reconcile nằm trong pipeline sync.
     match db::list_entity_links_public(&st.pool, ctx.tenant_id).await {
         Ok(rows) => (StatusCode::OK, axum::Json(rows)).into_response(),
         Err(e) => (
@@ -4047,6 +4043,10 @@ pub async fn create_zoho_task_from_canonical_contact(
 
 pub const INTEGRATION_SYNC_INTERVAL_SETTING: &str = "integration_sync_interval_mins";
 const SYNC_INTERVAL_POLL_SECS: u64 = 60;
+pub const SYNC_INTERVAL_MINS_MIN: u64 = 1;
+pub const SYNC_INTERVAL_MINS_MAX: u64 = 7 * 24 * 60; // 1 tuần
+/// Giờ lịch daily theo UTC+7 (Asia/Ho_Chi_Minh).
+const SCHEDULE_TZ_OFFSET_SECS: i32 = 7 * 3600;
 
 pub fn default_integration_sync_interval_mins() -> u64 {
     std::env::var("INTEGRATION_SYNC_INTERVAL_MINS")
@@ -4055,8 +4055,129 @@ pub fn default_integration_sync_interval_mins() -> u64 {
         .unwrap_or(15)
 }
 
-pub fn integration_sync_interval_allowed(mins: u64) -> bool {
-    matches!(mins, 0 | 5 | 15 | 30 | 60)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncScheduleMode {
+    Off,
+    Interval,
+    Daily,
+}
+
+impl SyncScheduleMode {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" | "disabled" | "0" => Some(Self::Off),
+            "interval" | "every" | "mins" | "minutes" => Some(Self::Interval),
+            "daily" | "day" | "everyday" => Some(Self::Daily),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SyncScheduleConfig {
+    pub mode: SyncScheduleMode,
+    #[serde(default = "default_schedule_interval_mins")]
+    pub interval_mins: u64,
+    #[serde(default)]
+    pub daily_hour: u8,
+    #[serde(default)]
+    pub daily_minute: u8,
+}
+
+fn default_schedule_interval_mins() -> u64 {
+    15
+}
+
+impl SyncScheduleConfig {
+    pub fn off() -> Self {
+        Self {
+            mode: SyncScheduleMode::Off,
+            interval_mins: 0,
+            daily_hour: 7,
+            daily_minute: 0,
+        }
+    }
+
+    pub fn interval(mins: u64) -> Self {
+        Self {
+            mode: if mins == 0 {
+                SyncScheduleMode::Off
+            } else {
+                SyncScheduleMode::Interval
+            },
+            interval_mins: mins,
+            daily_hour: 7,
+            daily_minute: 0,
+        }
+    }
+
+    pub fn daily(hour: u8, minute: u8) -> Self {
+        Self {
+            mode: SyncScheduleMode::Daily,
+            interval_mins: 0,
+            daily_hour: hour,
+            daily_minute: minute,
+        }
+    }
+
+    pub fn from_env_default() -> Self {
+        Self::interval(default_integration_sync_interval_mins())
+    }
+
+    pub fn enabled(&self) -> bool {
+        !matches!(self.mode, SyncScheduleMode::Off)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        match self.mode {
+            SyncScheduleMode::Off => Ok(()),
+            SyncScheduleMode::Interval => {
+                if self.interval_mins < SYNC_INTERVAL_MINS_MIN
+                    || self.interval_mins > SYNC_INTERVAL_MINS_MAX
+                {
+                    return Err(format!(
+                        "interval_mins phải từ {SYNC_INTERVAL_MINS_MIN}–{SYNC_INTERVAL_MINS_MAX} phút"
+                    ));
+                }
+                Ok(())
+            }
+            SyncScheduleMode::Daily => {
+                if self.daily_hour > 23 {
+                    return Err("daily_hour phải từ 0–23".into());
+                }
+                if self.daily_minute > 59 {
+                    return Err("daily_minute phải từ 0–59".into());
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub fn to_setting_value(&self) -> String {
+        match self.mode {
+            // Giữ số thuần cho off/interval — tương thích bản cũ đọc plain int.
+            SyncScheduleMode::Off => "0".into(),
+            SyncScheduleMode::Interval => self.interval_mins.to_string(),
+            SyncScheduleMode::Daily => serde_json::to_string(self).unwrap_or_else(|_| {
+                r#"{"mode":"daily","interval_mins":0,"daily_hour":7,"daily_minute":0}"#.into()
+            }),
+        }
+    }
+}
+
+pub fn parse_sync_schedule_setting(raw: &str) -> SyncScheduleConfig {
+    let t = raw.trim();
+    if t.is_empty() {
+        return SyncScheduleConfig::from_env_default();
+    }
+    if let Ok(n) = t.parse::<u64>() {
+        return SyncScheduleConfig::interval(n);
+    }
+    match serde_json::from_str::<SyncScheduleConfig>(t) {
+        Ok(cfg) => cfg,
+        Err(_) => SyncScheduleConfig::from_env_default(),
+    }
 }
 
 pub async fn ensure_integration_sync_setting(pool: &PgPool) -> Result<(), sqlx::Error> {
@@ -4064,27 +4185,40 @@ pub async fn ensure_integration_sync_setting(pool: &PgPool) -> Result<(), sqlx::
         .await?
         .is_none()
     {
-        let default = default_integration_sync_interval_mins();
-        db::upsert_setting(pool, INTEGRATION_SYNC_INTERVAL_SETTING, &default.to_string()).await?;
+        let default = SyncScheduleConfig::from_env_default();
+        db::upsert_setting(
+            pool,
+            INTEGRATION_SYNC_INTERVAL_SETTING,
+            &default.to_setting_value(),
+        )
+        .await?;
     }
     Ok(())
 }
 
-pub async fn resolve_integration_sync_interval_mins(pool: &PgPool) -> u64 {
+pub async fn resolve_integration_sync_schedule(pool: &PgPool) -> SyncScheduleConfig {
     match db::load_setting(pool, INTEGRATION_SYNC_INTERVAL_SETTING).await {
-        Ok(Some(v)) => v.parse().unwrap_or_else(|_| default_integration_sync_interval_mins()),
-        _ => default_integration_sync_interval_mins(),
+        Ok(Some(v)) => parse_sync_schedule_setting(&v),
+        _ => SyncScheduleConfig::from_env_default(),
     }
 }
 
-pub async fn set_integration_sync_interval_mins(
-    pool: &PgPool,
-    mins: u64,
-) -> Result<(), String> {
-    if !integration_sync_interval_allowed(mins) {
-        return Err("interval_mins phải là 0, 5, 15, 30 hoặc 60".into());
+/// Compat: phút chu kỳ (0 = tắt). Daily trả 0 cho caller cũ chỉ quan tâm interval.
+pub async fn resolve_integration_sync_interval_mins(pool: &PgPool) -> u64 {
+    let cfg = resolve_integration_sync_schedule(pool).await;
+    match cfg.mode {
+        SyncScheduleMode::Off => 0,
+        SyncScheduleMode::Interval => cfg.interval_mins,
+        SyncScheduleMode::Daily => 0,
     }
-    db::upsert_setting(pool, INTEGRATION_SYNC_INTERVAL_SETTING, &mins.to_string())
+}
+
+pub async fn set_integration_sync_schedule(
+    pool: &PgPool,
+    cfg: &SyncScheduleConfig,
+) -> Result<(), String> {
+    cfg.validate()?;
+    db::upsert_setting(pool, INTEGRATION_SYNC_INTERVAL_SETTING, &cfg.to_setting_value())
         .await
         .map_err(|e| format!("db: {e}"))
 }
@@ -4106,10 +4240,54 @@ async fn load_last_auto_sync_at(pool: &PgPool, tenant_id: i64) -> Option<String>
     db::load_setting(pool, &key).await.ok().flatten()
 }
 
+fn schedule_tz() -> chrono::FixedOffset {
+    chrono::FixedOffset::east_opt(SCHEDULE_TZ_OFFSET_SECS)
+        .expect("UTC+7 offset")
+}
+
+/// Đã qua giờ daily hôm nay (UTC+7) và chưa sync sau mốc đó.
+/// Lần đầu (chưa có last_auto_sync): chỉ chạy trong cửa sổ 2 phút sau giờ hẹn —
+/// tránh bật lịch lúc chiều rồi sync ngay.
+fn should_run_daily(cfg: &SyncScheduleConfig, last_auto_sync_at: Option<&str>) -> bool {
+    use chrono::{Datelike, TimeZone};
+    let tz = schedule_tz();
+    let now = chrono::Utc::now().with_timezone(&tz);
+    let Some(target) = tz
+        .with_ymd_and_hms(
+            now.year(),
+            now.month(),
+            now.day(),
+            u32::from(cfg.daily_hour),
+            u32::from(cfg.daily_minute),
+            0,
+        )
+        .single()
+    else {
+        return false;
+    };
+    if now < target {
+        return false;
+    }
+    match last_auto_sync_at.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()) {
+        Some(last) => last.with_timezone(&tz) < target,
+        None => {
+            let window_end = target + chrono::Duration::minutes(2);
+            now < window_end
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct IntegrationSyncSchedule {
     pub enabled: bool,
+    pub mode: SyncScheduleMode,
     pub interval_mins: u64,
+    pub daily_hour: u8,
+    pub daily_minute: u8,
+    pub timezone: &'static str,
+    pub interval_mins_min: u64,
+    pub interval_mins_max: u64,
+    /// Legacy — UI mới không phụ thuộc list cố định.
     pub allowed_intervals: Vec<u64>,
     pub env_default_mins: u64,
     pub sf_connected: bool,
@@ -4123,7 +4301,7 @@ pub async fn fetch_integration_sync_schedule(
     pool: &PgPool,
     tenant_id: i64,
 ) -> IntegrationSyncSchedule {
-    let interval_mins = resolve_integration_sync_interval_mins(pool).await;
+    let cfg = resolve_integration_sync_schedule(pool).await;
     let (sf_connected, zoho_connected, both_connected) =
         integration_connection_flags(pool, tenant_id).await;
     let last_pipeline_sync_at = db::latest_pipeline_sync_at(pool, tenant_id)
@@ -4132,9 +4310,15 @@ pub async fn fetch_integration_sync_schedule(
         .flatten();
     let last_auto_sync_at = load_last_auto_sync_at(pool, tenant_id).await;
     IntegrationSyncSchedule {
-        enabled: interval_mins > 0,
-        interval_mins,
-        allowed_intervals: vec![0, 5, 15, 30, 60],
+        enabled: cfg.enabled(),
+        mode: cfg.mode,
+        interval_mins: cfg.interval_mins,
+        daily_hour: cfg.daily_hour,
+        daily_minute: cfg.daily_minute,
+        timezone: "Asia/Ho_Chi_Minh",
+        interval_mins_min: SYNC_INTERVAL_MINS_MIN,
+        interval_mins_max: SYNC_INTERVAL_MINS_MAX,
+        allowed_intervals: vec![],
         env_default_mins: default_integration_sync_interval_mins(),
         sf_connected,
         zoho_connected,
@@ -4146,7 +4330,47 @@ pub async fn fetch_integration_sync_schedule(
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateIntegrationSyncScheduleBody {
-    pub interval_mins: u64,
+    /// `off` | `interval` | `daily`. Thiếu → suy từ `interval_mins` (API cũ).
+    pub mode: Option<String>,
+    pub interval_mins: Option<u64>,
+    pub daily_hour: Option<u8>,
+    pub daily_minute: Option<u8>,
+}
+
+fn sync_schedule_from_update_body(
+    body: &UpdateIntegrationSyncScheduleBody,
+) -> Result<SyncScheduleConfig, String> {
+    if let Some(ref mode_raw) = body.mode {
+        let mode = SyncScheduleMode::parse(mode_raw)
+            .ok_or_else(|| "mode phải là off, interval hoặc daily".to_string())?;
+        let cfg = match mode {
+            SyncScheduleMode::Off => SyncScheduleConfig::off(),
+            SyncScheduleMode::Interval => {
+                let mins = body.interval_mins.ok_or_else(|| {
+                    "interval mode cần interval_mins (số phút)".to_string()
+                })?;
+                if mins == 0 {
+                    return Err(
+                        "interval mode cần interval_mins ≥ 1 (tắt thì dùng mode=off)".into(),
+                    );
+                }
+                SyncScheduleConfig::interval(mins)
+            }
+            SyncScheduleMode::Daily => SyncScheduleConfig::daily(
+                body.daily_hour.unwrap_or(7),
+                body.daily_minute.unwrap_or(0),
+            ),
+        };
+        cfg.validate()?;
+        return Ok(cfg);
+    }
+    // API cũ: chỉ gửi interval_mins (0 = tắt).
+    let mins = body
+        .interval_mins
+        .ok_or_else(|| "Cần mode hoặc interval_mins".to_string())?;
+    let cfg = SyncScheduleConfig::interval(mins);
+    cfg.validate()?;
+    Ok(cfg)
 }
 
 pub async fn api_get_integration_sync_schedule(ctx: &AdminCtx) -> Response {
@@ -4172,16 +4396,23 @@ pub async fn api_update_integration_sync_schedule(
             "state not initialized",
         );
     };
-    if !integration_sync_interval_allowed(body.interval_mins) {
-        return json_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_interval",
-            "interval_mins phải là 0, 5, 15, 30 hoặc 60",
-        );
-    }
-    if let Err(e) = set_integration_sync_interval_mins(&st.pool, body.interval_mins).await {
+    let cfg = match sync_schedule_from_update_body(&body) {
+        Ok(c) => c,
+        Err(msg) => {
+            return json_error(StatusCode::BAD_REQUEST, "invalid_schedule", &msg);
+        }
+    };
+    if let Err(e) = set_integration_sync_schedule(&st.pool, &cfg).await {
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "save_failed", &e);
     }
+    let detail = match cfg.mode {
+        SyncScheduleMode::Off => "mode=off".to_string(),
+        SyncScheduleMode::Interval => format!("mode=interval,interval_mins={}", cfg.interval_mins),
+        SyncScheduleMode::Daily => format!(
+            "mode=daily,time={:02}:{:02}+07",
+            cfg.daily_hour, cfg.daily_minute
+        ),
+    };
     write_audit(
         &st.pool,
         ctx,
@@ -4189,14 +4420,14 @@ pub async fn api_update_integration_sync_schedule(
         "gateway_settings",
         "success",
         None,
-        Some(&format!("interval_mins={}", body.interval_mins)),
+        Some(&detail),
     )
     .await;
     let schedule = fetch_integration_sync_schedule(&st.pool, ctx.tenant_id).await;
     (StatusCode::OK, axum::Json(schedule)).into_response()
 }
 
-async fn run_background_integration_sync(pool: &PgPool) {
+async fn run_background_integration_sync(pool: &PgPool, schedule: &SyncScheduleConfig) {
     let tenants = db::list_tenant_ids(pool).await.unwrap_or_else(|e| {
         tracing::warn!(error = %e, "list tenants for sync worker failed");
         vec![1]
@@ -4209,6 +4440,12 @@ async fn run_background_integration_sync(pool: &PgPool) {
         }
         if !both_connected {
             continue;
+        }
+        if matches!(schedule.mode, SyncScheduleMode::Daily) {
+            let last = load_last_auto_sync_at(pool, tenant_id).await;
+            if !should_run_daily(schedule, last.as_deref()) {
+                continue;
+            }
         }
         match run_full_sync_pipeline(pool, tenant_id).await {
             Ok(summary) => {
@@ -4230,33 +4467,45 @@ async fn run_background_integration_sync(pool: &PgPool) {
     }
 }
 
-/// Background worker: refresh tokens + full sync every N minutes (configurable via gateway_settings).
+/// Background worker: interval (N phút) hoặc daily (giờ cố định UTC+7).
 pub fn spawn_integration_sync_worker(pool: PgPool) {
     tokio::spawn(async move {
         let mut elapsed_since_sync = Duration::ZERO;
+        let mut last_mode = SyncScheduleMode::Off;
         loop {
-            let interval_mins = resolve_integration_sync_interval_mins(&pool).await;
-            if interval_mins == 0 {
-                if elapsed_since_sync > Duration::ZERO {
-                    tracing::info!("integration background sync disabled (interval_mins=0)");
-                    elapsed_since_sync = Duration::ZERO;
-                }
-                tokio::time::sleep(Duration::from_secs(SYNC_INTERVAL_POLL_SECS)).await;
-                continue;
-            }
-            let period = Duration::from_secs(interval_mins * 60);
-            if elapsed_since_sync >= period {
-                run_background_integration_sync(&pool).await;
+            let cfg = resolve_integration_sync_schedule(&pool).await;
+            if cfg.mode != last_mode {
                 elapsed_since_sync = Duration::ZERO;
+                last_mode = cfg.mode;
             }
-            let sleep_for = if elapsed_since_sync.is_zero() {
-                period
-            } else {
-                period.saturating_sub(elapsed_since_sync)
-            };
-            let step = sleep_for.min(Duration::from_secs(SYNC_INTERVAL_POLL_SECS));
-            tokio::time::sleep(step).await;
-            elapsed_since_sync += step;
+            match cfg.mode {
+                SyncScheduleMode::Off => {
+                    if elapsed_since_sync > Duration::ZERO {
+                        tracing::info!("integration background sync disabled");
+                        elapsed_since_sync = Duration::ZERO;
+                    }
+                    tokio::time::sleep(Duration::from_secs(SYNC_INTERVAL_POLL_SECS)).await;
+                }
+                SyncScheduleMode::Interval => {
+                    let period = Duration::from_secs(cfg.interval_mins.saturating_mul(60));
+                    if elapsed_since_sync >= period {
+                        run_background_integration_sync(&pool, &cfg).await;
+                        elapsed_since_sync = Duration::ZERO;
+                    }
+                    let sleep_for = if elapsed_since_sync.is_zero() {
+                        period
+                    } else {
+                        period.saturating_sub(elapsed_since_sync)
+                    };
+                    let step = sleep_for.min(Duration::from_secs(SYNC_INTERVAL_POLL_SECS));
+                    tokio::time::sleep(step).await;
+                    elapsed_since_sync += step;
+                }
+                SyncScheduleMode::Daily => {
+                    run_background_integration_sync(&pool, &cfg).await;
+                    tokio::time::sleep(Duration::from_secs(SYNC_INTERVAL_POLL_SECS)).await;
+                }
+            }
         }
     });
     tracing::info!("integration background sync worker started");
@@ -4265,6 +4514,34 @@ pub fn spawn_integration_sync_worker(pool: PgPool) {
 #[cfg(test)]
 mod middleware_tests {
     use super::*;
+
+    #[test]
+    fn parse_sync_schedule_plain_and_json() {
+        assert_eq!(
+            parse_sync_schedule_setting("0").mode,
+            SyncScheduleMode::Off
+        );
+        assert_eq!(
+            parse_sync_schedule_setting("20").mode,
+            SyncScheduleMode::Interval
+        );
+        assert_eq!(parse_sync_schedule_setting("20").interval_mins, 20);
+        let daily = parse_sync_schedule_setting(
+            r#"{"mode":"daily","interval_mins":0,"daily_hour":7,"daily_minute":30}"#,
+        );
+        assert_eq!(daily.mode, SyncScheduleMode::Daily);
+        assert_eq!(daily.daily_hour, 7);
+        assert_eq!(daily.daily_minute, 30);
+    }
+
+    #[test]
+    fn interval_validate_bounds() {
+        assert!(SyncScheduleConfig::interval(1).validate().is_ok());
+        assert!(SyncScheduleConfig::interval(10080).validate().is_ok());
+        assert!(SyncScheduleConfig::interval(10081).validate().is_err());
+        assert!(SyncScheduleConfig::daily(7, 0).validate().is_ok());
+        assert!(SyncScheduleConfig::daily(24, 0).validate().is_err());
+    }
 
     #[test]
     fn token_expires_soon_flags_missing_or_past() {

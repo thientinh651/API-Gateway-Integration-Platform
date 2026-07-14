@@ -116,7 +116,7 @@ Client → Nginx (TLS) → avaso-gateway :3000
 | OAuth & Clients | `/auth` | operator+ |
 | Proxy Try | `/proxy-try` | admin |
 | Proxy Queue | `/proxy-queue` | operator+ |
-| API Docs | `/api-docs` | Public |
+| Tài liệu API | `/api-docs` | Public |
 | Integrations | `/integrations` | admin |
 | Users | `/users` | admin |
 | Logs | `/logs` | admin |

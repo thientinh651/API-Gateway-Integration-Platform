@@ -93,6 +93,7 @@ export default function App() {
                 </NavAccessGuard>
               }
             />
+            <Route path="docs" element={<Navigate to="/api-docs" replace />} />
             <Route path="api-docs" element={<ApiDocs />} />
             <Route
               path="integrations"

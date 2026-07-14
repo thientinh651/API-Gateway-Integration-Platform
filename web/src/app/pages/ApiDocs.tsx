@@ -1,61 +1,20 @@
-import { useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Card } from '../components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Badge } from '../components/ui/badge';
-import { Code, Globe, Server, AlertTriangle, Terminal } from 'lucide-react';
+import { Code } from 'lucide-react';
 import { cn } from '../components/ui/utils';
 import { TechPageHeader } from '../components/tech/TechPageHeader';
 import { ApiEndpointCard } from '../components/tech/ApiEndpointCard';
 import { MiddlewarePipelineBanner } from '../components/auth/MiddlewarePipelineBanner';
-
-type ApiDocTab = 'data-plane' | 'admin-api' | 'errors' | 'examples';
-
-const TAB_CONFIG: Record<
-  ApiDocTab,
-  {
-    label: string;
-    short: string;
-    description: string;
-    icon: typeof Globe;
-    frameClass: string;
-    headerClass: string;
-  }
-> = {
-  'data-plane': {
-    label: 'Data plane (middleware)',
-    short: 'Middleware',
-    description:
-      'API Gateway — JWT validation, routing engine, rate limit, transform, logging trên prefix /v1/api/*.',
-    icon: Globe,
-    frameClass: 'border-blue-500/40 bg-blue-500/[0.06] shadow-[inset_0_1px_0_rgba(59,130,246,0.15)]',
-    headerClass: 'from-blue-500/15 to-transparent border-blue-500/30',
-  },
-  'admin-api': {
-    label: 'Quản trị trên dashboard',
-    short: 'Admin',
-    description:
-      'Cấu hình client, route, user, audit, Salesforce/Zoho.',
-    icon: Server,
-    frameClass: 'border-primary/45 bg-primary/[0.07] shadow-[inset_0_1px_0_rgba(249,115,22,0.2)]',
-    headerClass: 'from-primary/20 to-transparent border-primary/35',
-  },
-  errors: {
-    label: 'Error Codes',
-    short: 'HTTP lỗi',
-    description: 'Mã phản hồi chuẩn từ gateway và upstream.',
-    icon: AlertTriangle,
-    frameClass: 'border-red-500/35 bg-red-500/[0.05] shadow-[inset_0_1px_0_rgba(239,68,68,0.12)]',
-    headerClass: 'from-red-500/15 to-transparent border-red-500/30',
-  },
-  examples: {
-    label: 'Examples',
-    short: 'curl mẫu',
-    description: 'Ví dụ OAuth2 token, Bearer JWT, routing, login admin.',
-    icon: Terminal,
-    frameClass: 'border-emerald-500/35 bg-emerald-500/[0.05] shadow-[inset_0_1px_0_rgba(16,185,129,0.12)]',
-    headerClass: 'from-emerald-500/15 to-transparent border-emerald-500/30',
-  },
-};
+import { GuideTabContent } from './docs/DocsSections';
+import {
+  GUIDE_TABS,
+  REFERENCE_TABS,
+  TAB_CONFIG,
+  isApiDocTab,
+  type ApiDocTab,
+} from './docs/docsNav';
 
 function DocSectionFrame({
   tab,
@@ -81,12 +40,10 @@ function DocSectionFrame({
             <Icon className="w-5 h-5 text-white" />
           </div>
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className="font-semibold text-white border-border/80 font-mono-tech">
-                {meta.label}
-              </Badge>
-            </div>
-            <p className="text-sm text-slate-300 mt-0.5">{meta.description}</p>
+            <Badge variant="outline" className="font-semibold text-white border-border/80 font-mono-tech">
+              {meta.label}
+            </Badge>
+            <p className="text-sm text-slate-300 mt-1.5 leading-relaxed">{meta.description}</p>
           </div>
         </div>
       </div>
@@ -100,21 +57,82 @@ function DocSectionFrame({
   );
 }
 
-/** Thanh tab kiểu segmented control — tab chọn có nền pill nổi trong track. */
-const TAB_TRACK =
-  'w-full h-auto grid grid-cols-2 sm:grid-cols-4 gap-1 p-1.5 rounded-xl bg-slate-900/95 border border-slate-700/90';
-const TAB_PILL_IDLE =
-  'bg-transparent text-slate-400 hover:text-slate-200 border-0 shadow-none';
+const GUIDE_TRACK =
+  'w-full h-auto flex flex-wrap gap-1 p-1.5 rounded-xl bg-slate-900/95 border border-slate-700/90';
+const REF_TRACK =
+  'w-full h-auto grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1.5 rounded-xl bg-slate-900/95 border border-slate-700/90';
+const TAB_PILL_IDLE = 'bg-transparent text-slate-400 hover:text-slate-200 border-0 shadow-none';
 const TAB_PILL_ACTIVE =
   'bg-slate-600 text-white shadow-[0_2px_10px_rgba(0,0,0,0.45)] border border-slate-500/80';
 
+function TierLabel({ tier, title, hint }: { tier: string; title: string; hint: string }) {
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 px-0.5 mb-1.5">
+      <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{tier}</span>
+      <span className="text-xs font-semibold text-slate-200">{title}</span>
+      <span className="text-[11px] text-muted-foreground">{hint}</span>
+    </div>
+  );
+}
+
+function TabPill({
+  tabKey,
+  selected,
+  className,
+}: {
+  tabKey: ApiDocTab;
+  selected: boolean;
+  className?: string;
+}) {
+  const m = TAB_CONFIG[tabKey];
+  return (
+    <TabsTrigger
+      value={tabKey}
+      className={cn(
+        'min-h-[42px] px-2.5 py-2 text-xs sm:text-sm font-medium rounded-lg transition-all duration-200',
+        'data-[state=active]:bg-transparent data-[state=active]:text-inherit data-[state=active]:shadow-none',
+        'dark:data-[state=active]:bg-transparent dark:data-[state=active]:text-inherit',
+        selected ? TAB_PILL_ACTIVE : TAB_PILL_IDLE,
+        className
+      )}
+    >
+      <span className="sm:hidden">{m.short}</span>
+      <span className="hidden sm:inline text-center leading-snug">{m.label}</span>
+    </TabsTrigger>
+  );
+}
+
+function readInitialTab(): ApiDocTab {
+  if (typeof window === 'undefined') return 'overview';
+  const hash = window.location.hash.replace(/^#/, '');
+  if (isApiDocTab(hash)) return hash;
+  return 'overview';
+}
+
 export function ApiDocs() {
-  const [activeTab, setActiveTab] = useState<ApiDocTab>('data-plane');
+  const [activeTab, setActiveTab] = useState<ApiDocTab>(readInitialTab);
+
+  const selectTab = useCallback((tab: ApiDocTab) => {
+    setActiveTab(tab);
+    window.history.replaceState(null, '', `#${tab}`);
+    window.scrollTo(0, 0);
+  }, []);
+
+  useEffect(() => {
+    const onHash = () => {
+      const hash = window.location.hash.replace(/^#/, '');
+      if (isApiDocTab(hash)) setActiveTab(hash);
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
   const dataPlaneEndpoints = [
     {
       method: 'POST',
       path: '/oauth/token',
-      description: 'Identity — phát access_token (password | client_credentials | authorization_code). Rate limit: 20/phút/client_id, 50/phút/IP',
+      description:
+        'Identity — phát access_token (password | client_credentials | authorization_code). Rate limit: 20/phút/client_id, 50/phút/IP',
       auth: 'Không (public token endpoint)',
       response: '{"access_token":"eyJ...","token_type":"Bearer","expires_in":3600}',
     },
@@ -155,7 +173,7 @@ export function ApiDocs() {
     },
     {
       method: '*',
-      path: '/\{configured_route\}/*',
+      path: '/{configured_route}/*',
       description: 'Route CRUD trên dashboard — prefix tùy cấu hình',
       auth: 'Bearer JWT',
       response: 'Response từ upstream',
@@ -197,7 +215,7 @@ export function ApiDocs() {
     { method: 'DELETE', path: '/api/client-keys/{id}', description: 'Xóa client khỏi registry', auth: 'Operator+', body: null },
     { method: 'GET', path: '/api/users', description: 'Danh sách admin users', auth: 'Admin', body: null },
     { method: 'POST', path: '/api/users', description: 'Tạo user', auth: 'Admin', body: '{"username":"...","password":"***","role":"operator"}' },
-    { method: 'PUT', path: '/api/users/{id}', description: 'Cập nhật user', auth: 'Admin', body: null },
+    { method: 'PUT', path: '/api/users/{id}', description: 'Cập nhật user (tự đổi password cần current_password)', auth: 'Admin', body: '{"username":"...","role":"...","is_active":true,"password":"?","current_password":"?"}' },
     { method: 'DELETE', path: '/api/users/{id}', description: 'Xóa user', auth: 'Admin', body: null },
     { method: 'GET', path: '/api/audit-logs', description: 'Audit log admin', auth: 'Viewer+', body: '?limit=&result=&search=' },
     { method: 'GET', path: '/api/transaction-logs', description: 'Transaction log gateway', auth: 'Viewer+', body: '?limit=&method=&status=&outcome=&reason=&client_key_id=&search=' },
@@ -208,14 +226,13 @@ export function ApiDocs() {
     { method: 'GET', path: '/api/middleware/status', description: 'Trạng thái runtime middleware (clients, routes, RL)', auth: 'Viewer+', body: null },
     { method: 'GET', path: '/api/dashboard/stats', description: 'Thống kê Overview', auth: 'Viewer+ (session)', body: null },
     { method: 'GET', path: '/api/proxy', description: 'Demo upstream JSONPlaceholder (không phải gateway logic)', auth: 'Viewer+', body: null },
-    { method: 'GET', path: '/api/integrations', description: 'Trạng thái SF/Zoho', auth: 'Admin', body: null },
     { method: 'GET', path: '/api/integrations/salesforce/connect', description: 'Bắt đầu OAuth SF', auth: 'Admin', body: null },
     { method: 'POST', path: '/api/integrations/salesforce/sync', description: 'Sync snapshot SF', auth: 'Admin', body: null },
     { method: 'GET', path: '/api/integrations/zoho/connect', description: 'Bắt đầu OAuth Zoho', auth: 'Admin', body: null },
     { method: 'POST', path: '/api/integrations/zoho/sync', description: 'Sync snapshot Zoho', auth: 'Admin', body: null },
     { method: 'POST', path: '/api/integrations/sync-now', description: 'Pipeline SF→Zoho (pull + lọc + push + log)', auth: 'Admin', body: null },
     { method: 'GET', path: '/api/integrations/sync-schedule', description: 'Lịch tự động đồng bộ pipeline', auth: 'Admin', body: null },
-    { method: 'PUT', path: '/api/integrations/sync-schedule', description: 'Đặt chu kỳ auto sync (0/5/15/30/60 phút)', auth: 'Admin', body: '{"interval_mins":15}' },
+    { method: 'PUT', path: '/api/integrations/sync-schedule', description: 'Đặt lịch auto sync (off | mỗi N phút | mỗi ngày HH:MM UTC+7)', auth: 'Admin', body: '{"mode":"interval","interval_mins":20} | {"mode":"daily","daily_hour":7,"daily_minute":0}' },
     { method: 'GET', path: '/api/integrations/pipeline-status', description: 'Trạng thái 4 bước pipeline', auth: 'Admin', body: null },
     { method: 'GET', path: '/api/integrations/entity-links', description: 'Mapping Opportunity↔Project', auth: 'Admin', body: null },
     { method: 'GET', path: '/api/integrations/sync-logs', description: 'Sync log middleware', auth: 'Admin', body: null },
@@ -226,22 +243,22 @@ export function ApiDocs() {
   ];
 
   const errorCodes = [
-    { code: '401', description: 'JWT validation — thiếu/sai/hết hạn Bearer token' },
-    { code: '403', description: 'Authorization — client disabled, ACL route, hoặc RBAC admin' },
-    { code: '404', description: 'Routing — không có route khớp path' },
-    { code: '429', description: 'Rate limiting — vượt quota client / route / global' },
-    { code: '502', description: 'Upstream — middleware đã cho qua nhưng backend lỗi' },
-    { code: '504', description: 'Gateway Timeout' },
-    { code: '500', description: 'Internal Server Error' },
+    { code: '401', description: 'Thiếu / sai / hết hạn JWT — chưa được xác thực data plane' },
+    { code: '403', description: 'Có token nhưng bị cấm — client tắt, không có ACL, hoặc sai quyền admin' },
+    { code: '404', description: 'Không tìm thấy route khớp path bạn gọi' },
+    { code: '429', description: 'Gọi quá hạn mức (rate limit) — xem Retry-After' },
+    { code: '502', description: 'Gateway đã chuyển tiếp nhưng upstream trả lỗi / không phản hồi đúng' },
+    { code: '504', description: 'Upstream chậm quá thời gian chờ (timeout)' },
+    { code: '500', description: 'Lỗi nội bộ gateway' },
   ];
 
   const middlewareErrorFields = [
-    { field: 'missing_token', description: 'Thiếu header Authorization: Bearer' },
+    { field: 'missing_token', description: 'Thiếu header Authorization: Bearer …' },
     { field: 'invalid_token', description: 'JWT sai chữ ký, issuer hoặc format' },
-    { field: 'token_expired', description: 'JWT hết hạn (exp claim)' },
-    { field: 'client_key_disabled', description: 'OAuth client status = disabled' },
-    { field: 'route_forbidden', description: 'Path không nằm trong ACL của client' },
-    { field: 'rate_limit_exceeded', description: 'Token bucket hết (data plane hoặc POST /oauth/token) — xem Retry-After' },
+    { field: 'token_expired', description: 'JWT đã hết hạn (claim exp)' },
+    { field: 'client_key_disabled', description: 'Client trong Registry đang bị tắt' },
+    { field: 'route_forbidden', description: 'Path này chưa được gán cho client của token' },
+    { field: 'rate_limit_exceeded', description: 'Hết hạn mức gọi — xem Retry-After' },
   ];
 
   const getMethodColor = (method: string) => {
@@ -258,42 +275,52 @@ export function ApiDocs() {
   return (
     <>
       <TechPageHeader
-        codeLine="// danh sách endpoint"
+        codeLine="// documentation + api reference"
         title="Tài liệu API"
-        description={
-          <>
-            API Gateway Rust — JWT identity, routing engine, admin control plane.
-          </>
-        }
       />
 
       <Tabs
         value={activeTab}
-        onValueChange={(v) => setActiveTab(v as ApiDocTab)}
+        onValueChange={(v) => {
+          if (isApiDocTab(v)) selectTab(v);
+        }}
         className="space-y-4"
       >
-        <TabsList className={cn(TAB_TRACK, 'bg-muted/0')}>
-          {(Object.keys(TAB_CONFIG) as ApiDocTab[]).map((key) => {
-            const m = TAB_CONFIG[key];
-            const selected = activeTab === key;
-            return (
-              <TabsTrigger
-                key={key}
-                value={key}
-                className={cn(
-                  'min-h-[42px] px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200',
-                  'data-[state=active]:bg-transparent data-[state=active]:text-inherit data-[state=active]:shadow-none',
-                  'dark:data-[state=active]:bg-transparent dark:data-[state=active]:text-inherit',
-                  selected ? TAB_PILL_ACTIVE : TAB_PILL_IDLE
-                )}
-              >
-                {m.label}
-              </TabsTrigger>
-            );
-          })}
-        </TabsList>
+        <div className="space-y-3">
+          <div>
+            <TierLabel
+              title="Hướng dẫn"
+            />
+            <TabsList className={cn(GUIDE_TRACK, 'bg-muted/0')}>
+              {GUIDE_TABS.map((key) => (
+                <TabPill key={key} tabKey={key} selected={activeTab === key} />
+              ))}
+            </TabsList>
+          </div>
+          <div>
+            <TierLabel
+              title="API Reference"
+            />
+            <TabsList className={cn(REF_TRACK, 'bg-muted/0')}>
+              {REFERENCE_TABS.map((key) => (
+                <TabPill key={key} tabKey={key} selected={activeTab === key} className="w-full justify-center" />
+              ))}
+            </TabsList>
+          </div>
+        </div>
+
+        {GUIDE_TABS.map((tab) => (
+          <TabsContent key={tab} value={tab} className="mt-0 focus-visible:outline-none">
+            <DocSectionFrame tab={tab} title={TAB_CONFIG[tab].label}>
+              <GuideTabContent tab={tab} />
+            </DocSectionFrame>
+          </TabsContent>
+        ))}
 
         <TabsContent value="data-plane" className="mt-0 focus-visible:outline-none space-y-4">
+          <p className="text-sm text-slate-400 leading-relaxed max-w-3xl">
+            Đây là các đường dẫn <strong className="text-slate-200">ứng dụng của bạn</strong> gọi qua gateway.
+          </p>
           <MiddlewarePipelineBanner compact />
           <DocSectionFrame tab="data-plane" title="Endpoint data plane">
             <div className="space-y-4">
@@ -321,7 +348,11 @@ export function ApiDocs() {
           </DocSectionFrame>
         </TabsContent>
 
-        <TabsContent value="admin-api" className="mt-0 focus-visible:outline-none">
+        <TabsContent value="admin-api" className="mt-0 focus-visible:outline-none space-y-4">
+          <p className="text-sm text-slate-400 leading-relaxed max-w-3xl">
+            Endpoint dành cho <strong className="text-slate-200">dashboard</strong> (cookie session hoặc API
+            key admin). Dùng để cấu hình hệ thống — không phải đường gọi dữ liệu của app end-user.
+          </p>
           <DocSectionFrame tab="admin-api" title="Endpoint quản trị (dashboard)">
             <div className="space-y-3">
               {adminEndpoints.map((endpoint, index) => (
@@ -351,10 +382,17 @@ export function ApiDocs() {
         </TabsContent>
 
         <TabsContent value="errors" className="mt-0 focus-visible:outline-none space-y-4">
+          <p className="text-sm text-slate-400 leading-relaxed max-w-3xl">
+            Khi request thất bại, nhìn mã HTTP trước; với data plane còn có trường JSON{' '}
+            <code className="font-mono-tech text-slate-300">error</code> chi tiết hơn.
+          </p>
           <DocSectionFrame tab="errors" title="HTTP status">
             <div className="space-y-3">
               {errorCodes.map((error) => (
-                <div key={error.code} className="flex items-start gap-4 p-3 rounded-lg bg-background/50 border border-border">
+                <div
+                  key={error.code}
+                  className="flex items-start gap-4 p-3 rounded-lg bg-background/50 border border-border"
+                >
                   <Badge className="bg-red-500/10 text-red-400 border-red-500/20 border font-mono min-w-[60px] justify-center">
                     {error.code}
                   </Badge>
@@ -366,8 +404,14 @@ export function ApiDocs() {
           <DocSectionFrame tab="errors" title="JSON error (data plane)">
             <div className="space-y-3">
               {middlewareErrorFields.map((row) => (
-                <div key={row.field} className="flex items-start gap-4 p-3 rounded-lg bg-background/50 border border-border">
-                  <Badge variant="outline" className="font-mono text-[10px] text-amber-400 border-amber-500/30 shrink-0">
+                <div
+                  key={row.field}
+                  className="flex items-start gap-4 p-3 rounded-lg bg-background/50 border border-border"
+                >
+                  <Badge
+                    variant="outline"
+                    className="font-mono text-[10px] text-amber-400 border-amber-500/30 shrink-0"
+                  >
                     {row.field}
                   </Badge>
                   <p className="text-sm text-slate-300">{row.description}</p>
@@ -377,90 +421,95 @@ export function ApiDocs() {
           </DocSectionFrame>
         </TabsContent>
 
-        <TabsContent value="examples" className="mt-0 focus-visible:outline-none">
+        <TabsContent value="examples" className="mt-0 focus-visible:outline-none space-y-4">
+          <p className="text-sm text-slate-400 leading-relaxed max-w-3xl">
+            Copy lệnh mẫu, thay Client ID / Secret / cookie của bạn. Luồng đầy đủ hơn nằm ở tầng 1 → Quick
+            Start.
+          </p>
           <DocSectionFrame tab="examples" title="Ví dụ curl">
             <div className="grid gap-6">
-            <div className="rounded-xl border border-border bg-background/40 p-4 sm:p-5">
-              <h4 className="text-base font-bold text-white mb-3 flex items-center gap-2">
-                <Code className="w-5 h-5 text-sky-400" />
-                Client Registry + ACL
-              </h4>
-              <div className="bg-[#050810] rounded-lg p-4 font-mono-tech text-xs overflow-x-auto border border-border/80 shadow-inner">
-                <pre className="text-slate-300">{`curl -X POST https://thientinh.io.vn/api/client-keys \\
+              <div className="rounded-xl border border-border bg-background/40 p-4 sm:p-5">
+                <h4 className="text-base font-bold text-white mb-2 flex items-center gap-2">
+                  <Code className="w-5 h-5 text-sky-400" />
+                  Tạo client và gán route
+                </h4>
+                <p className="text-xs text-muted-foreground mb-3">Cần đã đăng nhập dashboard (cookie).</p>
+                <div className="bg-[#050810] rounded-lg p-4 font-mono-tech text-xs overflow-x-auto border border-border/80 shadow-inner">
+                  <pre className="text-slate-300">{`curl -X POST https://thientinh.io.vn/api/client-keys \\
   -b cookies.txt -H "Content-Type: application/json" \\
   -d '{"name":"erp","rate_limit_per_min":100}'
 
 curl -X PUT https://thientinh.io.vn/api/client-keys/1/routes \\
   -b cookies.txt -H "Content-Type: application/json" \\
   -d '{"route_ids":[1]}'`}</pre>
+                </div>
               </div>
-            </div>
 
-            <div className="rounded-xl border border-border bg-background/40 p-4 sm:p-5">
-              <h4 className="text-base font-bold text-white mb-3 flex items-center gap-2">
-                <Code className="w-5 h-5 text-emerald-400" />
-                OAuth2 token + JWT data-plane
-              </h4>
-              <div className="bg-[#050810] rounded-lg p-4 font-mono-tech text-xs overflow-x-auto border border-border/80 shadow-inner">
-                <pre className="text-slate-300">{`# 1) Lấy JWT (client_id + client_secret — CHỈ tại token endpoint)
+              <div className="rounded-xl border border-border bg-background/40 p-4 sm:p-5">
+                <h4 className="text-base font-bold text-white mb-2 flex items-center gap-2">
+                  <Code className="w-5 h-5 text-emerald-400" />
+                  Lấy JWT rồi gọi data plane
+                </h4>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Secret chỉ dùng ở bước 1. Bước 2 chỉ gửi Bearer JWT.
+                </p>
+                <div className="bg-[#050810] rounded-lg p-4 font-mono-tech text-xs overflow-x-auto border border-border/80 shadow-inner">
+                  <pre className="text-slate-300">{`# 1) Lấy JWT
 curl -sS -X POST https://thientinh.io.vn/api/oauth/token \\
   -H "Content-Type: application/x-www-form-urlencoded" \\
   -d "grant_type=client_credentials&client_id=avaso_pk_...&client_secret=avaso_sk_..."
 
-# 2) Data plane — Bearer JWT (KHÔNG gửi secret)
+# 2) Gọi API
 TOKEN="<access_token>"
 curl -sS "https://thientinh.io.vn/v1/api/get" \\
   -H "Authorization: Bearer $TOKEN"`}</pre>
+                </div>
+                <p className="text-xs text-muted-foreground mt-3 leading-relaxed">
+                  <span className="font-mono">avaso_pk_</span> / <span className="font-mono">avaso_sk_</span> là
+                  Client ID / Secret — không phải khóa RSA.
+                </p>
               </div>
-              <p className="text-xs text-muted-foreground mt-3 leading-relaxed">
-                Tiền tố <span className="font-mono">avaso_pk_</span>/<span className="font-mono">avaso_sk_</span>{' '}
-                là OAuth2 client_id/client_secret — không phải cặp khóa RSA. Secret mã hóa AES trong DB;
-                data plane xác thực JWT HS256.
-              </p>
-            </div>
 
-            <div className="rounded-xl border border-border bg-background/40 p-4 sm:p-5">
-              <h4 className="text-base font-bold text-white mb-3 flex items-center gap-2">
-                <Code className="w-5 h-5 text-sky-400" />
-                Benchmark (wrk)
-              </h4>
-              <div className="bg-[#050810] rounded-lg p-4 font-mono-tech text-xs overflow-x-auto border border-border/80 shadow-inner">
-                <pre className="text-slate-300">{`source ./scripts/ensure-bench-credentials.sh
-export BENCH_URL="http://127.0.0.1:3000/health"   # baseline
+              <div className="rounded-xl border border-border bg-background/40 p-4 sm:p-5">
+                <h4 className="text-base font-bold text-white mb-2 flex items-center gap-2">
+                  <Code className="w-5 h-5 text-sky-400" />
+                  Benchmark (wrk)
+                </h4>
+                <div className="bg-[#050810] rounded-lg p-4 font-mono-tech text-xs overflow-x-auto border border-border/80 shadow-inner">
+                  <pre className="text-slate-300">{`source ./scripts/ensure-bench-credentials.sh
+export BENCH_URL="http://127.0.0.1:3000/health"
 ./scripts/benchmark-gateway.sh
 
-export BENCH_URL="http://127.0.0.1:3000/v1/api/get"  # JWT + routing
+export BENCH_URL="http://127.0.0.1:3000/v1/api/get"
 ./scripts/benchmark-gateway.sh`}</pre>
+                </div>
               </div>
-            </div>
 
-            <div className="rounded-xl border border-border bg-background/40 p-4 sm:p-5">
-              <h4 className="text-base font-bold text-white mb-3 flex items-center gap-2">
-                <Code className="w-5 h-5 text-primary" />
-                Admin login
-              </h4>
-              <div className="bg-[#050810] rounded-lg p-4 font-mono-tech text-xs overflow-x-auto border border-border/80 shadow-inner">
-                <pre className="text-slate-300">{`curl -X POST https://thientinh.io.vn/api/login \\
+              <div className="rounded-xl border border-border bg-background/40 p-4 sm:p-5">
+                <h4 className="text-base font-bold text-white mb-2 flex items-center gap-2">
+                  <Code className="w-5 h-5 text-primary" />
+                  Đăng nhập admin
+                </h4>
+                <div className="bg-[#050810] rounded-lg p-4 font-mono-tech text-xs overflow-x-auto border border-border/80 shadow-inner">
+                  <pre className="text-slate-300">{`curl -X POST https://thientinh.io.vn/api/login \\
   -H "Content-Type: application/json" \\
   -d '{"username":"admin","password":"***"}' \\
-  -c cookies.txt
-
-# Response: {"status":"ok","access_token":"eyJ...","token_type":"Bearer",...}`}</pre>
+  -c cookies.txt`}</pre>
+                </div>
               </div>
-            </div>
 
-            <div className="rounded-xl border border-border bg-background/40 p-4 sm:p-5">
-              <h4 className="text-base font-bold text-white mb-3 flex items-center gap-2">
-                <Code className="w-5 h-5 text-primary" />
-                List routes (session)
-              </h4>
-              <div className="bg-[#050810] rounded-lg p-4 font-mono-tech text-xs overflow-x-auto border border-border/80 shadow-inner">
-                <pre className="text-slate-300">{`curl https://thientinh.io.vn/api/routes -b cookies.txt
+              <div className="rounded-xl border border-border bg-background/40 p-4 sm:p-5">
+                <h4 className="text-base font-bold text-white mb-2 flex items-center gap-2">
+                  <Code className="w-5 h-5 text-primary" />
+                  Liệt kê routes
+                </h4>
+                <div className="bg-[#050810] rounded-lg p-4 font-mono-tech text-xs overflow-x-auto border border-border/80 shadow-inner">
+                  <pre className="text-slate-300">{`curl https://thientinh.io.vn/api/routes -b cookies.txt
 
-# Hoặc admin key:
+# Hoặc:
 curl https://thientinh.io.vn/api/routes -H "X-API-Key: <admin_key>"`}</pre>
+                </div>
               </div>
-            </div>
             </div>
           </DocSectionFrame>
         </TabsContent>

@@ -3012,7 +3012,7 @@ async fn api_list_workspace_members(Extension(ctx): Extension<AdminCtx>) -> impl
         return json_error(
             StatusCode::FORBIDDEN,
             "on_prem_mode",
-            "Triển khai on-prem — dùng Quản lý Users cho thành viên tổ chức",
+            "Triển khai on-prem — dùng Quản lý Users",
         );
     }
     if !ctx.is_admin() {
@@ -3043,7 +3043,7 @@ async fn api_invite_workspace_member(
         return json_error(
             StatusCode::FORBIDDEN,
             "on_prem_mode",
-            "Triển khai on-prem — dùng Thêm User để thêm thành viên tổ chức",
+            "Triển khai on-prem — dùng Thêm User",
         );
     }
     if !ctx.is_admin() {
@@ -4827,6 +4827,8 @@ struct UpdateUserBody {
     #[serde(default = "default_user_active")]
     is_active: bool,
     password: Option<String>,
+    /// Bắt buộc khi tự đổi mật khẩu (id == session user). Admin đổi user khác không cần.
+    current_password: Option<String>,
     email: Option<String>,
 }
 
@@ -5105,6 +5107,54 @@ async fn api_update_user(
         );
     }
     let existing = Some(target);
+    let current_role = existing
+        .as_ref()
+        .and_then(|u| normalize_user_role(&u.role))
+        .unwrap_or_else(|| role.clone());
+
+    // Không cho tự đổi role của chính mình.
+    if id == ctx.user_id && role != current_role {
+        return json_error_fields(
+            StatusCode::FORBIDDEN,
+            "cannot_change_own_role",
+            "Không thể tự đổi quyền của chính mình",
+            serde_json::Map::from_iter([(
+                "role".into(),
+                serde_json::Value::String("Không thể tự đổi quyền của chính mình".into()),
+            )]),
+        );
+    }
+
+    // Không hạ/xóa quyền admin cuối cùng trong workspace.
+    let demoting_admin = current_role == "admin" && role != "admin";
+    let disabling_admin = current_role == "admin" && !body.is_active;
+    if demoting_admin || disabling_admin {
+        match db::count_active_admins_in_tenant(&st.pool, target_tenant).await {
+            Ok(n) if n <= 1 => {
+                return json_error_fields(
+                    StatusCode::BAD_REQUEST,
+                    "cannot_demote_last_admin",
+                    "Không thể hạ/vô hiệu hóa admin cuối cùng",
+                    serde_json::Map::from_iter([(
+                        "role".into(),
+                        serde_json::Value::String(
+                            "Cần ít nhất một admin đang hoạt động".into(),
+                        ),
+                    )]),
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("{e}") })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let changing_own_password = id == ctx.user_id;
     let pass_hash = if let Some(ref p) = body.password {
         let t = p.trim();
         if t.is_empty() {
@@ -5121,6 +5171,35 @@ async fn api_update_user(
                 fields,
             );
         } else {
+            if changing_own_password {
+                let current = body.current_password.as_deref().unwrap_or("").trim();
+                if current.is_empty() {
+                    fields.insert(
+                        "current_password".into(),
+                        serde_json::Value::String(
+                            "Nhập mật khẩu hiện tại để xác nhận".into(),
+                        ),
+                    );
+                    return json_error_fields(
+                        StatusCode::BAD_REQUEST,
+                        "validation_failed",
+                        "Dữ liệu user không hợp lệ",
+                        fields,
+                    );
+                }
+                let row = existing.as_ref().expect("target user loaded");
+                if !db::verify_password(current, &row.password_hash) {
+                    return json_error_fields(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_current_password",
+                        "Mật khẩu hiện tại không đúng",
+                        serde_json::Map::from_iter([(
+                            "current_password".into(),
+                            serde_json::Value::String("Mật khẩu hiện tại không đúng".into()),
+                        )]),
+                    );
+                }
+            }
             match db::hash_password(t) {
                 Ok(h) => Some(h),
                 Err(e) => {
@@ -5257,6 +5336,35 @@ async fn api_delete_user(
             Json(serde_json::json!({ "error": "cannot_delete_self" })),
         )
             .into_response();
+    }
+    if let Some(target) = db::fetch_admin_user_by_id_any(&st.pool, id)
+        .await
+        .ok()
+        .flatten()
+    {
+        let target_tenant = target.tenant_id.unwrap_or(1);
+        if target_tenant == ctx.tenant_id
+            && normalize_user_role(&target.role).as_deref() == Some("admin")
+            && target.is_active != 0
+        {
+            match db::count_active_admins_in_tenant(&st.pool, target_tenant).await {
+                Ok(n) if n <= 1 => {
+                    return json_error(
+                        StatusCode::BAD_REQUEST,
+                        "cannot_delete_last_admin",
+                        "Không thể xóa admin cuối cùng",
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({ "error": format!("{e}") })),
+                    )
+                        .into_response();
+                }
+            }
+        }
     }
     match db::delete_admin_user(&st.pool, id, ctx.tenant_id).await {
         Ok(0) => (
@@ -5860,8 +5968,11 @@ async fn api_reset_integration_sync(Extension(ctx): Extension<AdminCtx>) -> impl
     integrations::api_reset_integration_sync(&ctx).await
 }
 
-async fn api_dashboard_stats(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
-    dashboard::api_dashboard_stats(&ctx).await
+async fn api_dashboard_stats(
+    Extension(ctx): Extension<AdminCtx>,
+    Query(q): Query<dashboard::DashboardStatsQuery>,
+) -> impl IntoResponse {
+    dashboard::api_dashboard_stats(&ctx, q.hours).await
 }
 
 #[derive(Debug, serde::Serialize)]

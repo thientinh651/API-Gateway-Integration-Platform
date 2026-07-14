@@ -417,6 +417,8 @@ export async function updateAdminUser(
     role: string;
     is_active: boolean;
     password?: string;
+    /** Bắt buộc khi tự đổi mật khẩu; admin đổi user khác không cần. */
+    current_password?: string;
     email?: string;
   }
 ): Promise<AdminUserRow> {
@@ -763,9 +765,18 @@ export function integrationSyncNow(): Promise<SyncNowResult> {
   return fetchJson<SyncNowResult>('/api/integrations/sync-now', { method: 'POST' });
 }
 
+export type SyncScheduleMode = 'off' | 'interval' | 'daily';
+
 export type IntegrationSyncSchedule = {
   enabled: boolean;
+  mode: SyncScheduleMode;
   interval_mins: number;
+  daily_hour: number;
+  daily_minute: number;
+  timezone: string;
+  interval_mins_min: number;
+  interval_mins_max: number;
+  /** Legacy — có thể rỗng. */
   allowed_intervals: number[];
   env_default_mins: number;
   sf_connected: boolean;
@@ -775,17 +786,24 @@ export type IntegrationSyncSchedule = {
   last_auto_sync_at: string | null;
 };
 
+export type UpdateIntegrationSyncScheduleBody = {
+  mode: SyncScheduleMode;
+  interval_mins?: number;
+  daily_hour?: number;
+  daily_minute?: number;
+};
+
 export function fetchIntegrationSyncSchedule(): Promise<IntegrationSyncSchedule> {
   return fetchJson<IntegrationSyncSchedule>('/api/integrations/sync-schedule');
 }
 
 export function updateIntegrationSyncSchedule(
-  interval_mins: number,
+  body: UpdateIntegrationSyncScheduleBody,
 ): Promise<IntegrationSyncSchedule> {
   return fetchJson<IntegrationSyncSchedule>('/api/integrations/sync-schedule', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ interval_mins }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -887,6 +905,7 @@ export type DashboardStats = {
     active: number;
     disabled: number;
   };
+  window_hours?: number;
   traffic_24h: {
     total: number;
     success: number;
@@ -923,8 +942,9 @@ export type DashboardStats = {
   total_snapshot_records: number;
 };
 
-export function fetchDashboardStats(): Promise<DashboardStats> {
-  return fetchJson<DashboardStats>('/api/dashboard/stats');
+export function fetchDashboardStats(hours = 24): Promise<DashboardStats> {
+  const h = [1, 24, 72, 168].includes(hours) ? hours : 24;
+  return fetchJson<DashboardStats>(`/api/dashboard/stats?hours=${h}`);
 }
 
 export type MiddlewareStatus = {

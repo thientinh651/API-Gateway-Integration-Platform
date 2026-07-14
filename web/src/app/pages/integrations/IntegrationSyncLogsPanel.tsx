@@ -31,7 +31,6 @@ export function IntegrationSyncLogsPanel({ logs, emptyHint }: Props) {
         <ScrollText className="w-4 h-4 text-primary" />
         <div>
           <h3 className="text-sm font-bold text-white">Sync Log</h3>
-          <p className="text-xs text-muted-foreground mt-0.5">Middleware router + push từng deal</p>
         </div>
       </div>
       {logs.length === 0 ? (
