@@ -1219,6 +1219,23 @@ fn map_sf_accounts(records: &[serde_json::Value]) -> Vec<serde_json::Value> {
         .collect()
 }
 
+fn map_sf_tasks(records: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    records
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": sf_field_str(r, "Id"),
+                "name": sf_field_str(r, "Subject"),
+                "status": sf_field_str(r, "Status"),
+                "due_date": sf_field_str(r, "ActivityDate"),
+                "what_id": sf_field_str(r, "WhatId"),
+                "created_date": sf_field_str(r, "CreatedDate"),
+                "last_modified_date": sf_field_str(r, "LastModifiedDate"),
+            })
+        })
+        .collect()
+}
+
 fn zoho_id_str(v: &serde_json::Value) -> String {
     v.get("id_string")
         .or_else(|| v.get("id"))
@@ -1329,6 +1346,18 @@ pub async fn sync_salesforce_snapshots(pool: &PgPool, tenant_id: i64) -> Result<
     let acc_mapped = map_sf_accounts(&acc_records);
     let acc_count = save_snapshot(pool, tenant_id, SF_PROVIDER, "account", &acc_mapped).await?;
 
+    let task_q = urlencoding::encode(
+        "SELECT Id,Subject,Status,ActivityDate,WhatId,CreatedDate,LastModifiedDate FROM Task WHERE WhatId != null LIMIT 200",
+    );
+    let task_raw = crate::sync_worker_gateway::sf_get_via_gateway(&format!("/query?q={task_q}")).await?;
+    let task_records = task_raw
+        .get("records")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let task_mapped = map_sf_tasks(&task_records);
+    let task_count = save_snapshot(pool, tenant_id, SF_PROVIDER, "task", &task_mapped).await?;
+
     db::touch_integration_last_sync(pool, tenant_id, SF_PROVIDER)
         .await
         .map_err(|e| format!("db touch sync: {e}"))?;
@@ -1338,6 +1367,7 @@ pub async fn sync_salesforce_snapshots(pool: &PgPool, tenant_id: i64) -> Result<
         "provider": SF_PROVIDER,
         "opportunity": opp_count,
         "account": acc_count,
+        "task": task_count,
     }))
 }
 
@@ -2931,11 +2961,7 @@ async fn zoho_post_json_with_retry(
 
 /// Tên project Zoho = tên Opportunity trên Salesforce (không thêm prefix marketing).
 fn zoho_project_name_from_opportunity(opportunity_name: &str) -> String {
-    let trimmed = opportunity_name.trim();
-    if trimmed.is_empty() {
-        return "Dự án mới".into();
-    }
-    trimmed.to_string()
+    opportunity_name.trim().to_string()
 }
 
 fn is_closed_won_stage(stage: &str) -> bool {
@@ -3060,20 +3086,25 @@ async fn create_zoho_project(
     Err(format!("Zoho create project: missing id in response: {raw}"))
 }
 
+#[derive(Debug, Clone)]
+struct SalesforceTaskItem {
+    name: String,
+    due_date: Option<String>,
+}
+
 async fn create_zoho_tasks_for_project(
     pool: &PgPool,
     tenant_id: i64,
     portal_id: &str,
     project_id: &str,
-    task_names: &[String],
-    end_date: Option<&str>,
+    tasks: &[SalesforceTaskItem],
 ) -> Result<i64, String> {
     let mut created = 0_i64;
-    for name in task_names {
+    for task in tasks {
         let mut body = serde_json::Map::new();
-        body.insert("name".into(), name.clone().into());
-        if let Some(ed) = end_date {
-            body.insert("end_date".into(), ed.into());
+        body.insert("name".into(), task.name.clone().into());
+        if let Some(due_date) = task.due_date.as_deref() {
+            body.insert("end_date".into(), due_date.into());
         }
         zoho_post_json_with_retry(
             pool,
@@ -3121,32 +3152,7 @@ struct PushItem {
     close_date: Option<String>,
     start_date: Option<String>,
     end_date: Option<String>,
-    tasks: Vec<String>,
-}
-
-async fn load_snapshot_rows(
-    pool: &PgPool,
-    tenant_id: i64,
-    entity_type: &str,
-) -> Vec<serde_json::Value> {
-    let Ok(Some(snap)) =
-        db::fetch_latest_integration_snapshot(pool, tenant_id, SF_PROVIDER, entity_type).await
-    else {
-        return vec![];
-    };
-    serde_json::from_str(&snap.payload_json).unwrap_or_default()
-}
-
-/// Task mặc định khi tạo Project triển khai —Sales-to-Delivery automation.
-fn default_delivery_tasks() -> Vec<String> {
-    vec![
-        "Họp kickoff".into(),
-        "Phân tích yêu cầu".into(),
-        "Thiết kế giải pháp".into(),
-        "Phát triển / Cấu hình".into(),
-        "Kiểm thử".into(),
-        "Triển khai & Bàn giao".into(),
-    ]
+    tasks: Vec<SalesforceTaskItem>,
 }
 
 async fn collect_push_items(
@@ -3166,6 +3172,33 @@ async fn collect_push_items(
     };
     let opps: Vec<serde_json::Value> =
         serde_json::from_str(&snap.payload_json).unwrap_or_default();
+
+    let task_snap = db::fetch_latest_integration_snapshot(pool, tenant_id, SF_PROVIDER, "task")
+        .await
+        .map_err(|e| format!("db: {e}"))?;
+    let task_rows: Vec<serde_json::Value> = task_snap
+        .as_ref()
+        .and_then(|snap| serde_json::from_str(&snap.payload_json).ok())
+        .unwrap_or_default();
+    let mut tasks_by_opp: std::collections::HashMap<String, Vec<SalesforceTaskItem>> =
+        std::collections::HashMap::new();
+    for task in task_rows {
+        let Some(what_id) = bridge_field_str(&task, "what_id").filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        let Some(name) = bridge_field_str(&task, "name").filter(|v| !v.trim().is_empty()) else {
+            continue;
+        };
+        let due_date = bridge_field_str(&task, "due_date").filter(|v| !v.trim().is_empty());
+        tasks_by_opp
+            .entry(what_id)
+            .or_default()
+            .push(SalesforceTaskItem {
+                name: name.trim().to_string(),
+                due_date,
+            });
+    }
+
     for opp in opps {
         let sf_id = bridge_field_str(&opp, "id").unwrap_or_default();
         let name = bridge_field_str(&opp, "name").unwrap_or_default();
@@ -3214,7 +3247,7 @@ async fn collect_push_items(
         let account_id = bridge_field_str(&opp, "account_id");
         let product_type = bridge_field_str(&opp, "product_type").unwrap_or_default();
         let (start_date, end_date) = zoho_project_date_range(close_date.as_deref(), amount);
-        let tasks = default_delivery_tasks();
+        let tasks = tasks_by_opp.remove(&sf_id).unwrap_or_default();
         items.push(PushItem {
             sf_entity_type: "opportunity",
             sf_id,
@@ -3401,7 +3434,6 @@ pub async fn push_salesforce_to_zoho(
             &portal_id,
             &project_id,
             &item.tasks,
-            item.end_date.as_deref(),
         )
         .await
         {
@@ -4550,14 +4582,5 @@ mod middleware_tests {
         assert!(token_expires_soon(Some(&past)));
         let future = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
         assert!(!token_expires_soon(Some(&future)));
-    }
-
-    #[test]
-    fn project_name_uses_opportunity_name() {
-        let name = zoho_project_name_from_opportunity(
-            "Triển khai giải pháp ERP cho Công ty ABC",
-        );
-        assert_eq!(name, "Triển khai giải pháp ERP cho Công ty ABC");
-        assert!(!name.contains("VIP"));
     }
 }

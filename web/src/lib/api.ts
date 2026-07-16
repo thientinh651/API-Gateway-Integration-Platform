@@ -472,6 +472,8 @@ export type TransactionLogRow = {
   client_ip: string | null;
   api_key_masked: string | null;
   client_key_id: number | null;
+  /** Tên client trong Registry — ưu tiên hiển thị thay api_key_masked. */
+  client_name: string | null;
   outcome: string;
   reason: string;
   upstream: string | null;
@@ -489,6 +491,7 @@ export type TransactionLogDetail = {
   client_ip: string | null;
   api_key_masked: string | null;
   client_key_id: number | null;
+  client_name: string | null;
   outcome: string;
   reason: string;
   upstream: string | null;

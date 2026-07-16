@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import {
+  fetchClientKeys,
   fetchTransactionLogs,
   type TransactionLogRow,
 } from '../../../lib/api';
@@ -39,7 +40,7 @@ function exportCsv(rows: TransactionLogRow[]) {
     'outcome',
     'middleware_reason',
     'client_key_id',
-    'api_key_masked',
+    'client_name',
     'upstream',
     'request_id',
   ];
@@ -53,7 +54,7 @@ function exportCsv(rows: TransactionLogRow[]) {
     r.outcome,
     reasonLabel(r.reason),
     r.client_key_id != null ? String(r.client_key_id) : '',
-    r.api_key_masked ?? '',
+    r.client_name ?? '',
     r.upstream ?? '',
     r.request_id,
   ]);
@@ -75,6 +76,7 @@ const HEAD = 'text-[10px] uppercase text-muted-foreground font-bold whitespace-n
 
 export function TrafficLogPanel({ clientKeyFilter, onClearClientKey }: Props) {
   const [rows, setRows] = useState<TransactionLogRow[]>([]);
+  const [clientNames, setClientNames] = useState<Map<number, string>>(() => new Map());
   const [initialLoading, setInitialLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const loadGenRef = useRef(0);
@@ -87,6 +89,28 @@ export function TrafficLogPanel({ clientKeyFilter, onClearClientKey }: Props) {
 
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchClientKeys()
+      .then((keys) => {
+        if (cancelled) return;
+        setClientNames(new Map(keys.map((k) => [k.id, k.name])));
+      })
+      .catch(() => {
+        /* giữ fallback Client #id */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const clientLabel = (log: TransactionLogRow) => {
+    if (log.client_key_id == null) return null;
+    const fromRegistry = clientNames.get(log.client_key_id)?.trim();
+    const fromApi = log.client_name?.trim();
+    return fromRegistry || fromApi || `Client #${log.client_key_id}`;
+  };
 
   const load = useCallback(async () => {
     const gen = ++loadGenRef.current;
@@ -248,19 +272,22 @@ export function TrafficLogPanel({ clientKeyFilter, onClearClientKey }: Props) {
                   <span className="block text-[10px] text-slate-500">{log.duration_ms}ms</span>
                 </div>
                 <div className={`${CELL} hidden sm:block text-xs text-slate-400 min-w-0`}>
-                  {log.api_key_masked ? (
-                    <p className="font-mono text-sky-400 truncate">
-                      {log.api_key_masked}
-                      {log.client_key_id != null ? (
-                        <Link to={`/auth?open=${log.client_key_id}`} className="text-primary hover:underline ml-1">
-                          #{log.client_key_id}
-                        </Link>
-                      ) : null}
+                  {log.client_key_id != null ? (
+                    <p className="truncate">
+                      <Link
+                        to={`/auth?open=${log.client_key_id}`}
+                        className="text-sky-400 hover:underline font-medium"
+                        title={log.api_key_masked ?? undefined}
+                      >
+                        {clientLabel(log)}
+                      </Link>
                     </p>
                   ) : (
                     <p className="text-slate-500">—</p>
                   )}
-                  <p className="text-[10px] text-slate-500 truncate mt-0.5">{log.upstream ?? '—'}</p>
+                  <p className="text-[10px] text-slate-500 truncate mt-0.5" title={log.upstream ?? undefined}>
+                    {log.upstream ?? '—'}
+                  </p>
                 </div>
                 <div className={`${CELL} hidden sm:block font-mono text-xs text-slate-500 whitespace-nowrap`}>
                   {log.client_ip ?? '—'}

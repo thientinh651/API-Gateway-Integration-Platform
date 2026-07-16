@@ -78,14 +78,14 @@ export function RouteFormDialog({
           </Button>
         </DialogTrigger>
       ) : null}
-      <DialogContent className="bg-card border-border flex max-h-[min(90vh,44rem)] w-full max-w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
-        <DialogHeader className="shrink-0 border-b border-border/50 px-6 pt-6 pb-4">
+      <DialogContent className="bg-card border-border w-full max-w-[calc(100%-2rem)] gap-0 overflow-visible p-0 sm:max-w-3xl">
+        <DialogHeader className="border-b border-border/50 px-6 pt-6 pb-4">
           <DialogTitle className="text-white">
             {editingRoute ? 'Chỉnh sửa Route' : 'Tạo Route mới'}
           </DialogTitle>
         </DialogHeader>
         <form
-          className="flex min-h-0 flex-1 flex-col"
+          className="flex flex-col"
           autoComplete="off"
           data-1p-ignore
           data-lpignore="true"
@@ -94,167 +94,174 @@ export function RouteFormDialog({
             onSubmit();
           }}
         >
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
-          <PasswordManagerTrap />
-          <div>
-            <Label htmlFor="route-path" className="text-foreground">
-              Path
-            </Label>
-            <Input
-              id="route-path"
-              name="route-path"
-              type="text"
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              spellCheck={false}
-              placeholder="/v1/api"
-              value={formData.path}
-              onChange={(e) => setFormData({ ...formData, path: e.target.value })}
-              aria-invalid={Boolean(fieldErrors.path)}
-              className={`bg-input border-border text-foreground mt-1 ${fieldErrors.path ? 'border-destructive' : ''}`}
-            />
-            <FieldError message={fieldErrors.path} />
-          </div>
-          <div>
-            <Label htmlFor="route-upstream" className="text-foreground">
-              Upstream URL
-            </Label>
-            <Input
-              id="route-upstream"
-              name="route-upstream"
-              type="url"
-              autoComplete="off"
-              placeholder="https://httpbin.org"
-              value={formData.upstream}
-              onChange={(e) => setFormData({ ...formData, upstream: e.target.value })}
-              aria-invalid={Boolean(fieldErrors.target)}
-              className={`bg-input border-border text-foreground mt-1 ${fieldErrors.target ? 'border-destructive' : ''}`}
-            />
-            <FieldError message={fieldErrors.target} />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <Label htmlFor="route-timeout" className="text-foreground">
-                Timeout (s)
-              </Label>
-              <Input
-                id="route-timeout"
-                name="route-timeout"
-                type="text"
-                inputMode="numeric"
-                autoComplete="off"
-                value={formData.timeout}
-                onChange={(e) => setFormData({ ...formData, timeout: e.target.value })}
-                {...defaultNumberHandlers(formData.timeout, (v) =>
-                  setFormData({ ...formData, timeout: v }),
-                  numericDefaults.timeout,
-                )}
-                aria-invalid={Boolean(fieldErrors.timeout_secs)}
-                className={`bg-input border-border text-foreground mt-1 ${fieldErrors.timeout_secs ? 'border-destructive' : ''}`}
-              />
-              <FieldError message={fieldErrors.timeout_secs} />
-            </div>
-            <div>
-              <Label htmlFor="route-rate-limit" className="text-foreground">
-                Rate limit (req/min)
-              </Label>
-              <Input
-                id="route-rate-limit"
-                name="route-rate-limit"
-                type="text"
-                inputMode="numeric"
-                autoComplete="off"
-                value={formData.rateLimit}
-                onChange={(e) => setFormData({ ...formData, rateLimit: e.target.value })}
-                {...defaultNumberHandlers(formData.rateLimit, (v) =>
-                  setFormData({ ...formData, rateLimit: v }),
-                  numericDefaults.rateLimit,
-                )}
-                aria-invalid={Boolean(fieldErrors.rate_limit_per_min)}
-                className={`bg-input border-border text-foreground mt-1 ${fieldErrors.rate_limit_per_min ? 'border-destructive' : ''}`}
-              />
-              <FieldError message={fieldErrors.rate_limit_per_min} />
-            </div>
-          </div>
-          <div>
-            <AllowedMethodsPicker
-              value={formData.allowedMethods}
-              onChange={(allowedMethods) => setFormData({ ...formData, allowedMethods })}
-            />
-            <FieldError message={fieldErrors.allowed_methods} />
-          </div>
-          <div className="rounded-lg border border-border/60 p-4 space-y-3">
-            <p className="text-sm font-semibold text-white">Transform / Retry / Queue</p>
-            <p className="text-xs text-muted-foreground">
-              Bật cấu hình tương ứng trong cài đặt hệ thống trước.
-            </p>
-            <div>
-              <Label className="text-foreground">Add headers (JSON)</Label>
-              <Input
-                value={formData.transformAddHeaders}
-                onChange={(e) => setFormData({ ...formData, transformAddHeaders: e.target.value })}
-                placeholder='{"X-Proxy-Version":"1.0"}'
-                className="bg-input border-border text-foreground mt-1 font-mono text-xs"
-              />
-              <FieldError message={fieldErrors.transform_add_headers} />
-            </div>
-            <div>
-              <Label className="text-foreground">Remove headers (JSON array)</Label>
-              <Input
-                value={formData.transformRemoveHeaders}
-                onChange={(e) => setFormData({ ...formData, transformRemoveHeaders: e.target.value })}
-                placeholder='["Authorization"]'
-                className="bg-input border-border text-foreground mt-1 font-mono text-xs"
-              />
-              <FieldError message={fieldErrors.transform_remove_headers} />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label className="text-foreground">Retry max</Label>
-                <Input
-                  value={formData.retryMax}
-                  onChange={(e) => setFormData({ ...formData, retryMax: e.target.value })}
-                  {...defaultNumberHandlers(formData.retryMax, (v) =>
-                    setFormData({ ...formData, retryMax: v }),
-                    numericDefaults.retryMax,
-                  )}
-                  className="bg-input border-border text-foreground mt-1"
-                />
-                <FieldError message={fieldErrors.retry_max} />
+          <div className="px-6 py-4">
+            <PasswordManagerTrap />
+            <div className="grid gap-4 lg:grid-cols-2 lg:gap-6">
+              <div className="space-y-3">
+                <div>
+                  <Label htmlFor="route-path" className="text-foreground">
+                    Path
+                  </Label>
+                  <Input
+                    id="route-path"
+                    name="route-path"
+                    type="text"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
+                    placeholder="/v1/api"
+                    value={formData.path}
+                    onChange={(e) => setFormData({ ...formData, path: e.target.value })}
+                    aria-invalid={Boolean(fieldErrors.path)}
+                    className={`bg-input border-border text-foreground mt-1 ${fieldErrors.path ? 'border-destructive' : ''}`}
+                  />
+                  <FieldError message={fieldErrors.path} />
+                </div>
+                <div>
+                  <Label htmlFor="route-upstream" className="text-foreground">
+                    Upstream URL
+                  </Label>
+                  <Input
+                    id="route-upstream"
+                    name="route-upstream"
+                    type="url"
+                    autoComplete="off"
+                    placeholder="https://httpbin.org"
+                    value={formData.upstream}
+                    onChange={(e) => setFormData({ ...formData, upstream: e.target.value })}
+                    aria-invalid={Boolean(fieldErrors.target)}
+                    className={`bg-input border-border text-foreground mt-1 ${fieldErrors.target ? 'border-destructive' : ''}`}
+                  />
+                  <FieldError message={fieldErrors.target} />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label htmlFor="route-timeout" className="text-foreground">
+                      Timeout (s)
+                    </Label>
+                    <Input
+                      id="route-timeout"
+                      name="route-timeout"
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      value={formData.timeout}
+                      onChange={(e) => setFormData({ ...formData, timeout: e.target.value })}
+                      {...defaultNumberHandlers(formData.timeout, (v) =>
+                        setFormData({ ...formData, timeout: v }),
+                        numericDefaults.timeout,
+                      )}
+                      aria-invalid={Boolean(fieldErrors.timeout_secs)}
+                      className={`bg-input border-border text-foreground mt-1 ${fieldErrors.timeout_secs ? 'border-destructive' : ''}`}
+                    />
+                    <FieldError message={fieldErrors.timeout_secs} />
+                  </div>
+                  <div>
+                    <Label htmlFor="route-rate-limit" className="text-foreground">
+                      Rate limit (req/min)
+                    </Label>
+                    <Input
+                      id="route-rate-limit"
+                      name="route-rate-limit"
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      value={formData.rateLimit}
+                      onChange={(e) => setFormData({ ...formData, rateLimit: e.target.value })}
+                      {...defaultNumberHandlers(formData.rateLimit, (v) =>
+                        setFormData({ ...formData, rateLimit: v }),
+                        numericDefaults.rateLimit,
+                      )}
+                      aria-invalid={Boolean(fieldErrors.rate_limit_per_min)}
+                      className={`bg-input border-border text-foreground mt-1 ${fieldErrors.rate_limit_per_min ? 'border-destructive' : ''}`}
+                    />
+                    <FieldError message={fieldErrors.rate_limit_per_min} />
+                  </div>
+                </div>
+                <div>
+                  <AllowedMethodsPicker
+                    value={formData.allowedMethods}
+                    onChange={(allowedMethods) => setFormData({ ...formData, allowedMethods })}
+                  />
+                  <FieldError message={fieldErrors.allowed_methods} />
+                </div>
               </div>
-              <div>
-                <Label className="text-foreground">Retry on timeout</Label>
-                <div className="mt-1 flex h-9 items-center">
+
+              <div className="rounded-lg border border-border/60 p-3 space-y-3">
+                <div>
+                  <p className="text-sm font-semibold text-white">Transform / Retry / Queue</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Bật cấu hình tương ứng trong cài đặt hệ thống trước.
+                  </p>
+                </div>
+                <div>
+                  <Label className="text-foreground">Add headers (JSON)</Label>
+                  <Input
+                    value={formData.transformAddHeaders}
+                    onChange={(e) => setFormData({ ...formData, transformAddHeaders: e.target.value })}
+                    placeholder='{"X-Proxy-Version":"1.0"}'
+                    className="bg-input border-border text-foreground mt-1 font-mono text-xs"
+                  />
+                  <FieldError message={fieldErrors.transform_add_headers} />
+                </div>
+                <div>
+                  <Label className="text-foreground">Remove headers (JSON array)</Label>
+                  <Input
+                    value={formData.transformRemoveHeaders}
+                    onChange={(e) => setFormData({ ...formData, transformRemoveHeaders: e.target.value })}
+                    placeholder='["Authorization"]'
+                    className="bg-input border-border text-foreground mt-1 font-mono text-xs"
+                  />
+                  <FieldError message={fieldErrors.transform_remove_headers} />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-foreground">Retry max</Label>
+                    <Input
+                      value={formData.retryMax}
+                      onChange={(e) => setFormData({ ...formData, retryMax: e.target.value })}
+                      {...defaultNumberHandlers(formData.retryMax, (v) =>
+                        setFormData({ ...formData, retryMax: v }),
+                        numericDefaults.retryMax,
+                      )}
+                      className="bg-input border-border text-foreground mt-1"
+                    />
+                    <FieldError message={fieldErrors.retry_max} />
+                  </div>
+                  <div>
+                    <Label className="text-foreground">Retry on timeout</Label>
+                    <div className="mt-1 flex h-9 items-center">
+                      <Switch
+                        checked={formData.retryOnTimeout}
+                        onCheckedChange={(c) => setFormData({ ...formData, retryOnTimeout: c })}
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <Label className="text-foreground">Retry on status</Label>
+                  <RetryOnStatusPicker
+                    value={formData.retryOnStatus}
+                    onChange={(retryOnStatus) => setFormData({ ...formData, retryOnStatus })}
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <Label className="text-foreground">Queue on failure</Label>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Bật khi global DLQ tắt; nếu đã bật trong Cài đặt thì route này vẫn vào queue.
+                    </p>
+                  </div>
                   <Switch
-                    checked={formData.retryOnTimeout}
-                    onCheckedChange={(c) => setFormData({ ...formData, retryOnTimeout: c })}
+                    checked={formData.queueOnFailure}
+                    onCheckedChange={(c) => setFormData({ ...formData, queueOnFailure: c })}
                   />
                 </div>
               </div>
             </div>
-            <div>
-              <Label className="text-foreground">Retry on status</Label>
-              <RetryOnStatusPicker
-                value={formData.retryOnStatus}
-                onChange={(retryOnStatus) => setFormData({ ...formData, retryOnStatus })}
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <div>
-                <Label className="text-foreground">Queue on failure</Label>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Bật khi global DLQ tắt; nếu đã bật trong Cài đặt thì route này vẫn vào queue.
-                </p>
-              </div>
-              <Switch
-                checked={formData.queueOnFailure}
-                onCheckedChange={(c) => setFormData({ ...formData, queueOnFailure: c })}
-              />
-            </div>
           </div>
-          </div>
-          <div className="flex shrink-0 gap-3 border-t border-border/50 bg-card px-6 py-4">
+          <div className="flex gap-3 border-t border-border/50 bg-card px-6 py-4">
             <Button
               type="submit"
               disabled={submitDisabled}

@@ -979,6 +979,8 @@ pub struct TransactionLogRow {
     pub client_ip: Option<String>,
     pub api_key_masked: Option<String>,
     pub client_key_id: Option<i64>,
+    /// Tên đăng ký trong Client Registry (JOIN); ưu tiên hiển thị UI thay vì api_key_masked.
+    pub client_name: Option<String>,
     pub outcome: String,
     pub reason: String,
     pub upstream: Option<String>,
@@ -1013,6 +1015,7 @@ pub struct TransactionDetailRow {
     pub client_ip: Option<String>,
     pub api_key_masked: Option<String>,
     pub client_key_id: Option<i64>,
+    pub client_name: Option<String>,
     pub outcome: String,
     pub reason: String,
     pub upstream: Option<String>,
@@ -1087,13 +1090,14 @@ pub async fn get_transaction_detail(
     include_unattributed: bool,
 ) -> Result<Option<TransactionDetailRow>, sqlx::Error> {
     sqlx::query_as::<_, TransactionDetailRow>(
-        "SELECT id, request_id, method, path, status, duration_ms, client_ip, api_key_masked,
-                client_key_id, outcome, reason, upstream, upstream_url, route_id,
-                req_headers, req_body, req_bytes, req_truncated,
-                resp_headers, resp_body, resp_bytes, resp_truncated,
-                created_at::text AS created_at
-         FROM gateway_transaction_logs
-         WHERE id = $1 AND (tenant_id = $2 OR ($3 AND tenant_id IS NULL))",
+        "SELECT t.id, t.request_id, t.method, t.path, t.status, t.duration_ms, t.client_ip, t.api_key_masked,
+                t.client_key_id, k.name AS client_name, t.outcome, t.reason, t.upstream, t.upstream_url, t.route_id,
+                t.req_headers, t.req_body, t.req_bytes, t.req_truncated,
+                t.resp_headers, t.resp_body, t.resp_bytes, t.resp_truncated,
+                t.created_at::text AS created_at
+         FROM gateway_transaction_logs t
+         LEFT JOIN gateway_client_keys k ON k.id = t.client_key_id
+         WHERE t.id = $1 AND (t.tenant_id = $2 OR ($3 AND t.tenant_id IS NULL))",
     )
     .bind(id)
     .bind(tenant_id)
@@ -1121,51 +1125,56 @@ pub async fn list_transaction_logs(
     // tenant_id = NULL vì chưa xác định được tenant. Admin cần thấy các lượt gọi này để
     // tracking bên ngoài gọi vào gateway → include khi include_unattributed = true.
     let tenant_clause = if include_unattributed {
-        "WHERE (tenant_id = $1 OR tenant_id IS NULL)"
+        "WHERE (t.tenant_id = $1 OR t.tenant_id IS NULL)"
     } else {
-        "WHERE tenant_id = $1"
+        "WHERE t.tenant_id = $1"
     };
     let mut sql = format!(
-        "SELECT id, tenant_id, request_id, method, path, status, duration_ms, client_ip, api_key_masked, client_key_id, outcome, reason, upstream, route_id, created_at::text AS created_at
-         FROM gateway_transaction_logs {tenant_clause}"
+        "SELECT t.id, t.tenant_id, t.request_id, t.method, t.path, t.status, t.duration_ms, t.client_ip,
+                t.api_key_masked, t.client_key_id, k.name AS client_name, t.outcome, t.reason, t.upstream,
+                t.route_id, t.created_at::text AS created_at
+         FROM gateway_transaction_logs t
+         LEFT JOIN gateway_client_keys k ON k.id = t.client_key_id
+         {tenant_clause}"
     );
     if method.filter(|m| !m.is_empty() && *m != "all").is_some() {
-        sql.push_str(&format!(" AND method = ${n}"));
+        sql.push_str(&format!(" AND t.method = ${n}"));
         n += 1;
     }
     if status_min.is_some() {
-        sql.push_str(&format!(" AND status >= ${n}"));
+        sql.push_str(&format!(" AND t.status >= ${n}"));
         n += 1;
     }
     if status_max.is_some() {
-        sql.push_str(&format!(" AND status < ${n}"));
+        sql.push_str(&format!(" AND t.status < ${n}"));
         n += 1;
     }
     if let Some(o) = outcome.filter(|o| !o.is_empty() && *o != "all") {
         if o == "success" {
-            sql.push_str(" AND outcome = 'success'");
+            sql.push_str(" AND t.outcome = 'success'");
         } else if o == "failure" {
-            sql.push_str(" AND outcome != 'success'");
+            sql.push_str(" AND t.outcome != 'success'");
         }
     }
     if search.filter(|s| !s.trim().is_empty()).is_some() {
         sql.push_str(&format!(
-            " AND (path LIKE ${n} OR request_id LIKE ${n2} OR COALESCE(client_ip,'') LIKE ${n3} OR COALESCE(api_key_masked,'') LIKE ${n4})",
+            " AND (t.path LIKE ${n} OR t.request_id LIKE ${n2} OR COALESCE(t.client_ip,'') LIKE ${n3} OR COALESCE(t.api_key_masked,'') LIKE ${n4} OR COALESCE(k.name,'') LIKE ${n5})",
             n2 = n + 1,
             n3 = n + 2,
-            n4 = n + 3
+            n4 = n + 3,
+            n5 = n + 4
         ));
-        n += 4;
+        n += 5;
     }
     if reason.filter(|r| !r.is_empty() && *r != "all").is_some() {
-        sql.push_str(&format!(" AND reason = ${n}"));
+        sql.push_str(&format!(" AND t.reason = ${n}"));
         n += 1;
     }
     if client_key_id.is_some() {
-        sql.push_str(&format!(" AND client_key_id = ${n}"));
+        sql.push_str(&format!(" AND t.client_key_id = ${n}"));
         n += 1;
     }
-    sql.push_str(&format!(" ORDER BY id DESC LIMIT ${n}"));
+    sql.push_str(&format!(" ORDER BY t.id DESC LIMIT ${n}"));
 
     let mut q = sqlx::query_as::<_, TransactionLogRow>(&sql).bind(tenant_id);
     if let Some(m) = method.filter(|m| !m.is_empty() && *m != "all") {
@@ -1179,7 +1188,12 @@ pub async fn list_transaction_logs(
     }
     if let Some(s) = search.filter(|s| !s.trim().is_empty()) {
         let pat = format!("%{}%", s.trim());
-        q = q.bind(pat.clone()).bind(pat.clone()).bind(pat.clone()).bind(pat);
+        q = q
+            .bind(pat.clone())
+            .bind(pat.clone())
+            .bind(pat.clone())
+            .bind(pat.clone())
+            .bind(pat);
     }
     if let Some(r) = reason.filter(|r| !r.is_empty() && *r != "all") {
         q = q.bind(r);

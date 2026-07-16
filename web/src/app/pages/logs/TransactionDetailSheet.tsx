@@ -11,6 +11,7 @@ import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { toast } from 'sonner';
 import {
+  fetchClientKey,
   fetchTransactionLogDetail,
   type TransactionLogDetail,
 } from '../../../lib/api';
@@ -124,18 +125,32 @@ function BodyBlock({
 
 export function TransactionDetailSheet({ logId, open, onOpenChange }: Props) {
   const [detail, setDetail] = useState<TransactionLogDetail | null>(null);
+  const [clientName, setClientName] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (!open || logId == null) {
       setDetail(null);
+      setClientName(null);
       return;
     }
     let active = true;
     setLoading(true);
+    setClientName(null);
     fetchTransactionLogDetail(logId)
-      .then((d) => {
-        if (active) setDetail(d);
+      .then(async (d) => {
+        if (!active) return;
+        setDetail(d);
+        if (d.client_name?.trim()) {
+          setClientName(d.client_name.trim());
+        } else if (d.client_key_id != null) {
+          try {
+            const key = await fetchClientKey(d.client_key_id);
+            if (active) setClientName(key.name?.trim() || null);
+          } catch {
+            /* fallback below */
+          }
+        }
       })
       .catch((e) => {
         if (active) toastApiError(e);
@@ -147,6 +162,13 @@ export function TransactionDetailSheet({ logId, open, onOpenChange }: Props) {
       active = false;
     };
   }, [open, logId]);
+
+  const displayClient =
+    clientName ||
+    detail?.client_name?.trim() ||
+    (detail?.client_key_id != null ? `Client #${detail.client_key_id}` : null) ||
+    detail?.api_key_masked ||
+    '—';
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -197,8 +219,8 @@ export function TransactionDetailSheet({ logId, open, onOpenChange }: Props) {
                 <dd className="text-slate-300">{detail.route_id != null ? `#${detail.route_id}` : '—'}</dd>
                 <dt className="text-muted-foreground">Client</dt>
                 <dd className="text-slate-300">
-                  {detail.api_key_masked ?? '—'}
-                  {detail.client_key_id != null ? ` · client #${detail.client_key_id}` : ''}
+                  {displayClient}
+                  {detail.client_key_id != null && clientName ? ` · #${detail.client_key_id}` : ''}
                 </dd>
                 <dt className="text-muted-foreground">IP</dt>
                 <dd className="font-mono text-slate-300">{detail.client_ip ?? '—'}</dd>

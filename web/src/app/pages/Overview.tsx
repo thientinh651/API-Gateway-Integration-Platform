@@ -416,8 +416,8 @@ function OverviewAdmin() {
         />
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <NavCard to="/logs?kind=traffic" className="p-4 bg-card/80 border-border" ariaLabel="Latency gateway">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8 items-stretch">
+        <NavCard to="/logs?kind=traffic" className="p-4 bg-card/80 border-border h-full flex flex-col" ariaLabel="Latency gateway">
           <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
             <Timer className="w-3.5 h-3.5 shrink-0" />
             Latency TB
@@ -425,8 +425,11 @@ function OverviewAdmin() {
           <p className="text-2xl font-bold text-white">
             {dataReady ? `${traffic?.avg_duration_ms ?? 0} ms` : '…'}
           </p>
+          <p className="text-xs text-muted-foreground mt-1 min-h-[1rem]" aria-hidden>
+            {'\u00a0'}
+          </p>
         </NavCard>
-        <NavCard to="/routes" className="p-4 bg-card/80 border-border" ariaLabel="Routes">
+        <NavCard to="/routes" className="p-4 bg-card/80 border-border h-full flex flex-col" ariaLabel="Routes">
           <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
             <Route className="w-3.5 h-3.5" />
             Routes
@@ -434,8 +437,11 @@ function OverviewAdmin() {
           <p className="text-2xl font-bold text-white">
             {dataReady ? String(stats?.routes_count ?? routes.length) : '…'}
           </p>
+          <p className="text-xs text-muted-foreground mt-1 min-h-[1rem]" aria-hidden>
+            {'\u00a0'}
+          </p>
         </NavCard>
-        <NavCard to="/auth" className="p-4 bg-card/80 border-border" ariaLabel="Client Registry">
+        <NavCard to="/auth" className="p-4 bg-card/80 border-border h-full flex flex-col" ariaLabel="Client Registry">
           <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
             <Key className="w-3.5 h-3.5" />
             Client Registry
@@ -443,19 +449,22 @@ function OverviewAdmin() {
           <p className="text-2xl font-bold text-white">
             {dataReady ? String(stats?.client_keys_count ?? 0) : '…'}
           </p>
-          {dataReady && stats?.client_registry ? (
-            <p className="text-xs text-muted-foreground mt-1">
-              {stats.client_registry.active} active · {stats.client_registry.disabled} tắt
-            </p>
-          ) : null}
+          <p className="text-xs text-muted-foreground mt-1 min-h-[1rem]">
+            {dataReady && stats?.client_registry
+              ? `${stats.client_registry.active} active · ${stats.client_registry.disabled} tắt`
+              : '\u00a0'}
+          </p>
         </NavCard>
-        <NavCard to="/logs?kind=admin" className="p-4 bg-card/80 border-border" ariaLabel="Audit admin">
+        <NavCard to="/logs?kind=admin" className="p-4 bg-card/80 border-border h-full flex flex-col" ariaLabel="Audit admin">
           <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
             <AlertTriangle className="w-3.5 h-3.5" />
             Audit admin
           </div>
           <p className="text-2xl font-bold text-white">
             {dataReady ? String(stats?.audit_24h.total ?? 0) : '…'}
+          </p>
+          <p className="text-xs text-muted-foreground mt-1 min-h-[1rem]" aria-hidden>
+            {'\u00a0'}
           </p>
         </NavCard>
       </div>
