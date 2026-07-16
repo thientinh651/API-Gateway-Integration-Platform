@@ -15,13 +15,15 @@
 **AVASO Gateway** là hệ thống API Gateway đa tích hợp, phát triển cho đồ án tốt nghiệp. Hệ thống gồm backend Rust (Axum), cơ sở dữ liệu PostgreSQL, Redis cho session admin, và giao diện quản trị React SPA.
 
 
+
+
 **Demo production:** [https://thientinh.io.vn](https://thientinh.io.vn)
 
 **Script Database:** [docs/schema_full_postgresql.sql](docs/schema_full_postgresql.sql)
 
-**Bảng ERD Database:**
+**Báo cáo LVTN:** [Báo cáo/Báo cáo LVTN.docx](Báo%20cáo/Báo%20cáo%20LVTN.docx)
 
-![Bảng ERD Database](docs/diagrams/Avaso%20Gateway.png)
+
 
 ### Công nghệ
 
