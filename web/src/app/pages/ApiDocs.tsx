@@ -65,12 +65,11 @@ const TAB_PILL_IDLE = 'bg-transparent text-slate-400 hover:text-slate-200 border
 const TAB_PILL_ACTIVE =
   'bg-slate-600 text-white shadow-[0_2px_10px_rgba(0,0,0,0.45)] border border-slate-500/80';
 
-function TierLabel({ tier, title, hint }: { tier: string; title: string; hint: string }) {
+function TierLabel({ tier, title }: { tier: string; title: string }) {
   return (
     <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 px-0.5 mb-1.5">
       <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{tier}</span>
       <span className="text-xs font-semibold text-slate-200">{title}</span>
-      <span className="text-[11px] text-muted-foreground">{hint}</span>
     </div>
   );
 }
@@ -245,7 +244,7 @@ export function ApiDocs() {
   const errorCodes = [
     { code: '401', description: 'Thiếu / sai / hết hạn JWT — chưa được xác thực data plane' },
     { code: '403', description: 'Có token nhưng bị cấm — client tắt, không có ACL, hoặc sai quyền admin' },
-    { code: '404', description: 'Không tìm thấy route khớp path bạn gọi' },
+    { code: '404', description: 'Không tìm thấy route khớp path được gọi' },
     { code: '429', description: 'Gọi quá hạn mức (rate limit) — xem Retry-After' },
     { code: '502', description: 'Gateway đã chuyển tiếp nhưng upstream trả lỗi / không phản hồi đúng' },
     { code: '504', description: 'Upstream chậm quá thời gian chờ (timeout)' },
@@ -289,6 +288,7 @@ export function ApiDocs() {
         <div className="space-y-3">
           <div>
             <TierLabel
+              tier="01"
               title="Hướng dẫn"
             />
             <TabsList className={cn(GUIDE_TRACK, 'bg-muted/0')}>
@@ -299,6 +299,7 @@ export function ApiDocs() {
           </div>
           <div>
             <TierLabel
+              tier="02"
               title="API Reference"
             />
             <TabsList className={cn(REF_TRACK, 'bg-muted/0')}>
@@ -319,7 +320,7 @@ export function ApiDocs() {
 
         <TabsContent value="data-plane" className="mt-0 focus-visible:outline-none space-y-4">
           <p className="text-sm text-slate-400 leading-relaxed max-w-3xl">
-            Đây là các đường dẫn <strong className="text-slate-200">ứng dụng của bạn</strong> gọi qua gateway.
+            Đây là các đường dẫn <strong className="text-slate-200">ứng dụng </strong> gọi qua gateway.
           </p>
           <MiddlewarePipelineBanner compact />
           <DocSectionFrame tab="data-plane" title="Endpoint data plane">
@@ -423,7 +424,7 @@ export function ApiDocs() {
 
         <TabsContent value="examples" className="mt-0 focus-visible:outline-none space-y-4">
           <p className="text-sm text-slate-400 leading-relaxed max-w-3xl">
-            Copy lệnh mẫu, thay Client ID / Secret / cookie của bạn. Luồng đầy đủ hơn nằm ở tầng 1 → Quick
+            Copy lệnh mẫu, thay Client ID / Secret / cookie . Luồng đầy đủ hơn nằm ở tầng 1 → Quick
             Start.
           </p>
           <DocSectionFrame tab="examples" title="Ví dụ curl">

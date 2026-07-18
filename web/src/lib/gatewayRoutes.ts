@@ -4,16 +4,19 @@ export type GatewayRouteRow = {
   target: string;
   timeout_secs: number;
   rate_limit_per_min: number;
-  allowed_methods?: string;
+  /** PostgreSQL `TEXT[]` — `["*"]` hoặc `["GET","POST"]` */
+  allowed_methods?: string[] | string;
   transform_add_headers?: string;
   transform_remove_headers?: string;
   retry_max?: number;
-  retry_on_status?: string;
+  /** PostgreSQL `INTEGER[]` — vd `[502,503,504]` */
+  retry_on_status?: number[] | string;
   retry_on_timeout?: number;
   queue_on_failure?: number;
 };
 
-import { DEFAULT_ALLOWED_METHODS } from './allowedMethodsOptions';
+import { DEFAULT_ALLOWED_METHODS, allowedMethodsFromApi } from './allowedMethodsOptions';
+import { DEFAULT_RETRY_ON_STATUS, retryOnStatusFromApi } from './retryOnStatusOptions';
 
 export function rowsToUiRoutes(rows: GatewayRouteRow[]) {
   return rows.map((r) => ({
@@ -22,12 +25,14 @@ export function rowsToUiRoutes(rows: GatewayRouteRow[]) {
     upstream: r.target,
     timeout: r.timeout_secs,
     rateLimit: r.rate_limit_per_min,
-    allowedMethods: r.allowed_methods?.trim() || DEFAULT_ALLOWED_METHODS,
+    allowedMethods: allowedMethodsFromApi(r.allowed_methods),
     transformAddHeaders: r.transform_add_headers ?? '{}',
     transformRemoveHeaders: r.transform_remove_headers ?? '[]',
     retryMax: r.retry_max ?? 0,
-    retryOnStatus: r.retry_on_status ?? '502,503,504',
+    retryOnStatus: retryOnStatusFromApi(r.retry_on_status),
     retryOnTimeout: (r.retry_on_timeout ?? 1) !== 0,
     queueOnFailure: (r.queue_on_failure ?? 0) !== 0,
   }));
 }
+
+export { DEFAULT_ALLOWED_METHODS, DEFAULT_RETRY_ON_STATUS };

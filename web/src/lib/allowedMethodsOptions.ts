@@ -73,6 +73,20 @@ export function formatAllowedMethodsLabel(raw: string): string {
   return parseAllowedMethods(raw).join(', ');
 }
 
+export function allowedMethodsToApi(raw: string): string[] {
+  if (isAllMethodsAllowed(raw)) return ['*'];
+  const methods = parseAllowedMethods(raw);
+  return methods.length === 0 ? ['*'] : methods;
+}
+
+/** Chuyển mảng API → chuỗi form (CSV hoặc `*`). */
+export function allowedMethodsFromApi(raw: string[] | string | undefined | null): string {
+  if (raw == null) return DEFAULT_ALLOWED_METHODS;
+  if (typeof raw === 'string') return raw.trim() || DEFAULT_ALLOWED_METHODS;
+  if (raw.length === 0 || raw.includes('*')) return DEFAULT_ALLOWED_METHODS;
+  return formatAllowedMethods(raw);
+}
+
 export function unknownMethods(raw: string): string[] {
   return parseAllowedMethods(raw).filter((m) => !KNOWN.has(m));
 }

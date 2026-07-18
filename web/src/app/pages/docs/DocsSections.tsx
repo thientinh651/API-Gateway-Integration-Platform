@@ -58,14 +58,14 @@ export function GuideTabContent({ tab }: { tab: ApiDocTab }) {
           <Prose>
             <p>
               <strong className="text-white">AVASO Gateway</strong> là cổng API (API Gateway) viết bằng Rust.
-              Ứng dụng của bạn không gọi thẳng Salesforce / Zoho / backend nội bộ — mà gọi qua gateway.
+              Ứng dụng không gọi thẳng Salesforce / Zoho / backend nội bộ — mà gọi qua gateway.
               Gateway kiểm tra quyền, chọn đúng đường đi, giới hạn tốc độ, ghi log, và chuyển tiếp request.
             </p>
             <p>Bạn có thể hình dung như một “lễ tân bảo mật” đứng trước các dịch vụ phía sau.</p>
           </Prose>
           <FlowDiagram
             nodes={[
-              { label: 'Ứng dụng của bạn', detail: 'Web shop, ERP, script…', tone: 'border-sky-500/35 bg-sky-500/10' },
+              { label: 'Ứng dụng của ', detail: 'Web shop, ERP, script…', tone: 'border-sky-500/35 bg-sky-500/10' },
               {
                 label: 'AVASO Gateway',
                 detail: 'Xác thực · định tuyến · bảo vệ',
@@ -82,7 +82,7 @@ export function GuideTabContent({ tab }: { tab: ApiDocTab }) {
             <div className="rounded-xl border border-blue-500/30 bg-blue-500/5 p-4 space-y-2">
               <p className="text-xs font-bold uppercase tracking-wide text-blue-300">Phần 1 — Gọi API (Data plane)</p>
               <p className="text-sm text-slate-300 leading-relaxed">
-                App của bạn gọi đường dẫn bắt đầu bằng{' '}
+                App gọi đường dẫn bắt đầu bằng{' '}
                 <code className="font-mono-tech text-primary/90">/v1/api/…</code>
                 . Phải gửi kèm <strong className="text-white">JWT</strong> (token) trong header Authorization.
               </p>
@@ -142,7 +142,7 @@ export function GuideTabContent({ tab }: { tab: ApiDocTab }) {
       return (
         <div className="space-y-4">
           <Callout>
-            Mục tiêu: sau 5 bước, bạn gọi được{' '}
+            Mục tiêu: sau 5 bước, gọi được{' '}
             <code className="font-mono-tech text-primary/90">GET /v1/api/…</code> và nhận phản hồi từ upstream.
           </Callout>
           <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 sm:p-5 space-y-5">
@@ -271,7 +271,7 @@ curl -sS "https://thientinh.io.vn/v1/api/get" \\
               gateway. Mỗi app (web shop, ERP, script benchmark…) nên có một client riêng — để tắt riêng,
               giới hạn tốc độ riêng, và chỉ mở đúng các route cần dùng.
             </p>
-            <p>Nếu không tạo client, bạn không lấy được JWT hợp lệ → mọi lời gọi data plane sẽ thất bại.</p>
+            <p>Nếu không tạo client,  không lấy được JWT hợp lệ → mọi lời gọi data plane sẽ thất bại.</p>
           </Prose>
           <FlowDiagram
             nodes={[
@@ -351,7 +351,7 @@ curl -sS "https://thientinh.io.vn/v1/api/get" \\
               Khi dịch vụ phía sau trả lỗi tạm thời (5xx) hoặc quá chậm (timeout), gateway có thể{' '}
               <strong className="text-white">thử lại</strong> vài lần. Nếu vẫn thất bại và route bật xếp hàng,
               request được đưa vào <strong className="text-white">Proxy Queue (DLQ)</strong> — hàng đợi lưu
-              trong PostgreSQL để bạn xem và gửi lại (replay) sau.
+              trong PostgreSQL để  xem và gửi lại (replay) sau.
             </p>
           </Prose>
           <FlowDiagram
@@ -455,7 +455,7 @@ curl -sS "https://thientinh.io.vn/v1/api/get" \\
               {
                 code: '404',
                 meaning: 'Không có route khớp path',
-                fix: 'Tạo route trên Dashboard khớp path bạn đang gọi (ví dụ /v1/api/…). Kiểm tra chính tả path.',
+                fix: 'Tạo route trên Dashboard khớp path  đang gọi (ví dụ /v1/api/…). Kiểm tra chính tả path.',
               },
               {
                 code: '429',

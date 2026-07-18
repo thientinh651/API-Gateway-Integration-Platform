@@ -33,7 +33,8 @@ export function ScrollToTopButton({ scrollRoot, threshold = SCROLL_THRESHOLD }: 
       onClick={() => {
         const el = scrollRoot.current;
         if (!el) return;
-        el.scrollTo({ top: 0, behavior: 'auto' });
+        const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        el.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
       }}
       className="fixed bottom-6 right-6 z-30 h-11 w-11 rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/30 hover:bg-primary/90"
     >

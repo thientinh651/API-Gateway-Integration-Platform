@@ -257,13 +257,14 @@ export type RouteWriteBody = {
   target: string;
   timeout_secs: number;
   rate_limit_per_min: number;
-  /** `*` hoặc danh sách `GET,POST,...` */
-  allowed_methods?: string;
+  /** `["*"]` hoặc `["GET","POST",...]` */
+  allowed_methods?: string[];
   transform_add_headers?: string;
   transform_remove_headers?: string;
   retry_max?: number;
-  retry_on_status?: string;
-  /** Backend SQLite/API: 0 | 1 */
+  /** Mảng mã HTTP, vd `[502,503,504]` */
+  retry_on_status?: number[];
+  /** Backend API: 0 | 1 */
   retry_on_timeout?: number;
   queue_on_failure?: boolean;
 };
@@ -450,6 +451,11 @@ export type AuditLogsQuery = {
   limit?: number;
   result?: 'all' | 'success' | 'failure';
   search?: string;
+  /** Lọc theo ngày (YYYY-MM-DD, theo timezone server). */
+  date_from?: string;
+  date_to?: string;
+  /** Keyset cursor: chỉ lấy log có id nhỏ hơn giá trị này (cũ hơn). */
+  before_id?: number;
 };
 
 export function fetchAuditLogs(q?: AuditLogsQuery): Promise<AuditLogRow[]> {
@@ -457,6 +463,9 @@ export function fetchAuditLogs(q?: AuditLogsQuery): Promise<AuditLogRow[]> {
   if (q?.limit) params.set('limit', String(q.limit));
   if (q?.result && q.result !== 'all') params.set('result', q.result);
   if (q?.search?.trim()) params.set('search', q.search.trim());
+  if (q?.date_from?.trim()) params.set('date_from', q.date_from.trim());
+  if (q?.date_to?.trim()) params.set('date_to', q.date_to.trim());
+  if (q?.before_id) params.set('before_id', String(q.before_id));
   const qs = params.toString();
   return fetchJson<AuditLogRow[]>(`/api/audit-logs${qs ? `?${qs}` : ''}`);
 }
@@ -520,6 +529,11 @@ export type TransactionLogsQuery = {
   search?: string;
   reason?: string;
   client_key_id?: number;
+  /** Lọc theo ngày (YYYY-MM-DD, theo timezone server). */
+  date_from?: string;
+  date_to?: string;
+  /** Keyset cursor: chỉ lấy log có id nhỏ hơn giá trị này (cũ hơn). */
+  before_id?: number;
 };
 
 export type ClientKeyTrafficStats = {
@@ -541,6 +555,9 @@ export function fetchTransactionLogs(q?: TransactionLogsQuery): Promise<Transact
   if (q?.search?.trim()) params.set('search', q.search.trim());
   if (q?.reason && q.reason !== 'all') params.set('reason', q.reason);
   if (q?.client_key_id) params.set('client_key_id', String(q.client_key_id));
+  if (q?.date_from?.trim()) params.set('date_from', q.date_from.trim());
+  if (q?.date_to?.trim()) params.set('date_to', q.date_to.trim());
+  if (q?.before_id) params.set('before_id', String(q.before_id));
   const qs = params.toString();
   return fetchJson<TransactionLogRow[]>(`/api/transaction-logs${qs ? `?${qs}` : ''}`);
 }
@@ -555,6 +572,8 @@ export type GatewaySettings = {
   transform_enabled: boolean;
   retry_enabled: boolean;
   queue_enabled: boolean;
+  /** Giây chờ hoàn tác sau xóa (0 = xóa ngay). */
+  undo_delete_seconds: number;
   system_info: {
     version: string;
     runtime: string;
@@ -576,6 +595,7 @@ export type GatewaySettingsWriteBody = {
   transform_enabled?: boolean;
   retry_enabled?: boolean;
   queue_enabled?: boolean;
+  undo_delete_seconds?: number;
 };
 
 export type DlqItemStatus = 'pending' | 'replayed' | 'failed_permanent';

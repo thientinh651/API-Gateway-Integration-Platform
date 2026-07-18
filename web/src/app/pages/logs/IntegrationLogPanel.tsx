@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { RefreshCw, Download, Search, Eye, Copy } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { RefreshCw, Download, Search, Eye, Copy, CalendarDays, X } from 'lucide-react';
 import { Card } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -21,7 +21,12 @@ import {
 } from '../../components/ui/sheet';
 import { fetchSyncLogs, type SyncLogRow } from '../../../lib/api';
 import { toastApiError } from '../../../lib/apiClientError';
-import { formatDbTimestamp, formatDbTimestampForExport } from '../../../lib/formatDbTimestamp';
+import {
+  dbDayKey,
+  formatDbDayLabel,
+  formatDbTimestamp,
+  formatDbTimestampForExport,
+} from '../../../lib/formatDbTimestamp';
 import { prettyMaybeJson } from './logsShared';
 
 function statusBadgeClass(status: string): string {
@@ -184,6 +189,8 @@ export function IntegrationLogPanel() {
   const loadGenRef = useRef(0);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
 
   const [detailLog, setDetailLog] = useState<SyncLogRow | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -213,6 +220,12 @@ export function IntegrationLogPanel() {
   const q = searchTerm.trim().toLowerCase();
   const filtered = rows.filter((r) => {
     if (statusFilter !== 'all' && r.status !== statusFilter) return false;
+    if (dateFrom || dateTo) {
+      const key = dbDayKey(r.created_at);
+      if (!key) return false;
+      if (dateFrom && key < dateFrom) return false;
+      if (dateTo && key > dateTo) return false;
+    }
     if (!q) return true;
     return (
       r.message.toLowerCase().includes(q) ||
@@ -222,6 +235,20 @@ export function IntegrationLogPanel() {
       (r.metadata_json ?? '').toLowerCase().includes(q)
     );
   });
+
+  const groupedByDay = useMemo(() => {
+    const out: { key: string; label: string; rows: SyncLogRow[] }[] = [];
+    for (const log of filtered) {
+      const key = dbDayKey(log.created_at) ?? 'unknown';
+      const last = out[out.length - 1];
+      if (last && last.key === key) {
+        last.rows.push(log);
+      } else {
+        out.push({ key, label: formatDbDayLabel(log.created_at), rows: [log] });
+      }
+    }
+    return out;
+  }, [filtered]);
 
   const openDetail = (log: SyncLogRow) => {
     setDetailLog(log);
@@ -257,6 +284,39 @@ export function IntegrationLogPanel() {
                 <SelectItem value="RETRY">RETRY</SelectItem>
               </SelectContent>
             </Select>
+            <div className="flex items-center gap-1.5 rounded-md border border-border bg-input px-2">
+              <CalendarDays className="w-4 h-4 text-muted-foreground shrink-0" />
+              <input
+                type="date"
+                value={dateFrom}
+                max={dateTo || undefined}
+                onChange={(e) => setDateFrom(e.target.value)}
+                aria-label="Từ ngày"
+                className="bg-transparent text-sm text-foreground outline-none py-2 [color-scheme:dark]"
+              />
+              <span className="text-muted-foreground text-xs">→</span>
+              <input
+                type="date"
+                value={dateTo}
+                min={dateFrom || undefined}
+                onChange={(e) => setDateTo(e.target.value)}
+                aria-label="Đến ngày"
+                className="bg-transparent text-sm text-foreground outline-none py-2 [color-scheme:dark]"
+              />
+              {dateFrom || dateTo ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDateFrom('');
+                    setDateTo('');
+                  }}
+                  className="text-muted-foreground hover:text-primary shrink-0"
+                  aria-label="Xóa lọc ngày"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              ) : null}
+            </div>
             <Button variant="outline" className="border-border" onClick={() => void load()} disabled={refreshing}>
               <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
               Làm mới
@@ -292,50 +352,59 @@ export function IntegrationLogPanel() {
           </p>
         ) : (
           <div className={refreshing ? 'opacity-60 transition-opacity duration-150' : 'transition-opacity duration-150'}>
-            {filtered.map((log) => (
-              <div key={log.id} className={`${GRID} border-b border-border/50 hover:bg-primary/5`}>
-                <div className={CELL}>
-                  <Badge className={`${statusBadgeClass(log.status)} border text-[10px]`}>{log.status}</Badge>
+            {groupedByDay.map((group, gi) => (
+              <div key={group.key} className={gi === 0 ? '' : 'mt-5'}>
+                <div className="flex items-center gap-2 px-4 sm:px-6 py-2 border-y border-border/60 bg-slate-950/70">
+                  <CalendarDays className="w-3.5 h-3.5 text-primary shrink-0" />
+                  <span className="text-xs font-bold text-primary capitalize">{group.label}</span>
+                  <span className="text-[10px] text-muted-foreground">· {group.rows.length} bản ghi</span>
                 </div>
-                <div className={CELL}>
-                  {log.event_type ? (
-                    <Badge className="bg-primary/10 text-primary border-primary/20 border text-[10px] font-mono truncate max-w-full">
-                      {log.event_type}
-                    </Badge>
-                  ) : (
-                    <span className="text-xs text-slate-500">—</span>
-                  )}
-                  {log.correlation_id ? (
-                    <p className="text-[10px] text-muted-foreground font-mono mt-1 truncate" title={log.correlation_id}>
-                      trace {log.correlation_id.slice(0, 8)}
-                    </p>
-                  ) : null}
-                </div>
-                <div className={`${CELL} min-w-0`}>
-                  <p className="text-xs text-slate-200 truncate">{log.message}</p>
-                  {log.error_detail ? (
-                    <p className="text-[10px] text-red-400/90 font-mono truncate mt-0.5">{log.error_detail}</p>
-                  ) : null}
-                </div>
-                <div className={`${CELL} hidden sm:block text-[11px] text-slate-400 font-mono min-w-0`}>
-                  <span className="truncate block">
-                    {(log.source_provider ?? '—')} → {(log.target_provider ?? '—')}
-                  </span>
-                </div>
-                <div className={`${CELL} text-slate-400 font-mono text-xs whitespace-nowrap`}>
-                  {formatDbTimestamp(log.created_at)}
-                </div>
-                <div className={`${CELL} text-right`}>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="border-border h-7 px-2 text-[11px]"
-                    onClick={() => openDetail(log)}
-                  >
-                    <Eye className="w-3.5 h-3.5 mr-1" />
-                    Xem
-                  </Button>
-                </div>
+                {group.rows.map((log) => (
+                  <div key={log.id} className={`${GRID} border-b border-border/50 hover:bg-primary/5`}>
+                    <div className={CELL}>
+                      <Badge className={`${statusBadgeClass(log.status)} border text-[10px]`}>{log.status}</Badge>
+                    </div>
+                    <div className={CELL}>
+                      {log.event_type ? (
+                        <Badge className="bg-primary/10 text-primary border-primary/20 border text-[10px] font-mono truncate max-w-full">
+                          {log.event_type}
+                        </Badge>
+                      ) : (
+                        <span className="text-xs text-slate-500">—</span>
+                      )}
+                      {log.correlation_id ? (
+                        <p className="text-[10px] text-muted-foreground font-mono mt-1 truncate" title={log.correlation_id}>
+                          trace {log.correlation_id.slice(0, 8)}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className={`${CELL} min-w-0`}>
+                      <p className="text-xs text-slate-200 truncate">{log.message}</p>
+                      {log.error_detail ? (
+                        <p className="text-[10px] text-red-400/90 font-mono truncate mt-0.5">{log.error_detail}</p>
+                      ) : null}
+                    </div>
+                    <div className={`${CELL} hidden sm:block text-[11px] text-slate-400 font-mono min-w-0`}>
+                      <span className="truncate block">
+                        {(log.source_provider ?? '—')} → {(log.target_provider ?? '—')}
+                      </span>
+                    </div>
+                    <div className={`${CELL} text-slate-400 font-mono text-xs whitespace-nowrap`}>
+                      {formatDbTimestamp(log.created_at)}
+                    </div>
+                    <div className={`${CELL} text-right`}>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="border-border h-7 px-2 text-[11px]"
+                        onClick={() => openDetail(log)}
+                      >
+                        <Eye className="w-3.5 h-3.5 mr-1" />
+                        Xem
+                      </Button>
+                    </div>
+                  </div>
+                ))}
               </div>
             ))}
           </div>

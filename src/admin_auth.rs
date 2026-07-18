@@ -107,7 +107,9 @@ pub fn viewer_registration_enabled() -> bool {
         .unwrap_or(false)
 }
 
-/// Viewer: không client keys, logs, queue, users, settings, integrations, proxy mutate.
+/// Viewer: read-only quan sát — xem route, client (metadata), transaction log,
+/// dashboard/metrics. Không users/settings/integrations/audit/queue/crypto và
+/// không mutate gì (trừ workspace/switch cho SaaS).
 pub fn rbac_allow(method: &Method, path: &str, role: &str) -> bool {
     let role = normalize_role(role);
     let p = api_path(path);
@@ -125,18 +127,25 @@ pub fn rbac_allow(method: &Method, path: &str, role: &str) -> bool {
             }
             return false;
         }
-        if p.starts_with("/client-keys")
-            || p.starts_with("/users")
+        // Admin/operator-only surfaces — viewer không đọc.
+        if p.starts_with("/users")
             || p.starts_with("/settings")
-            || p.starts_with("/crypto/")
-            || p.starts_with("/transaction-logs")
-            || p.starts_with("/audit-logs")
-            || p.starts_with("/proxy-queue")
             || p.starts_with("/integrations")
             || p.starts_with("/workspace/members")
+            || p.starts_with("/audit-logs")
+            || p.starts_with("/proxy-queue")
+            || p.starts_with("/crypto/")
             || p == "/reload-config"
         {
             return false;
+        }
+        // API Client — read-only (metadata; secret material qua /encrypted bị chặn).
+        if p.starts_with("/client-keys") {
+            return get && p != "/client-keys/encrypted";
+        }
+        // Transaction log — read-only; handler redact non-admin.
+        if p.starts_with("/transaction-logs") {
+            return get;
         }
         return get
             && (p == "/routes"
@@ -238,6 +247,12 @@ pub fn rbac_allow(method: &Method, path: &str, role: &str) -> bool {
 pub fn can_access_client_keys(role: &str) -> bool {
     let r = normalize_role(role);
     r == "admin" || r == "operator"
+}
+
+/// Read-only view của client registry: admin + operator + viewer.
+pub fn can_view_client_keys(role: &str) -> bool {
+    let r = normalize_role(role);
+    r == "admin" || r == "operator" || r == "viewer"
 }
 
 pub fn can_manage_client_keys(role: &str) -> bool {
@@ -469,10 +484,22 @@ mod tests {
     fn viewer_read_only_own_scope() {
         assert!(allow(Method::GET, "/api/routes", "viewer"));
         assert!(!allow(Method::POST, "/api/routes", "viewer"));
-        assert!(!allow(Method::GET, "/api/client-keys", "viewer"));
-        assert!(!allow(Method::GET, "/api/transaction-logs", "viewer"));
+        // API Client + transaction log: read-only cho viewer.
+        assert!(allow(Method::GET, "/api/client-keys", "viewer"));
+        assert!(allow(Method::GET, "/api/client-keys/5", "viewer"));
+        assert!(allow(Method::GET, "/api/client-keys/traffic-summary", "viewer"));
+        assert!(allow(Method::GET, "/api/transaction-logs", "viewer"));
+        assert!(allow(Method::GET, "/api/transaction-logs/9/detail", "viewer"));
+        // Nhưng không mutate client, không secret, không audit/queue.
+        assert!(!allow(Method::POST, "/api/client-keys", "viewer"));
+        assert!(!allow(Method::DELETE, "/api/client-keys/5", "viewer"));
+        assert!(!allow(Method::PATCH, "/api/client-keys/5", "viewer"));
+        assert!(!allow(Method::POST, "/api/client-keys/5/rotate", "viewer"));
+        assert!(!allow(Method::POST, "/api/client-keys/5/revoke-tokens", "viewer"));
+        assert!(!allow(Method::POST, "/api/client-keys/encrypted", "viewer"));
         assert!(!allow(Method::GET, "/api/audit-logs", "viewer"));
         assert!(!allow(Method::GET, "/api/proxy-queue", "viewer"));
+        assert!(!allow(Method::GET, "/api/oauth/tokens", "viewer"));
     }
 
     #[test]

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { RefreshCw, Download, Search, CheckCircle2, XCircle } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { RefreshCw, Download, Search, CheckCircle2, XCircle, CalendarDays, X } from 'lucide-react';
 import { Card } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -13,7 +13,12 @@ import {
 } from '../../components/ui/select';
 import { fetchAuditLogs, type AuditLogRow } from '../../../lib/api';
 import { toastApiError } from '../../../lib/apiClientError';
-import { formatDbTimestamp, formatDbTimestampForExport } from '../../../lib/formatDbTimestamp';
+import {
+  dbDayKey,
+  formatDbDayLabel,
+  formatDbTimestamp,
+  formatDbTimestampForExport,
+} from '../../../lib/formatDbTimestamp';
 import { formatAuditDetails } from '../../../lib/formatAuditDetails';
 
 function exportCsv(rows: AuditLogRow[]) {
@@ -51,12 +56,20 @@ export function AdminAuditPanel() {
   const loadGenRef = useRef(0);
   const [searchTerm, setSearchTerm] = useState('');
   const [resultFilter, setResultFilter] = useState<'all' | 'success' | 'failure'>('all');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
 
   const load = useCallback(async () => {
     const gen = ++loadGenRef.current;
     setRefreshing(true);
     try {
-      const data = await fetchAuditLogs({ limit: 200, result: resultFilter, search: searchTerm });
+      const data = await fetchAuditLogs({
+        limit: 200,
+        result: resultFilter,
+        search: searchTerm,
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+      });
       if (gen !== loadGenRef.current) return;
       setRows(data);
     } catch (e) {
@@ -68,7 +81,21 @@ export function AdminAuditPanel() {
         setInitialLoading(false);
       }
     }
-  }, [resultFilter, searchTerm]);
+  }, [resultFilter, searchTerm, dateFrom, dateTo]);
+
+  const groupedByDay = useMemo(() => {
+    const out: { key: string; label: string; rows: AuditLogRow[] }[] = [];
+    for (const log of rows) {
+      const key = dbDayKey(log.created_at) ?? 'unknown';
+      const last = out[out.length - 1];
+      if (last && last.key === key) {
+        last.rows.push(log);
+      } else {
+        out.push({ key, label: formatDbDayLabel(log.created_at), rows: [log] });
+      }
+    }
+    return out;
+  }, [rows]);
 
   useEffect(() => {
     const t = setTimeout(() => void load(), searchTerm ? 300 : 0);
@@ -99,6 +126,39 @@ export function AdminAuditPanel() {
                 <SelectItem value="failure">Thất bại</SelectItem>
               </SelectContent>
             </Select>
+            <div className="flex items-center gap-1.5 rounded-md border border-border bg-input px-2">
+              <CalendarDays className="w-4 h-4 text-muted-foreground shrink-0" />
+              <input
+                type="date"
+                value={dateFrom}
+                max={dateTo || undefined}
+                onChange={(e) => setDateFrom(e.target.value)}
+                aria-label="Từ ngày"
+                className="bg-transparent text-sm text-foreground outline-none py-2 [color-scheme:dark]"
+              />
+              <span className="text-muted-foreground text-xs">→</span>
+              <input
+                type="date"
+                value={dateTo}
+                min={dateFrom || undefined}
+                onChange={(e) => setDateTo(e.target.value)}
+                aria-label="Đến ngày"
+                className="bg-transparent text-sm text-foreground outline-none py-2 [color-scheme:dark]"
+              />
+              {dateFrom || dateTo ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDateFrom('');
+                    setDateTo('');
+                  }}
+                  className="text-muted-foreground hover:text-primary shrink-0"
+                  aria-label="Xóa lọc ngày"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              ) : null}
+            </div>
             <Button variant="outline" className="border-border" onClick={() => void load()} disabled={refreshing}>
               <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
               Làm mới
@@ -131,48 +191,57 @@ export function AdminAuditPanel() {
           <p className="px-6 py-10 text-center text-muted-foreground">Chưa có log quản trị.</p>
         ) : (
           <div className={refreshing ? 'opacity-60 transition-opacity duration-150' : 'transition-opacity duration-150'}>
-            {rows.map((log) => {
-              const detailText = formatAuditDetails(log.details, log.action);
-              return (
-                <div key={log.id} className={`${GRID} border-b border-border/50 hover:bg-primary/5`}>
-                  <div className={CELL}>
-                    <p className="font-mono text-xs text-primary break-words">{log.action}</p>
-                    <p className="text-xs text-slate-400 truncate max-w-[16rem]">{log.resource}</p>
-                  </div>
-                  <div className={`${CELL} text-slate-400 font-mono text-xs whitespace-nowrap`}>
-                    {formatDbTimestamp(log.created_at)}
-                  </div>
-                  <div className={`${CELL} hidden sm:block text-xs text-slate-400 min-w-0`}>
-                    <p className="break-words">
-                      {log.actor}
-                      <span className="text-muted-foreground"> · {log.role}</span>
-                    </p>
-                    {detailText ? (
-                      <p className="mt-0.5 text-slate-500 break-words">{detailText}</p>
-                    ) : null}
-                  </div>
-                  <div className={`${CELL} hidden sm:block font-mono text-xs text-slate-500 whitespace-nowrap`}>
-                    {log.source_ip ?? '—'}
-                  </div>
-                  <div className={CELL}>
-                    <Badge
-                      className={
-                        log.result === 'success'
-                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                          : 'bg-red-500/10 text-red-400 border-red-500/20'
-                      }
-                    >
-                      {log.result === 'success' ? (
-                        <CheckCircle2 className="w-3 h-3 mr-1" />
-                      ) : (
-                        <XCircle className="w-3 h-3 mr-1" />
-                      )}
-                      {log.result}
-                    </Badge>
-                  </div>
+            {groupedByDay.map((group, gi) => (
+              <div key={group.key} className={gi === 0 ? '' : 'mt-5'}>
+                <div className="flex items-center gap-2 px-4 sm:px-6 py-2 border-y border-border/60 bg-slate-950/70">
+                  <CalendarDays className="w-3.5 h-3.5 text-primary shrink-0" />
+                  <span className="text-xs font-bold text-primary capitalize">{group.label}</span>
+                  <span className="text-[10px] text-muted-foreground">· {group.rows.length} bản ghi</span>
                 </div>
-              );
-            })}
+                {group.rows.map((log) => {
+                  const detailText = formatAuditDetails(log.details, log.action);
+                  return (
+                    <div key={log.id} className={`${GRID} border-b border-border/50 hover:bg-primary/5`}>
+                      <div className={CELL}>
+                        <p className="font-mono text-xs text-primary break-words">{log.action}</p>
+                        <p className="text-xs text-slate-400 truncate max-w-[16rem]">{log.resource}</p>
+                      </div>
+                      <div className={`${CELL} text-slate-400 font-mono text-xs whitespace-nowrap`}>
+                        {formatDbTimestamp(log.created_at)}
+                      </div>
+                      <div className={`${CELL} hidden sm:block text-xs text-slate-400 min-w-0`}>
+                        <p className="break-words">
+                          {log.actor}
+                          <span className="text-muted-foreground"> · {log.role}</span>
+                        </p>
+                        {detailText ? (
+                          <p className="mt-0.5 text-slate-500 break-words">{detailText}</p>
+                        ) : null}
+                      </div>
+                      <div className={`${CELL} hidden sm:block font-mono text-xs text-slate-500 whitespace-nowrap`}>
+                        {log.source_ip ?? '—'}
+                      </div>
+                      <div className={CELL}>
+                        <Badge
+                          className={
+                            log.result === 'success'
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                              : 'bg-red-500/10 text-red-400 border-red-500/20'
+                          }
+                        >
+                          {log.result === 'success' ? (
+                            <CheckCircle2 className="w-3 h-3 mr-1" />
+                          ) : (
+                            <XCircle className="w-3 h-3 mr-1" />
+                          )}
+                          {log.result}
+                        </Badge>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
           </div>
         )}
       </div>

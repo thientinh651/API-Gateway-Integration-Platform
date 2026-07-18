@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router';
-import { Layers } from 'lucide-react';
+import { Link, useLocation, useNavigate } from 'react-router';
+import { FileCode, Layers, LayoutDashboard } from 'lucide-react';
 import { MobileNav } from './MobileNav';
 import { WorkspaceSwitcher } from '../workspace/WorkspaceSwitcher';
 import {
@@ -23,8 +23,14 @@ function initials(name: string) {
   return name.trim().slice(0, 2).toUpperCase() || '?';
 }
 
+const GUEST_LINKS = [
+  { to: '/', label: 'Tổng quan', icon: LayoutDashboard },
+  { to: '/api-docs', label: 'Tài liệu API', icon: FileCode },
+];
+
 export function Header() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user, clearUser } = useAdminAuth();
   const [logoutOpen, setLogoutOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -133,9 +139,30 @@ export function Header() {
             </AlertDialog>
           </>
         ) : (
-          <Button asChild size="sm" variant="outline" className="border-border text-xs h-8">
-            <Link to="/login">Đăng nhập</Link>
-          </Button>
+          <>
+            <nav className="hidden lg:flex items-center gap-1">
+              {GUEST_LINKS.map(({ to, label, icon: Icon }) => {
+                const isActive = location.pathname === to;
+                return (
+                  <Link
+                    key={to}
+                    to={to}
+                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+                      isActive
+                        ? 'text-primary bg-primary/10'
+                        : 'text-muted-foreground hover:text-primary hover:bg-primary/10'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4 shrink-0" />
+                    {label}
+                  </Link>
+                );
+              })}
+            </nav>
+            <Button asChild size="sm" className="h-8 bg-primary text-xs text-white hover:bg-primary/90">
+              <Link to="/login">Đăng nhập</Link>
+            </Button>
+          </>
         )}
       </div>
     </header>

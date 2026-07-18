@@ -77,7 +77,7 @@ export function Register() {
       <TechPanel className="relative z-[1] w-full max-w-md p-6 sm:p-8">
         <h1 className="text-2xl font-bold text-white mb-1">Đăng ký</h1>
         <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
-          Tạo tài khoản Viewer. Sau khi đăng ký, admin workspace có thể mời bạn với vai trò Operator hoặc
+          Tạo tài khoản Viewer. Sau khi đăng ký, admin workspace có thể mời  với vai trò Operator hoặc
           Admin.
         </p>
         <form onSubmit={onSubmit} className="space-y-4" noValidate>

@@ -90,7 +90,7 @@ export function WorkspaceSwitcher() {
                     {roleLabel(ws.role)}
                   </Badge>
                   {ws.is_home ? (
-                    <span className="text-[10px] text-muted-foreground">Workspace của bạn</span>
+                    <span className="text-[10px] text-muted-foreground">Workspace</span>
                   ) : (
                     <span className="text-[10px] text-muted-foreground">Được mời</span>
                   )}

@@ -534,7 +534,7 @@ pub async fn oauth_authorize_get(st: &OAuthHandlerState, headers: HeaderMap, q: 
             StatusCode::FORBIDDEN,
             "forbidden",
             "Tài khoản không thuộc workspace của app này",
-            "Đăng nhập bằng user cùng workspace (tenant) với app OAuth, hoặc nhờ admin thêm bạn vào workspace đó.",
+            "Đăng nhập bằng user cùng workspace (tenant) với app OAuth, hoặc liên hệ admin thêm vào workspace.",
             Some(&format!("Đang đăng nhập: {}", ctx.username)),
         );
     }

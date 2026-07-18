@@ -24,6 +24,7 @@ import { Switch } from '../components/ui/switch';
 import { Badge } from '../components/ui/badge';
 import { AdminOnly } from '../components/auth/AdminOnly';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
+import { useUndoDelete } from '../../contexts/UndoDeleteContext';
 import {
   createAdminUser,
   deleteAdminUser,
@@ -76,6 +77,7 @@ const EMPTY_FORM: FormData = {
 
 function UsersAdmin() {
   const { user: me } = useAdminAuth();
+  const { scheduleDelete, pendingIdSet, undoSeconds } = useUndoDelete();
   const [users, setUsers] = useState<AdminUserRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [isOpen, setIsOpen] = useState(false);
@@ -86,6 +88,11 @@ function UsersAdmin() {
   const [saving, setSaving] = useState(false);
 
   const editingSelf = editingUser != null && me?.user_id === editingUser.id;
+  const hiddenUserIds = pendingIdSet('user');
+  const visibleUsers = useMemo(
+    () => users.filter((u) => !hiddenUserIds.has(String(u.id))),
+    [users, hiddenUserIds],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -232,14 +239,18 @@ function UsersAdmin() {
     }
   };
 
-  const handleDelete = async (id: number) => {
-    try {
-      await deleteAdminUser(id);
-      await load();
-      toast.success('User đã được xóa');
-    } catch (e) {
-      toastApiError(e);
-    }
+  const handleDelete = (id: number) => {
+    const row = users.find((u) => u.id === id);
+    const label = row ? `user ${row.username}` : `user #${id}`;
+    scheduleDelete({
+      entity: 'user',
+      id,
+      label,
+      execute: async () => {
+        await deleteAdminUser(id);
+        await load();
+      },
+    });
   };
 
   const handleEdit = (user: AdminUserRow) => {
@@ -482,7 +493,7 @@ function UsersAdmin() {
               </tr>
             </thead>
             <tbody className="text-sm">
-              {users.map((user) => (
+              {visibleUsers.map((user) => (
                 <tr key={user.id} className="border-b border-border/50 hover:bg-primary/5">
                   <td className="px-6 py-4 text-slate-300 font-medium">{user.username}</td>
                   <td className="px-6 py-4 text-slate-400 text-xs">{user.email ?? '—'}</td>
@@ -514,7 +525,11 @@ function UsersAdmin() {
                       </Button>
                       <ConfirmDangerButton
                         title="Xóa user?"
-                        description={`Xóa tài khoản "${user.username}" — không hoàn tác.`}
+                        description={
+                          undoSeconds > 0
+                            ? `Ẩn tài khoản "${user.username}". Có ${undoSeconds}s hoàn tác trước khi xóa thật.`
+                            : `Xóa tài khoản "${user.username}".`
+                        }
                         confirmLabel="Xóa user"
                         onConfirm={() => handleDelete(user.id)}
                         className="text-red-400"

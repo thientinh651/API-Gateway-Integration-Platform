@@ -48,10 +48,10 @@ skinparam packageStyle rectangle
     transform_add_headers : TEXT
     transform_remove_headers : TEXT
     retry_max : INTEGER
-    retry_on_status : TEXT
+    retry_on_status : INTEGER[]
     retry_on_timeout : INTEGER
     queue_on_failure : INTEGER
-    allowed_methods : TEXT
+    allowed_methods : TEXT[]
   }
 
   entity "gateway_client_keys" {

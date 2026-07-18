@@ -26,19 +26,24 @@ export function rbacAllow(method: HttpMethod, path: string, role?: string): bool
   if (r === 'viewer') {
     if (write) return false;
     if (
-      p.startsWith('/client-keys') ||
       p.startsWith('/users') ||
       p.startsWith('/settings') ||
-      p.startsWith('/crypto/') ||
-      p.startsWith('/transaction-logs') ||
+      p.startsWith('/integrations') ||
+      p.startsWith('/workspace/members') ||
       p.startsWith('/audit-logs') ||
       p.startsWith('/proxy-queue') ||
-      p.startsWith('/integrations') ||
+      p.startsWith('/crypto/') ||
       p === '/reload-config'
     ) {
       return false;
     }
-    return get && (p === '/routes' || p.startsWith('/routes/') || p === '/dashboard/stats' || p === '/middleware/status' || p === '/me' || p === '/ping');
+    if (p.startsWith('/client-keys')) {
+      return get && p !== '/client-keys/encrypted';
+    }
+    if (p.startsWith('/transaction-logs')) {
+      return get;
+    }
+    return get && (p === '/routes' || p.startsWith('/routes/') || p === '/dashboard/stats' || p === '/middleware/status' || p === '/me' || p === '/ping' || p === '/workspace/memberships');
   }
 
   // operator — không users/settings/integrations
@@ -86,6 +91,12 @@ export function rbacAllow(method: HttpMethod, path: string, role?: string): bool
 export function canAccessClientKeys(user: AdminMe | null): boolean {
   const r = normalizeRole(user?.role);
   return r === 'admin' || r === 'operator';
+}
+
+/** Read-only view của Client Registry — admin + operator + viewer. */
+export function canViewClientKeys(user: AdminMe | null): boolean {
+  const r = normalizeRole(user?.role);
+  return r === 'admin' || r === 'operator' || r === 'viewer';
 }
 
 export function canCreateRoute(user: AdminMe | null): boolean {
@@ -179,7 +190,7 @@ export function canAccessNavPath(path: string, user: AdminMe | null): boolean {
   if (!api) return false;
   if (path === '/users') return canManageUsers(user);
   if (path === '/integrations') return canManageIntegrations(user);
-  if (path === '/auth') return canAccessClientKeys(user);
+  if (path === '/auth') return canViewClientKeys(user);
   if (path === '/logs') return canViewLogs(user);
   if (path === '/proxy-queue') return rbacAllow('GET', '/api/proxy-queue', user.role);
   return rbacAllow('GET', api, user.role);
@@ -202,7 +213,7 @@ export function roleBadgeClass(role?: string): string {
 
 export function roleDescription(role?: string): string {
   const r = normalizeRole(role);
-  if (r === 'admin') return 'Toàn quyền trong workspace của bạn';
-  if (r === 'operator') return 'Vận hành route/key — chỉ tài nguyên do bạn tạo (key)';
-  return 'Chỉ xem route — không API key, log, queue, tích hợp';
+  if (r === 'admin') return 'Toàn quyền trong workspace của ';
+  if (r === 'operator') return 'Vận hành route/key — chỉ tài nguyên do  tạo (key)';
+  return 'Chỉ xem: route, client, transaction log, dashboard — không sửa, không audit/queue/tích hợp';
 }

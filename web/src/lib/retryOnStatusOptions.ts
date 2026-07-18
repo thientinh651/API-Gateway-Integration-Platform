@@ -47,6 +47,13 @@ export function toggleRetryOnStatus(raw: string, code: number, checked: boolean)
   return formatRetryOnStatus([...set]);
 }
 
+/** Chuyển mảng API → chuỗi form CSV. */
+export function retryOnStatusFromApi(raw: number[] | string | undefined | null): string {
+  if (raw == null) return DEFAULT_RETRY_ON_STATUS;
+  if (typeof raw === 'string') return raw.trim() || DEFAULT_RETRY_ON_STATUS;
+  return formatRetryOnStatus(raw);
+}
+
 export function retryStatusHintForCode(code: number): string | undefined {
   return RETRY_ON_STATUS_OPTIONS.find((o) => o.code === code)?.hint;
 }

@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import { FlaskConical, Plus, RefreshCw, KeyRound, Zap, AppWindow } from 'lucide-react';
 import { AdminOnly } from '../components/auth/AdminOnly';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
+import { useUndoDelete } from '../../contexts/UndoDeleteContext';
 import {
+  canAccessClientKeys,
   canDeleteClientKeys,
   canManageOAuthApps,
   canRevokeClientTokens,
@@ -60,13 +62,15 @@ function metaToRow(m: ClientKeyMeta): ClientRegistryRow {
 
 function AuthAdmin() {
   const { user } = useAdminAuth();
+  const { scheduleDelete, scheduleBulkDelete, pendingIdSet, undoSeconds } = useUndoDelete();
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get('tab');
-  const activeTab: AuthTab =
-    tabParam === 'tokens' || tabParam === 'apps' ? tabParam : 'clients';
   const allowCreateKeys = canWriteClientKeys(user);
   const allowDeleteKeys = canDeleteClientKeys(user);
+  const allowProxyTry = canAccessClientKeys(user);
   const canViewTokens = canViewOAuthTokens(user);
+  const activeTab: AuthTab =
+    (tabParam === 'tokens' || tabParam === 'apps') && canViewTokens ? tabParam : 'clients';
   const canRevokeTokens = canRevokeClientTokens(user);
   const canManageApps = canManageOAuthApps(user);
   const [clients, setClients] = useState<ClientRegistryRow[]>([]);
@@ -84,17 +88,21 @@ function AuthAdmin() {
   const [traffic24h, setTraffic24h] = useState<Map<string, number>>(new Map());
   const [middlewareRefreshKey, setMiddlewareRefreshKey] = useState(0);
 
-  const filteredClients = clients.filter((c) => {
-    if (statusFilter === 'active' && !c.isActive) return false;
-    if (statusFilter === 'disabled' && c.isActive) return false;
-    const q = searchTerm.trim().toLowerCase();
-    if (!q) return true;
-    return (
-      c.name.toLowerCase().includes(q) ||
-      c.apiKey.toLowerCase().includes(q) ||
-      c.integrationType.toLowerCase().includes(q)
-    );
-  });
+  const hiddenClientIds = pendingIdSet('client');
+  const filteredClients = useMemo(() => {
+    return clients.filter((c) => {
+      if (hiddenClientIds.has(String(c.id))) return false;
+      if (statusFilter === 'active' && !c.isActive) return false;
+      if (statusFilter === 'disabled' && c.isActive) return false;
+      const q = searchTerm.trim().toLowerCase();
+      if (!q) return true;
+      return (
+        c.name.toLowerCase().includes(q) ||
+        c.apiKey.toLowerCase().includes(q) ||
+        c.integrationType.toLowerCase().includes(q)
+      );
+    });
+  }, [clients, hiddenClientIds, statusFilter, searchTerm]);
 
   const reload = useCallback(async () => {
     if (!user) return;
@@ -154,14 +162,18 @@ function AuthAdmin() {
     setSearchParams(next, { replace: true });
   }, [statusFilter, searchParams, setSearchParams]);
 
-  const handleDelete = async (id: string) => {
-    try {
-      await deleteClientKey(Number(id));
-      await reload();
-      toast.success('Đã xóa client');
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    }
+  const handleDelete = (id: string) => {
+    const client = clients.find((c) => c.id === id);
+    const label = client ? `client ${client.name}` : `client #${id}`;
+    scheduleDelete({
+      entity: 'client',
+      id,
+      label,
+      execute: async () => {
+        await deleteClientKey(Number(id));
+        await reload();
+      },
+    });
   };
 
   const openConfig = (client: ClientRegistryRow) => {
@@ -195,20 +207,26 @@ function AuthAdmin() {
     }
   };
 
-  const handleBulkDelete = async (ids: string[]) => {
-    const results = await Promise.allSettled(ids.map((id) => deleteClientKey(Number(id))));
-    const deleted = results.filter((r) => r.status === 'fulfilled').length;
-    const failed = results.length - deleted;
-    await reload();
-    if (failed === 0) {
-      toast.success(`Đã xóa ${deleted} client`);
-    } else if (deleted > 0) {
-      toast.warning(`Đã xóa ${deleted} client, ${failed} lỗi`);
-    } else {
-      const reason = results.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
-      toast.error(reason?.reason instanceof Error ? reason.reason.message : 'Không xóa được client');
-      throw reason?.reason;
-    }
+  const handleBulkDelete = (ids: string[]) => {
+    scheduleBulkDelete({
+      entity: 'client',
+      ids,
+      label: `${ids.length} client`,
+      execute: async () => {
+        const results = await Promise.allSettled(ids.map((id) => deleteClientKey(Number(id))));
+        const deleted = results.filter((r) => r.status === 'fulfilled').length;
+        const failed = results.length - deleted;
+        await reload();
+        if (failed === 0) return;
+        if (deleted > 0) {
+          throw new Error(`Đã xóa ${deleted} client, ${failed} lỗi`);
+        }
+        const reason = results.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
+        throw reason?.reason instanceof Error
+          ? reason.reason
+          : new Error('Không xóa được client');
+      },
+    });
   };
 
   const setTab = (tab: AuthTab) => {
@@ -235,12 +253,14 @@ function AuthAdmin() {
               <RefreshCw className="w-4 h-4 mr-2" />
               Làm mới
             </Button>
-            <Button asChild variant="outline" size="sm" className="border-border">
-              <Link to="/proxy-try">
-                <FlaskConical className="w-4 h-4 mr-2" />
-                Thử
-              </Link>
-            </Button>
+            {allowProxyTry ? (
+              <Button asChild variant="outline" size="sm" className="border-border">
+                <Link to="/proxy-try">
+                  <FlaskConical className="w-4 h-4 mr-2" />
+                  Thử
+                </Link>
+              </Button>
+            ) : null}
             {allowCreateKeys ? (
               <CreateApiKeyDialog
                 onKeysChanged={() => void reload()}
@@ -317,6 +337,7 @@ function AuthAdmin() {
               onBulkDelete={allowDeleteKeys ? handleBulkDelete : undefined}
               canDelete={allowDeleteKeys}
               canManage={allowCreateKeys}
+              undoSeconds={undoSeconds}
             />
           </div>
         </TabsContent>

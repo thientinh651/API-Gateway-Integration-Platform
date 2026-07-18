@@ -197,7 +197,7 @@ export function WorkspaceMembersPanel() {
               </Button>
             </EnterSubmitForm>
             <p className="text-[11px] text-muted-foreground mt-2">
-              User phải có tài khoản trước khi được mời. Mời Admin chỉ khi bạn là chủ workspace.
+              User phải có tài khoản trước khi được mời.
             </p>
           </Card>
 

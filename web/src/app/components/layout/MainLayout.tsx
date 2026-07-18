@@ -10,15 +10,15 @@ export function MainLayout() {
   const mainRef = useRef<HTMLElement>(null);
   return (
     <div className="flex h-screen overflow-hidden">
-      <Sidebar />
+      {user ? <Sidebar /> : null}
       <main ref={mainRef} className="flex-grow overflow-y-auto bg-background relative">
         <div className="pointer-events-none absolute inset-0 tech-grid-bg-subtle opacity-40" aria-hidden />
         <Header />
         <div
           className={
             user
-              ? 'relative z-[1] p-4 sm:p-6 lg:p-8 max-w-[100vw] overflow-x-hidden'
-              : 'relative z-[1] p-0 max-w-[100vw] overflow-x-hidden'
+              ? 'relative z-[1] p-4 sm:p-6 lg:p-8 max-w-full overflow-x-hidden'
+              : 'relative z-[1] max-w-full overflow-x-hidden'
           }
         >
           <Outlet />

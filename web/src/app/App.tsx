@@ -3,6 +3,7 @@ import { AppToaster } from './components/AppToaster';
 import { ToastNavigateBridge } from './components/ToastNavigateBridge';
 import { AdminAuthProvider } from '../contexts/AdminAuthContext';
 import { GatewayFeaturesProvider } from '../contexts/GatewayFeaturesContext';
+import { UndoDeleteProvider } from '../contexts/UndoDeleteContext';
 import { MainLayout } from './components/layout/MainLayout';
 import { Overview } from './pages/Overview';
 import { Routes as RoutesPage } from './pages/Routes';
@@ -28,6 +29,7 @@ export default function App() {
     <BrowserRouter>
       <GatewayFeaturesProvider>
         <AdminAuthProvider>
+        <UndoDeleteProvider>
         <ToastNavigateBridge />
         <AppToaster
           dir="ltr"
@@ -136,6 +138,7 @@ export default function App() {
             />
           </Route>
         </Routes>
+        </UndoDeleteProvider>
         </AdminAuthProvider>
       </GatewayFeaturesProvider>
     </BrowserRouter>

@@ -46,6 +46,32 @@ export function formatDbTimestampForExport(value: string | null | undefined): st
   return d.toLocaleString('vi-VN', { hour12: false });
 }
 
+/** Khóa gom nhóm theo ngày (local) — `YYYY-MM-DD`. */
+export function dbDayKey(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const d = parseDbTimestamp(value);
+  if (!d) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+const VI_DAY_OPTS: Intl.DateTimeFormatOptions = {
+  weekday: 'long',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+};
+
+/** Nhãn ngày tiếng Việt — vd "Thứ Sáu, 26/07/2026". */
+export function formatDbDayLabel(value: string | null | undefined): string {
+  if (!value) return '—';
+  const d = parseDbTimestamp(value);
+  if (!d) return value?.trim() || '—';
+  return d.toLocaleDateString('vi-VN', VI_DAY_OPTS);
+}
+
 export function formatUnixTimestamp(unixSec: number): string {
   const d = new Date(unixSec * 1000);
   if (Number.isNaN(d.getTime())) return '—';

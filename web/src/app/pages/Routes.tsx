@@ -1,8 +1,9 @@
 import { Link } from 'react-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { AdminOnly } from '../components/auth/AdminOnly';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
+import { useUndoDelete } from '../../contexts/UndoDeleteContext';
 import { canCreateRoute, canDeleteRoute, canUpdateRoute } from '../../lib/rbac';
 import { useGatewayRoutes } from '../../hooks/useGatewayRoutes';
 import {
@@ -15,7 +16,8 @@ import {
 import { toastApiError } from '../../lib/apiClientError';
 import { handleFormApiError } from '../../lib/formValidation';
 import { parseDefaultNumber } from '../../lib/zeroDefaultNumberInput';
-import { DEFAULT_ALLOWED_METHODS } from '../../lib/allowedMethodsOptions';
+import { DEFAULT_ALLOWED_METHODS, allowedMethodsToApi } from '../../lib/allowedMethodsOptions';
+import { parseRetryOnStatus } from '../../lib/retryOnStatusOptions';
 import { RouteFormDialog, type RouteFormState } from './routes/RouteFormDialog';
 import { RoutesTable } from './routes/RoutesTable';
 import { RouteClientsSheet } from './routes/RouteClientsSheet';
@@ -64,11 +66,11 @@ function routeBodyFromForm(form: RouteFormState, defaults: RouteNumericDefaults)
     target: form.upstream.trim(),
     timeout_secs,
     rate_limit_per_min,
-    allowed_methods: form.allowedMethods.trim() || DEFAULT_ALLOWED_METHODS,
+    allowed_methods: allowedMethodsToApi(form.allowedMethods.trim() || DEFAULT_ALLOWED_METHODS),
     transform_add_headers: form.transformAddHeaders.trim() || '{}',
     transform_remove_headers: form.transformRemoveHeaders.trim() || '[]',
     retry_max: Number.parseInt(parseDefaultNumber(form.retryMax, defaults.retryMax), 10) || 0,
-    retry_on_status: form.retryOnStatus.trim() || '502,503,504',
+    retry_on_status: parseRetryOnStatus(form.retryOnStatus.trim() || '502,503,504'),
     retry_on_timeout: form.retryOnTimeout ? 1 : 0,
     queue_on_failure: form.queueOnFailure,
   };
@@ -76,11 +78,17 @@ function routeBodyFromForm(form: RouteFormState, defaults: RouteNumericDefaults)
 
 function RoutesAdmin() {
   const { user } = useAdminAuth();
+  const { scheduleDelete, pendingIdSet, undoSeconds } = useUndoDelete();
   const allowCreate = canCreateRoute(user);
   const allowUpdate = canUpdateRoute(user);
   const allowDelete = canDeleteRoute(user);
   const { routes, loading, error, reload } = useGatewayRoutes(!!user);
   const [aclSummary, setAclSummary] = useState<RouteAclSummaryRow[]>([]);
+  const hiddenIds = pendingIdSet('route');
+  const visibleRoutes = useMemo(
+    () => routes.filter((r) => !hiddenIds.has(String(r.id))),
+    [routes, hiddenIds],
+  );
 
   const loadAcl = useCallback(async () => {
     try {
@@ -165,14 +173,18 @@ function RoutesAdmin() {
     }
   };
 
-  const handleDelete = async (id: string) => {
-    try {
-      await deleteGatewayRoute(Number(id));
-      await reload();
-      toast.success('Đã xóa route');
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    }
+  const handleDelete = (id: string) => {
+    const route = routes.find((r) => String(r.id) === String(id));
+    const label = route ? `route ${route.path}` : `route #${id}`;
+    scheduleDelete({
+      entity: 'route',
+      id,
+      label,
+      execute: async () => {
+        await deleteGatewayRoute(Number(id));
+        await reload();
+      },
+    });
   };
 
   const handleEdit = (route: UiRoute) => {
@@ -241,13 +253,14 @@ function RoutesAdmin() {
       </div>
 
       <RoutesTable
-        routes={routes}
+        routes={visibleRoutes}
         aclSummary={aclSummary}
         loading={loading}
         error={error}
         onReload={reload}
         onEdit={allowUpdate ? handleEdit : undefined}
         onDelete={allowDelete ? (id) => void handleDelete(id) : undefined}
+        undoSeconds={undoSeconds}
         onViewAcl={(route) => {
           setAclRoute(route);
           setAclOpen(true);

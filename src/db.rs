@@ -1117,6 +1117,9 @@ pub async fn list_transaction_logs(
     search: Option<&str>,
     reason: Option<&str>,
     client_key_id: Option<i64>,
+    date_from: Option<&str>,
+    date_to: Option<&str>,
+    before_id: Option<i64>,
     include_unattributed: bool,
 ) -> Result<Vec<TransactionLogRow>, sqlx::Error> {
     let lim = limit.clamp(1, 500);
@@ -1174,6 +1177,20 @@ pub async fn list_transaction_logs(
         sql.push_str(&format!(" AND t.client_key_id = ${n}"));
         n += 1;
     }
+    if date_from.filter(|d| !d.trim().is_empty()).is_some() {
+        sql.push_str(&format!(" AND t.created_at::date >= ${n}::date"));
+        n += 1;
+    }
+    if date_to.filter(|d| !d.trim().is_empty()).is_some() {
+        sql.push_str(&format!(" AND t.created_at::date <= ${n}::date"));
+        n += 1;
+    }
+    // Keyset pagination: chỉ lấy bản ghi cũ hơn con trỏ (id giảm dần). Ổn định khi có log
+    // mới chèn vào giữa các lần "Tải thêm" — không lệch/trùng như OFFSET.
+    if before_id.filter(|id| *id > 0).is_some() {
+        sql.push_str(&format!(" AND t.id < ${n}"));
+        n += 1;
+    }
     sql.push_str(&format!(" ORDER BY t.id DESC LIMIT ${n}"));
 
     let mut q = sqlx::query_as::<_, TransactionLogRow>(&sql).bind(tenant_id);
@@ -1200,6 +1217,15 @@ pub async fn list_transaction_logs(
     }
     if let Some(cid) = client_key_id {
         q = q.bind(cid);
+    }
+    if let Some(d) = date_from.filter(|d| !d.trim().is_empty()) {
+        q = q.bind(d.trim().to_string());
+    }
+    if let Some(d) = date_to.filter(|d| !d.trim().is_empty()) {
+        q = q.bind(d.trim().to_string());
+    }
+    if let Some(bid) = before_id.filter(|id| *id > 0) {
+        q = q.bind(bid);
     }
     q.bind(lim).fetch_all(pool).await
 }
@@ -1353,6 +1379,9 @@ pub async fn list_audit_logs_filtered(
     limit: i64,
     result: Option<&str>,
     search: Option<&str>,
+    date_from: Option<&str>,
+    date_to: Option<&str>,
+    before_id: Option<i64>,
 ) -> Result<Vec<AuditLogRow>, sqlx::Error> {
     let lim = limit.clamp(1, 500);
     let mut n: i32 = 2;
@@ -1373,6 +1402,18 @@ pub async fn list_audit_logs_filtered(
         ));
         n += 4;
     }
+    if date_from.filter(|d| !d.trim().is_empty()).is_some() {
+        sql.push_str(&format!(" AND created_at::date >= ${n}::date"));
+        n += 1;
+    }
+    if date_to.filter(|d| !d.trim().is_empty()).is_some() {
+        sql.push_str(&format!(" AND created_at::date <= ${n}::date"));
+        n += 1;
+    }
+    if before_id.filter(|id| *id > 0).is_some() {
+        sql.push_str(&format!(" AND id < ${n}"));
+        n += 1;
+    }
     sql.push_str(&format!(" ORDER BY id DESC LIMIT ${n}"));
 
     let mut q = sqlx::query_as::<_, AuditLogRow>(&sql).bind(tenant_id);
@@ -1382,6 +1423,15 @@ pub async fn list_audit_logs_filtered(
     if let Some(s) = search.filter(|s| !s.trim().is_empty()) {
         let pat = format!("%{}%", s.trim());
         q = q.bind(pat.clone()).bind(pat.clone()).bind(pat.clone()).bind(pat);
+    }
+    if let Some(d) = date_from.filter(|d| !d.trim().is_empty()) {
+        q = q.bind(d.trim().to_string());
+    }
+    if let Some(d) = date_to.filter(|d| !d.trim().is_empty()) {
+        q = q.bind(d.trim().to_string());
+    }
+    if let Some(bid) = before_id.filter(|id| *id > 0) {
+        q = q.bind(bid);
     }
     q.bind(lim).fetch_all(pool).await
 }
@@ -1928,10 +1978,10 @@ pub async fn insert_route(
     transform_add_headers: &str,
     transform_remove_headers: &str,
     retry_max: i32,
-    retry_on_status: &str,
+    retry_on_status: &[i32],
     retry_on_timeout: i32,
     queue_on_failure: i32,
-    allowed_methods: &str,
+    allowed_methods: &[String],
 ) -> Result<RouteRow, sqlx::Error> {
     sqlx::query_as::<_, RouteRow>(
         &format!(
@@ -1976,10 +2026,10 @@ pub async fn update_route(
     transform_add_headers: &str,
     transform_remove_headers: &str,
     retry_max: i32,
-    retry_on_status: &str,
+    retry_on_status: &[i32],
     retry_on_timeout: i32,
     queue_on_failure: i32,
-    allowed_methods: &str,
+    allowed_methods: &[String],
 ) -> Result<u64, sqlx::Error> {
     let r = sqlx::query(
         "UPDATE gateway_routes SET path = $1, target = $2, timeout_secs = $3, rate_limit_per_min = $4,

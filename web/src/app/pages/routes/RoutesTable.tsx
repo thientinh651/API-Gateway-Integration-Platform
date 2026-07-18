@@ -15,9 +15,20 @@ type Props = {
   onEdit?: (route: UiRoute) => void;
   onDelete?: (id: string) => void;
   onViewAcl?: (route: UiRoute) => void;
+  undoSeconds?: number;
 };
 
-export function RoutesTable({ routes, aclSummary, loading, error, onReload, onEdit, onDelete, onViewAcl }: Props) {
+export function RoutesTable({
+  routes,
+  aclSummary,
+  loading,
+  error,
+  onReload,
+  onEdit,
+  onDelete,
+  onViewAcl,
+  undoSeconds = 10,
+}: Props) {
   const aclMap = new Map(aclSummary.map((a) => [a.route_id, a]));
   return (
     <Card className="rounded-2xl overflow-hidden bg-card/80 backdrop-blur-sm border-border">
@@ -104,7 +115,11 @@ export function RoutesTable({ routes, aclSummary, loading, error, onReload, onEd
                         {onDelete ? (
                           <ConfirmDangerButton
                             title="Xóa route?"
-                            description={`Xóa route ${route.path} → ${route.upstream}. Request tới path này sẽ 404.`}
+                            description={
+                              undoSeconds > 0
+                                ? `Ẩn route ${route.path} → ${route.upstream}. Có ${undoSeconds}s hoàn tác trước khi xóa thật.`
+                                : `Xóa route ${route.path} → ${route.upstream}. Request tới path này sẽ 404.`
+                            }
                             confirmLabel="Xóa route"
                             onConfirm={() => onDelete(route.id)}
                             className="text-red-400 hover:text-red-300 hover:bg-red-500/10"

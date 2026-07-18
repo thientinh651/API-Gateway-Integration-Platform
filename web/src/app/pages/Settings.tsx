@@ -6,6 +6,7 @@ import {
   RefreshCw,
   RotateCcw,
   Save,
+  Timer,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Card } from '../components/ui/card';
@@ -29,6 +30,7 @@ import {
 import { FieldError } from '../components/forms/FieldError';
 import { EnterSubmitForm } from '../components/forms/EnterSubmitForm';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
+import { useUndoDelete } from '../../contexts/UndoDeleteContext';
 import { canEditSettings } from '../../lib/rbac';
 import { defaultNumberHandlers, parseDefaultNumber } from '../../lib/zeroDefaultNumberInput';
 
@@ -42,6 +44,7 @@ type SettingsForm = {
   transformEnabled: boolean;
   retryEnabled: boolean;
   queueEnabled: boolean;
+  undoDeleteSeconds: string;
 };
 
 const RUNTIME_TOGGLES: Array<{
@@ -90,6 +93,7 @@ function toForm(data: GatewaySettings): SettingsForm {
     transformEnabled: data.transform_enabled ?? false,
     retryEnabled: data.retry_enabled ?? false,
     queueEnabled: data.queue_enabled ?? false,
+    undoDeleteSeconds: String(data.undo_delete_seconds ?? 10),
   };
 }
 
@@ -119,6 +123,7 @@ function SettingToggleRow({
 
 export function Settings() {
   const { user } = useAdminAuth();
+  const { refreshUndoSeconds } = useUndoDelete();
   const allowEdit = canEditSettings(user);
   const readOnly = !allowEdit;
   const [settings, setSettings] = useState<SettingsForm | null>(null);
@@ -153,11 +158,18 @@ export function Settings() {
     if (!settings || !snapshot) return;
     const rpsDefault = String(snapshot.rate_limit_rps);
     const burstDefault = String(snapshot.rate_limit_burst);
+    const undoDefault = String(snapshot.undo_delete_seconds ?? 10);
     const rateLimitRps = Number(parseDefaultNumber(settings.rateLimitRps, rpsDefault));
     const rateLimitBurst = Number(parseDefaultNumber(settings.rateLimitBurst, burstDefault));
+    const undoDeleteSeconds = Number(parseDefaultNumber(settings.undoDeleteSeconds, undoDefault));
     const clientErrors: Record<string, string> = {};
     if (!Number.isFinite(rateLimitRps)) clientErrors.rate_limit_rps = 'Nhập số hợp lệ';
     if (!Number.isFinite(rateLimitBurst)) clientErrors.rate_limit_burst = 'Nhập số hợp lệ';
+    if (!Number.isFinite(undoDeleteSeconds) || undoDeleteSeconds < 0) {
+      clientErrors.undo_delete_seconds = 'Nhập số ≥ 0';
+    } else if (undoDeleteSeconds > 120) {
+      clientErrors.undo_delete_seconds = 'Tối đa 120 giây';
+    }
     if (Object.keys(clientErrors).length > 0) {
       failClientValidation(setFieldErrors, clientErrors);
       return;
@@ -176,9 +188,11 @@ export function Settings() {
         transform_enabled: settings.transformEnabled,
         retry_enabled: settings.retryEnabled,
         queue_enabled: settings.queueEnabled,
+        undo_delete_seconds: Math.floor(undoDeleteSeconds),
       });
       setSettings(toForm(data));
       setSnapshot(data);
+      await refreshUndoSeconds();
       toast.success('Đã lưu cài đặt');
     } catch (e) {
       handleFormApiError(e, setFieldErrors);
@@ -330,6 +344,49 @@ export function Settings() {
                   />
                 ))}
               </>
+            )}
+          </div>
+        </Card>
+
+        <Card className="rounded-2xl bg-card/80 border-border overflow-hidden xl:col-span-2">
+          <div className="px-5 sm:px-6 py-4 border-b border-border flex items-center gap-2">
+            <Timer className="w-4 h-4 text-primary" />
+            <div>
+              <h3 className="text-sm font-semibold text-white">Hoàn tác khi xóa</h3>
+              <p className="text-xs text-muted-foreground">
+                Cài đặt thời gian hoàn tác khi xóa.
+              </p>
+            </div>
+          </div>
+          <div className="p-5 sm:p-6">
+            {loading || !settings || !snapshot ? (
+              <p className="text-sm text-muted-foreground">Đang tải…</p>
+            ) : (
+              <div className="max-w-xs">
+                <Label className="text-foreground">Thời gian hoàn tác (giây)</Label>
+                <Input
+                  value={settings.undoDeleteSeconds}
+                  onChange={(e) => {
+                    setSettings({ ...settings, undoDeleteSeconds: e.target.value });
+                    clearOneFieldError(setFieldErrors, 'undo_delete_seconds');
+                  }}
+                  {...defaultNumberHandlers(
+                    settings.undoDeleteSeconds,
+                    (v) => setSettings({ ...settings, undoDeleteSeconds: v }),
+                    String(snapshot.undo_delete_seconds ?? 10),
+                  )}
+                  aria-invalid={Boolean(fieldErrors.undo_delete_seconds)}
+                  className={fieldInputErrorClass(
+                    Boolean(fieldErrors.undo_delete_seconds),
+                    'bg-input border-border text-foreground mt-1.5',
+                  )}
+                  disabled={readOnly}
+                />
+                <FieldError message={fieldErrors.undo_delete_seconds} />
+                <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
+                  0 = xóa ngay, không hiện hoàn tác. Tối đa 120 giây.
+                </p>
+              </div>
             )}
           </div>
         </Card>

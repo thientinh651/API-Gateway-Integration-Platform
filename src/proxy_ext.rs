@@ -51,17 +51,15 @@ impl RouteProxyPolicy {
             transform_add_headers,
             transform_remove_headers,
             retry_max: row.retry_max.max(0) as u32,
-            retry_on_status: parse_status_list(&row.retry_on_status),
+            retry_on_status: row
+                .retry_on_status
+                .iter()
+                .map(|&c| c as u16)
+                .collect(),
             retry_on_timeout: row.retry_on_timeout != 0,
             queue_on_failure: row.queue_on_failure != 0,
         }
     }
-}
-
-fn parse_status_list(raw: &str) -> Vec<u16> {
-    raw.split(',')
-        .filter_map(|s| s.trim().parse::<u16>().ok())
-        .collect()
 }
 
 pub fn method_idempotent(method: &Method) -> bool {

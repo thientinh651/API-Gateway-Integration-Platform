@@ -31,6 +31,23 @@ def esc(val) -> str:
     return f"'{s}'"
 
 
+def csv_to_int_array(val) -> str:
+    parts = [p.strip() for p in str(val or "").split(",") if p.strip().isdigit()]
+    if not parts:
+        return "ARRAY[]::INTEGER[]"
+    return "ARRAY[" + ",".join(parts) + "]::INTEGER[]"
+
+
+def csv_to_methods_array(val) -> str:
+    s = str(val or "").strip()
+    if not s or s == "*":
+        return "ARRAY['*']::TEXT[]"
+    parts = [p.strip().upper().replace("'", "''") for p in s.split(",") if p.strip()]
+    if not parts:
+        return "ARRAY['*']::TEXT[]"
+    inner = ",".join(f"'{p}'" for p in parts)
+    return f"ARRAY[{inner}]::TEXT[]"
+
 def main() -> int:
     if not SQLITE.is_file():
         print(f"Không có {SQLITE} — bỏ qua migrate dữ liệu.")
@@ -70,12 +87,13 @@ def main() -> int:
             "INSERT INTO gateway_routes "
             "(id, path, target, timeout_secs, rate_limit_per_min, tenant_id, "
             "transform_add_headers, transform_remove_headers, retry_max, "
-            "retry_on_status, retry_on_timeout, queue_on_failure) VALUES ("
+            "retry_on_status, retry_on_timeout, queue_on_failure, allowed_methods) VALUES ("
             f"{row['id']}, {esc(row['path'])}, {esc(row['target'])}, "
             f"{row['timeout_secs']}, {row['rate_limit_per_min']}, {row['tenant_id']}, "
             f"{esc(row['transform_add_headers'])}, {esc(row['transform_remove_headers'])}, "
-            f"{row['retry_max']}, {esc(row['retry_on_status'])}, "
-            f"{row['retry_on_timeout']}, {row['queue_on_failure']});"
+            f"{row['retry_max']}, {csv_to_int_array(row['retry_on_status'])}, "
+            f"{row['retry_on_timeout']}, {row['queue_on_failure']}, "
+            f"{csv_to_methods_array(row.get('allowed_methods', '*'))});"
         )
     psql(
         "SELECT setval(pg_get_serial_sequence('gateway_routes','id'), "

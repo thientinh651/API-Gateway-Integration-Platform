@@ -292,7 +292,7 @@ impl std::fmt::Display for PasswordResetError {
 
 fn otp_email_body(username: &str, otp: &str) -> String {
     format!(
-        "Xin chào {username},\n\nMã OTP đặt lại mật khẩu AVASO Gateway: {otp}\n\nMã có hiệu lực 10 phút. Nếu bạn không yêu cầu, bỏ qua email này.\n"
+        "Xin chào {username},\n\nMã OTP đặt lại mật khẩu AVASO Gateway: {otp}\n\nMã có hiệu lực 10 phút. Nếu không yêu cầu, bỏ qua email này.\n"
     )
 }
 

@@ -56,10 +56,10 @@ TABLES = [
             ("transform_add_headers", "TEXT", "", "", "x", "Header thêm JSON"),
             ("transform_remove_headers", "TEXT", "", "", "x", "Header xóa JSON"),
             ("retry_max", "INTEGER", "", "", "x", "Số lần retry"),
-            ("retry_on_status", "TEXT", "", "", "x", "Status retry"),
+            ("retry_on_status", "INTEGER[]", "", "", "x", "Status retry"),
             ("retry_on_timeout", "INTEGER", "", "", "x", "1 retry timeout"),
             ("queue_on_failure", "INTEGER", "", "", "x", "1 → DLQ"),
-            ("allowed_methods", "TEXT", "", "", "x", "GET,POST,..."),
+            ("allowed_methods", "TEXT[]", "", "", "x", "GET,POST,..."),
         ],
     ),
     (

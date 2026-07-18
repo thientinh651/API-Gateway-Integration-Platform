@@ -87,18 +87,14 @@ pub struct RouteRow {
     pub transform_remove_headers: String,
     #[serde(default)]
     pub retry_max: i32,
-    #[serde(default = "default_retry_status")]
-    pub retry_on_status: String,
+    #[serde(default = "route_match::default_retry_status_codes")]
+    pub retry_on_status: Vec<i32>,
     #[serde(default = "default_one")]
     pub retry_on_timeout: i32,
     #[serde(default)]
     pub queue_on_failure: i32,
-    #[serde(default = "default_allowed_methods")]
-    pub allowed_methods: String,
-}
-
-fn default_allowed_methods() -> String {
-    "*".into()
+    #[serde(default = "route_match::default_allowed_methods_list")]
+    pub allowed_methods: Vec<String>,
 }
 
 fn default_json_obj() -> String {
@@ -107,10 +103,6 @@ fn default_json_obj() -> String {
 
 fn default_json_arr() -> String {
     "[]".into()
-}
-
-fn default_retry_status() -> String {
-    "502,503,504".into()
 }
 
 fn default_one() -> i32 {
@@ -218,6 +210,8 @@ struct RuntimeSettings {
     enable_metrics: bool,
     enable_health_check: bool,
     extensions: proxy_ext::ExtensionToggles,
+    /// Dashboard: giây chờ hoàn tác sau khi bấm xóa (0 = xóa ngay).
+    undo_delete_seconds: u32,
 }
 
 impl Default for RuntimeSettings {
@@ -227,8 +221,13 @@ impl Default for RuntimeSettings {
             enable_metrics: true,
             enable_health_check: true,
             extensions: proxy_ext::ExtensionToggles::default(),
+            undo_delete_seconds: default_undo_delete_seconds(),
         }
     }
+}
+
+fn default_undo_delete_seconds() -> u32 {
+    10
 }
 
 #[derive(Debug, Serialize)]
@@ -253,6 +252,7 @@ struct SettingsResponse {
     transform_enabled: bool,
     retry_enabled: bool,
     queue_enabled: bool,
+    undo_delete_seconds: u32,
     system_info: SettingsSystemInfo,
 }
 
@@ -271,6 +271,8 @@ struct UpdateSettingsBody {
     retry_enabled: bool,
     #[serde(default)]
     queue_enabled: bool,
+    #[serde(default = "default_undo_delete_seconds")]
+    undo_delete_seconds: u32,
 }
 
 #[derive(Clone)]
@@ -853,6 +855,10 @@ async fn load_runtime_settings(
         db::load_setting(pool, "runtime_queue_enabled").await?,
         yaml.queue.enabled,
     );
+    let undo_delete_seconds = parse_u32_setting(
+        db::load_setting(pool, "runtime_undo_delete_seconds").await?,
+        default_undo_delete_seconds(),
+    );
 
     Ok(RuntimeSettings {
         rate_limit: RateLimitConfig {
@@ -868,6 +874,7 @@ async fn load_runtime_settings(
             retry_enabled,
             queue_enabled,
         },
+        undo_delete_seconds,
     })
 }
 
@@ -929,6 +936,12 @@ async fn persist_runtime_settings(
         if body.queue_enabled { "1" } else { "0" },
     )
     .await?;
+    db::upsert_setting(
+        pool,
+        "runtime_undo_delete_seconds",
+        &body.undo_delete_seconds.to_string(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -943,6 +956,7 @@ fn settings_response_from_config(cfg: &AppConfig) -> SettingsResponse {
         transform_enabled: cfg.settings.extensions.transform_enabled,
         retry_enabled: cfg.settings.extensions.retry_enabled,
         queue_enabled: cfg.settings.extensions.queue_enabled,
+        undo_delete_seconds: cfg.settings.undo_delete_seconds,
         system_info: SettingsSystemInfo {
             version: env!("CARGO_PKG_VERSION"),
             runtime: "Rust/Tokio",
@@ -983,6 +997,12 @@ fn validate_settings_write(body: &UpdateSettingsBody) -> Option<Response> {
         fields.insert(
             "rate_limit_burst".into(),
             serde_json::Value::String("Burst quá lớn".into()),
+        );
+    }
+    if body.undo_delete_seconds > 120 {
+        fields.insert(
+            "undo_delete_seconds".into(),
+            serde_json::Value::String("Thời gian hoàn tác tối đa 120 giây".into()),
         );
     }
     if fields.is_empty() {
@@ -3527,14 +3547,20 @@ struct RouteWriteBody {
     transform_remove_headers: String,
     #[serde(default)]
     retry_max: i32,
-    #[serde(default = "default_retry_status")]
-    retry_on_status: String,
+    #[serde(
+        default = "route_match::default_retry_status_codes",
+        deserialize_with = "route_match::deserialize_retry_status"
+    )]
+    retry_on_status: Vec<i32>,
     #[serde(default = "default_one", deserialize_with = "deserialize_i32_or_bool")]
     retry_on_timeout: i32,
     #[serde(default)]
     queue_on_failure: bool,
-    #[serde(default = "default_allowed_methods")]
-    allowed_methods: String,
+    #[serde(
+        default = "route_match::default_allowed_methods_list",
+        deserialize_with = "route_match::deserialize_allowed_methods"
+    )]
+    allowed_methods: Vec<String>,
 }
 
 /// FE có thể gửi `true`/`false` hoặc `0`/`1`.
@@ -3572,12 +3598,11 @@ where
     deserializer.deserialize_any(I32OrBool)
 }
 
-fn route_policy_from_body(body: &RouteWriteBody) -> (String, String, i32, String, i32, i32) {
+fn route_policy_from_body(body: &RouteWriteBody) -> (String, String, i32, i32, i32) {
     (
         body.transform_add_headers.clone(),
         body.transform_remove_headers.clone(),
         body.retry_max.max(0),
-        body.retry_on_status.clone(),
         if body.retry_on_timeout != 0 { 1 } else { 0 },
         if body.queue_on_failure { 1 } else { 0 },
     )
@@ -3652,8 +3677,8 @@ async fn api_create_route(
     if let Some(resp) = validate_route_proxy_policy(&body) {
         return resp;
     }
-    let allowed_methods = body.allowed_methods.trim().to_ascii_uppercase();
-    if !route_match::validate_allowed_methods(&allowed_methods) {
+    let allowed_methods = route_match::normalize_allowed_methods_list(body.allowed_methods.clone());
+    if !route_match::validate_allowed_methods_list(&allowed_methods) {
         return json_error_fields(
             StatusCode::BAD_REQUEST,
             "validation_failed",
@@ -3661,13 +3686,24 @@ async fn api_create_route(
             serde_json::Map::from_iter([(
                 "allowed_methods".into(),
                 serde_json::Value::String(
-                    "Dùng * hoặc danh sách GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS".into(),
+                    "Dùng [\"*\"] hoặc mảng GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS".into(),
                 ),
             )]),
         );
     }
-    let (t_add, t_rm, retry_max, retry_status, retry_timeout, queue_fail) =
-        route_policy_from_body(&body);
+    let retry_status = route_match::normalize_retry_status_codes(body.retry_on_status.clone());
+    if !route_match::validate_retry_status_codes(&retry_status) {
+        return json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "retry_on_status không hợp lệ",
+            serde_json::Map::from_iter([(
+                "retry_on_status".into(),
+                serde_json::Value::String("Mỗi phần tử phải là mã HTTP 100–599".into()),
+            )]),
+        );
+    }
+    let (t_add, t_rm, retry_max, retry_timeout, queue_fail) = route_policy_from_body(&body);
     match db::insert_route(
         &st.pool,
         &path,
@@ -3731,8 +3767,8 @@ async fn api_update_route(
     if let Some(resp) = validate_route_proxy_policy(&body) {
         return resp;
     }
-    let allowed_methods = body.allowed_methods.trim().to_ascii_uppercase();
-    if !route_match::validate_allowed_methods(&allowed_methods) {
+    let allowed_methods = route_match::normalize_allowed_methods_list(body.allowed_methods.clone());
+    if !route_match::validate_allowed_methods_list(&allowed_methods) {
         return json_error_fields(
             StatusCode::BAD_REQUEST,
             "validation_failed",
@@ -3740,13 +3776,24 @@ async fn api_update_route(
             serde_json::Map::from_iter([(
                 "allowed_methods".into(),
                 serde_json::Value::String(
-                    "Dùng * hoặc danh sách GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS".into(),
+                    "Dùng [\"*\"] hoặc mảng GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS".into(),
                 ),
             )]),
         );
     }
-    let (t_add, t_rm, retry_max, retry_status, retry_timeout, queue_fail) =
-        route_policy_from_body(&body);
+    let retry_status = route_match::normalize_retry_status_codes(body.retry_on_status.clone());
+    if !route_match::validate_retry_status_codes(&retry_status) {
+        return json_error_fields(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "retry_on_status không hợp lệ",
+            serde_json::Map::from_iter([(
+                "retry_on_status".into(),
+                serde_json::Value::String("Mỗi phần tử phải là mã HTTP 100–599".into()),
+            )]),
+        );
+    }
+    let (t_add, t_rm, retry_max, retry_timeout, queue_fail) = route_policy_from_body(&body);
     match db::update_route(
         &st.pool,
         id,
@@ -3866,7 +3913,7 @@ async fn api_delete_route(
 }
 
 async fn api_client_keys_traffic_summary(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
-    if !admin_auth::can_access_client_keys(&ctx.role) {
+    if !admin_auth::can_view_client_keys(&ctx.role) {
         return admin_auth::forbidden_response();
     }
     let st = match STATE.get() {
@@ -3893,7 +3940,7 @@ async fn api_list_client_keys(
     Extension(ctx): Extension<AdminCtx>,
     axum::extract::Query(pq): axum::extract::Query<PaginationQuery>,
 ) -> impl IntoResponse {
-    if !admin_auth::can_access_client_keys(&ctx.role) {
+    if !admin_auth::can_view_client_keys(&ctx.role) {
         return admin_auth::forbidden_response();
     }
     let st = match STATE.get() {
@@ -3906,7 +3953,8 @@ async fn api_list_client_keys(
                 .into_response();
         }
     };
-    let admin_scope = ctx.is_admin();
+    // Viewer quan sát toàn tenant (không sở hữu key nào); operator chỉ key của mình.
+    let admin_scope = ctx.is_admin() || ctx.is_viewer();
     match db::list_client_keys_scoped(&st.pool, ctx.tenant_id, Some(ctx.user_id), admin_scope).await {
         Ok(rows) => {
             let offset = pq.offset.unwrap_or(0);
@@ -4232,7 +4280,7 @@ async fn api_get_client_key(
     Extension(ctx): Extension<AdminCtx>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    if !admin_auth::can_access_client_keys(&ctx.role) {
+    if !admin_auth::can_view_client_keys(&ctx.role) {
         return admin_auth::forbidden_response();
     }
     let st = match STATE.get() {
@@ -4245,7 +4293,7 @@ async fn api_get_client_key(
                 .into_response();
         }
     };
-    if !ctx.is_admin() {
+    if !ctx.is_admin() && !ctx.is_viewer() {
         if let Err(res) = ensure_client_key_manage_access(&st.pool, &ctx, id).await {
             return res;
         }
@@ -4270,7 +4318,7 @@ async fn api_get_client_key_traffic(
     Path(id): Path<i64>,
     axum::extract::Query(query): axum::extract::Query<ClientKeyTrafficQuery>,
 ) -> impl IntoResponse {
-    if !admin_auth::can_access_client_keys(&ctx.role) {
+    if !admin_auth::can_view_client_keys(&ctx.role) {
         return admin_auth::forbidden_response();
     }
     let st = match STATE.get() {
@@ -4283,7 +4331,7 @@ async fn api_get_client_key_traffic(
                 .into_response();
         }
     };
-    if !ctx.is_admin() {
+    if !ctx.is_admin() && !ctx.is_viewer() {
         if let Err(res) = ensure_client_key_manage_access(&st.pool, &ctx, id).await {
             return res;
         }
@@ -4308,7 +4356,7 @@ async fn api_get_client_key_routes(
     Extension(ctx): Extension<AdminCtx>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    if !admin_auth::can_access_client_keys(&ctx.role) {
+    if !admin_auth::can_view_client_keys(&ctx.role) {
         return admin_auth::forbidden_response();
     }
     let st = match STATE.get() {
@@ -4321,7 +4369,7 @@ async fn api_get_client_key_routes(
                 .into_response();
         }
     };
-    if !ctx.is_admin() {
+    if !ctx.is_admin() && !ctx.is_viewer() {
         if let Err(res) = ensure_client_key_manage_access(&st.pool, &ctx, id).await {
             return res;
         }
@@ -5103,7 +5151,7 @@ async fn api_update_user(
         return json_error(
             StatusCode::FORBIDDEN,
             "forbidden",
-            "User không thuộc workspace của bạn — không thể sửa",
+            "User không thuộc workspace — không thể sửa",
         );
     }
     let existing = Some(target);
@@ -5637,6 +5685,9 @@ async fn api_list_audit_logs(
         limit,
         query.result.as_deref(),
         query.search.as_deref(),
+        query.date_from.as_deref(),
+        query.date_to.as_deref(),
+        query.before_id,
     )
     .await
     {
@@ -5654,6 +5705,9 @@ struct AuditLogsQuery {
     limit: Option<i64>,
     result: Option<String>,
     search: Option<String>,
+    date_from: Option<String>,
+    date_to: Option<String>,
+    before_id: Option<i64>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -5665,6 +5719,9 @@ struct TransactionLogsQuery {
     search: Option<String>,
     reason: Option<String>,
     client_key_id: Option<i64>,
+    date_from: Option<String>,
+    date_to: Option<String>,
+    before_id: Option<i64>,
 }
 
 fn status_filter_range(status: Option<&str>) -> (Option<i64>, Option<i64>) {
@@ -5703,6 +5760,9 @@ async fn api_list_transaction_logs(
         query.search.as_deref(),
         query.reason.as_deref(),
         query.client_key_id,
+        query.date_from.as_deref(),
+        query.date_to.as_deref(),
+        query.before_id,
         ctx.is_admin(),
     )
     .await
@@ -6630,10 +6690,10 @@ mod path_tests {
             transform_add_headers: "{}".into(),
             transform_remove_headers: "[]".into(),
             retry_max: 0,
-            retry_on_status: "502".into(),
+            retry_on_status: vec![502],
             retry_on_timeout: 1,
             queue_on_failure: 0,
-            allowed_methods: "*".into(),
+            allowed_methods: vec!["*".into()],
         }
     }
 

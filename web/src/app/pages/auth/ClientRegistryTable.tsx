@@ -65,9 +65,10 @@ type Props = {
   onDelete: (id: string) => void;
   onBulkStatus?: (ids: string[], status: 'active' | 'disabled') => Promise<void>;
   onStatusChange?: (id: string, active: boolean) => Promise<void>;
-  onBulkDelete?: (ids: string[]) => Promise<void>;
+  onBulkDelete?: (ids: string[]) => void | Promise<void>;
   canDelete?: boolean;
   canManage?: boolean;
+  undoSeconds?: number;
 };
 
 export function ClientRegistryTable({
@@ -81,6 +82,7 @@ export function ClientRegistryTable({
   onBulkDelete,
   canDelete = true,
   canManage = false,
+  undoSeconds = 10,
 }: Props) {
   const navigate = useNavigate();
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -204,7 +206,11 @@ export function ClientRegistryTable({
               {canDelete && onBulkDelete ? (
                 <ConfirmDangerButton
                   title={`Xóa ${selectedSummary.count} client đã chọn?`}
-                  description={`Xóa vĩnh viễn: ${selectedSummary.preview}. Mọi request từ các client này sẽ bị từ chối — không khôi phục.`}
+                  description={
+                    undoSeconds > 0
+                      ? `Ẩn tạm: ${selectedSummary.preview}. Có ${undoSeconds}s hoàn tác trước khi xóa thật.`
+                      : `Xóa vĩnh viễn: ${selectedSummary.preview}. Mọi request từ các client này sẽ bị từ chối.`
+                  }
                   confirmLabel={`Xóa ${selectedSummary.count} client`}
                   pendingLabel="Đang xóa…"
                   disabled={bulkBusy}
@@ -249,10 +255,10 @@ export function ClientRegistryTable({
             <col className="w-[9%]" />
             <col className="w-[14%]" />
             <col className="w-[9%]" />
-            <col className="w-[6%]" />
-            <col className="w-[10%]" />
-            <col className="w-[8%]" />
-            <col className="w-[17%]" />
+            <col className="w-[5%]" />
+            <col className="w-[12%]" />
+            <col className="w-[11%]" />
+            <col className="w-[15%]" />
           </colgroup>
           <thead className="bg-slate-900/50 text-[10px] uppercase text-muted-foreground font-bold">
             <tr>
@@ -271,8 +277,8 @@ export function ClientRegistryTable({
               <th className="px-3 py-2.5">Phân quyền</th>
               <th className="px-3 py-2.5">Rate limit</th>
               <th className="px-3 py-2.5">24h</th>
-              <th className="px-3 py-2.5">Lần dùng</th>
-              <th className="px-3 py-2.5">Trạng thái</th>
+              <th className="pl-3 pr-5 py-2.5">Lần dùng</th>
+              <th className="pl-5 pr-3 py-2.5">Trạng thái</th>
               <th className="px-2 py-2.5 text-right">Thao tác</th>
             </tr>
           </thead>
@@ -351,10 +357,10 @@ export function ClientRegistryTable({
                     '—'
                   )}
                 </td>
-                <td className="px-3 py-3 align-middle text-xs text-slate-500 whitespace-nowrap">
+                <td className="pl-3 pr-5 py-3 align-middle text-xs text-slate-500 whitespace-nowrap">
                   {client.lastUsedAt ? formatDbTimestamp(client.lastUsedAt) : '—'}
                 </td>
-                <td className="px-3 py-3 align-middle">
+                <td className="pl-5 pr-3 py-3 align-middle whitespace-nowrap">
                   {canManage && onStatusChange ? (
                     <div className="flex items-center gap-2">
                       <Switch
@@ -411,7 +417,11 @@ export function ClientRegistryTable({
                     {canDelete ? (
                       <ConfirmDangerButton
                         title="Xóa client khỏi registry?"
-                        description={`Xóa "${client.name}" — không khôi phục. Mọi request từ client này sẽ bị từ chối.`}
+                        description={
+                          undoSeconds > 0
+                            ? `Ẩn "${client.name}". Có ${undoSeconds}s hoàn tác trước khi xóa thật.`
+                            : `Xóa "${client.name}". Mọi request từ client này sẽ bị từ chối.`
+                        }
                         confirmLabel="Xóa client"
                         onConfirm={() => onDelete(client.id)}
                         variant="ghost"

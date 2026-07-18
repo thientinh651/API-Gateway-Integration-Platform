@@ -37,10 +37,10 @@ CREATE TABLE gateway_routes (
     transform_add_headers TEXT NOT NULL DEFAULT '{}',
     transform_remove_headers TEXT NOT NULL DEFAULT '[]',
     retry_max INTEGER NOT NULL DEFAULT 0,
-    retry_on_status TEXT NOT NULL DEFAULT '502,503,504',
+    retry_on_status INTEGER[] NOT NULL DEFAULT ARRAY[502, 503, 504],
     retry_on_timeout INTEGER NOT NULL DEFAULT 1,
     queue_on_failure INTEGER NOT NULL DEFAULT 0,
-    allowed_methods TEXT NOT NULL DEFAULT '*'
+    allowed_methods TEXT[] NOT NULL DEFAULT ARRAY['*']
 );
 
 CREATE TABLE gateway_client_keys (

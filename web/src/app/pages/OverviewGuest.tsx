@@ -1,109 +1,103 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
+import { motion, useReducedMotion } from 'motion/react';
 import {
-  ArrowDown,
   ArrowRight,
-  Cpu,
   FileCode,
+  Gauge,
   GitBranch,
   KeyRound,
   Lock,
   Network,
-  Play,
   Server,
   Shield,
-  Sparkles,
   Terminal,
-  Zap,
+  Workflow,
 } from 'lucide-react';
-import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
-import { Badge } from '../components/ui/badge';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '../components/ui/dialog';
-import { TechPanel } from '../components/tech/TechPanel';
 
 type HealthPayload = {
   status?: string;
-  service?: string;
   version?: string;
-  instance?: string;
 };
 
-type MetricsPayload = {
-  data_plane?: {
-    requests_total?: number;
-    rate_limit_hits_total?: number;
-  };
-  uptime_secs?: number;
-};
-
-const STACK = ['Rust', 'Tokio', 'Axum', 'PostgreSQL', 'OAuth2', 'PKCE', 'Argon2id', 'RBAC'];
-
-const FLOW = [
-  { label: 'Web shop / Client', icon: Network, tone: 'from-blue-500/20 to-blue-500/5 border-blue-500/30' },
-  { label: 'Gateway · JWT validate', icon: Shield, tone: 'from-primary/25 to-primary/5 border-primary/40' },
-  { label: 'Routing engine', icon: GitBranch, tone: 'from-cyan-500/20 to-cyan-500/5 border-cyan-500/30' },
-  { label: 'Upstream API', icon: Server, tone: 'from-emerald-500/20 to-emerald-500/5 border-emerald-500/30' },
-];
-
-const CAPABILITIES = [
+const BENEFITS = [
   {
-    icon: GitBranch,
-    title: 'Routing Engine',
-    text: 'Longest prefix, {id}, ACL client ↔ route, proxy upstream qua Tokio async.',
-    tag: 'Core',
-    to: '/api-docs#routing',
+    icon: Gauge,
+    title: 'Hiệu năng cao',
+    text: 'Xây bằng Rust + Tokio — proxy nhanh, overhead thấp, phù hợp traffic production.',
   },
   {
     icon: Shield,
-    title: 'JWT Identity',
-    text: 'POST /oauth/token → Bearer trên /v1/api/* — Token Bucket rate limit + RBAC admin.',
-    tag: 'Security',
-    to: '/api-docs#authentication',
+    title: 'Bảo mật chuẩn OAuth2',
+    text: 'PKCE, JWT, thu hồi token tức thì. Client secret hash Argon2id.',
   },
   {
-    icon: Zap,
-    title: 'Benchmark hiệu năng',
-    text: 'wrk/k6 so sánh /health vs JWT data plane — overhead thấp nhờ Rust.',
-    tag: 'NFR',
-    to: '/api-docs#quick-start',
-  },
-  {
-    icon: Lock,
-    title: 'Admin control plane',
-    text: 'Session Redis + RBAC. Route, OAuth client, DLQ, transaction log trên dashboard.',
-    tag: 'Governance',
-    to: '/login',
+    icon: Workflow,
+    title: 'Quản trị tập trung',
+    text: 'Một console cho route, client, quyền RBAC, log và hàng đợi lỗi (DLQ).',
   },
 ];
 
-const SECURITY_UPGRADES = [
+/** Ba trụ cột sản phẩm — xác thực · giới hạn · định tuyến */
+const PILLARS = [
   {
     icon: KeyRound,
-    title: 'OAuth2 + PKCE (S256)',
-    text: 'Authorization Code flow bắt buộc code_challenge — chống đánh cắp code trên mobile/SPA.',
-    tag: 'OAuth2.1',
-    badge: 'PKCE',
+    title: 'Xác thực',
+    text: 'OAuth2 + JWT (PKCE). Client lấy token, gateway kiểm tra trước khi cho vào data plane.',
   },
   {
-    icon: Shield,
-    title: 'Secret at rest',
-    text: 'Client secret Argon2id one-way (`secret_hash`); chỉ hiện plaintext lúc tạo. Admin password cùng Argon2id.',
-    tag: 'Crypto',
-    badge: 'Argon2',
+    icon: Gauge,
+    title: 'Giới hạn',
+    text: 'Token Bucket theo client/route — chống spam, bảo vệ upstream khi traffic tăng đột biến.',
+  },
+  {
+    icon: GitBranch,
+    title: 'Định tuyến',
+    text: 'Khớp path (longest prefix), ACL client ↔ route, proxy tới upstream đúng đích.',
+  },
+];
+
+const STEPS = [
+  {
+    n: '01',
+    title: 'Đăng nhập',
+    text: 'Vào dashboard quản trị để cấu hình gateway.',
+  },
+  {
+    n: '02',
+    title: 'Tạo route & client',
+    text: 'Khai báo path upstream, cấp client ID/secret, gắn quyền.',
+  },
+  {
+    n: '03',
+    title: 'Gọi API qua gateway',
+    text: 'Lấy JWT từ /oauth/token rồi gọi /v1/api/* — xem tài liệu để bắt đầu.',
+  },
+];
+
+const FLOW = [
+  { label: 'Ứng dụng', sub: 'Web, mobile, service', icon: Network },
+  { label: 'Gateway', sub: 'Xác thực · giới hạn · định tuyến', icon: Shield, featured: true },
+  { label: 'Route', sub: 'Khớp path, ACL', icon: GitBranch },
+  { label: 'Upstream', sub: 'API đích của bạn', icon: Server },
+];
+
+const TRUST = [
+  {
+    icon: KeyRound,
+    title: 'OAuth2 + PKCE',
+    text: 'Luồng chuẩn cho SPA/mobile — giảm rủi ro đánh cắp authorization code.',
   },
   {
     icon: Lock,
-    title: 'Token lifecycle',
-    text: 'JWT jti revoke (Redis) + token_version — thu hồi ngay không cần đợi hết hạn.',
-    tag: 'Revocation',
-    badge: null,
+    title: 'Bảo vệ bí mật',
+    text: 'Secret lưu dạng hash; có thể thu hồi token đang dùng ngay trên Redis.',
+  },
+  {
+    icon: Shield,
+    title: 'Phân quyền rõ ràng',
+    text: 'RBAC trên console — mỗi vai trò chỉ thấy đúng phần việc của mình.',
   },
 ];
 
@@ -125,8 +119,8 @@ const DEMO_COMMANDS: DemoCommand[] = [
   },
   {
     id: 'token',
-    label: 'OAuth token',
-    cmd: 'curl -X POST /oauth/token -d grant_type=client_credentials&client_id=avaso_pk_…',
+    label: 'Lấy token',
+    cmd: 'curl -X POST /oauth/token -d grant_type=client_credentials&client_id=…',
     output: `{
   "access_token": "eyJhbGciOiJIUzI1NiIs…",
   "token_type": "Bearer",
@@ -136,17 +130,10 @@ const DEMO_COMMANDS: DemoCommand[] = [
   },
   {
     id: 'proxy',
-    label: 'Data plane',
+    label: 'Gọi API',
     cmd: 'curl -H "Authorization: Bearer eyJ…" /v1/api/products',
-    output: 'HTTP/1.1 200 OK\nX-RateLimit-Remaining: 2\nroute: /v1/api/products → upstream 12ms',
+    output: 'HTTP/1.1 200 OK\nroute: /v1/api/products → upstream',
     tone: 'http',
-  },
-  {
-    id: 'metrics',
-    label: 'Metrics',
-    cmd: 'curl -s /metrics | jq .data_plane.requests_total',
-    output: '1842',
-    tone: 'plain',
   },
 ];
 
@@ -173,7 +160,7 @@ function useGatewayHealth() {
       }
     };
     void tick();
-    const id = window.setInterval(() => void tick(), 12_000);
+    const id = window.setInterval(() => void tick(), 15_000);
     return () => {
       cancelled = true;
       window.clearInterval(id);
@@ -183,46 +170,9 @@ function useGatewayHealth() {
   return { health, online };
 }
 
-function useLiveMetrics(online: boolean | null) {
-  const [requests, setRequests] = useState<number | null>(null);
-  const [rlHits, setRlHits] = useState<number | null>(null);
-  const [uptimeSecs, setUptimeSecs] = useState<number | null>(null);
-  const [simulated, setSimulated] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    const pull = async () => {
-      try {
-        const r = await fetch('/metrics', { credentials: 'same-origin' });
-        if (!r.ok) throw new Error('metrics off');
-        const j = (await r.json()) as MetricsPayload;
-        const total = j.data_plane?.requests_total;
-        if (!cancelled && typeof total === 'number') {
-          setRequests(total);
-          setRlHits(j.data_plane?.rate_limit_hits_total ?? null);
-          setUptimeSecs(j.uptime_secs ?? null);
-          setSimulated(false);
-        }
-      } catch {
-        if (!cancelled && online) {
-          setSimulated(true);
-          setRequests((c) => (c ?? 1200) + Math.floor(Math.random() * 5) + 1);
-        }
-      }
-    };
-    void pull();
-    const id = window.setInterval(() => void pull(), online ? 4000 : 8000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [online]);
-
-  return { requests, rlHits, uptimeSecs, simulated };
-}
-
-function ParticleCanvas() {
+function HeroTerrainMesh() {
   const ref = useRef<HTMLCanvasElement>(null);
+  const reduce = useReducedMotion();
 
   useEffect(() => {
     const canvas = ref.current;
@@ -231,37 +181,158 @@ function ParticleCanvas() {
     if (!ctx) return;
 
     let raf = 0;
-    const particles = Array.from({ length: 48 }, () => ({
-      x: Math.random(),
-      y: Math.random(),
-      vx: (Math.random() - 0.5) * 0.0004,
-      vy: (Math.random() - 0.5) * 0.0004,
-      r: Math.random() * 1.2 + 0.4,
-      a: Math.random() * 0.35 + 0.08,
-    }));
+    let t = 0;
 
     const resize = () => {
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const rect = canvas.getBoundingClientRect();
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
+      canvas.width = Math.max(1, rect.width * dpr);
+      canvas.height = Math.max(1, rect.height * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    const project = (x: number, y: number, z: number, w: number, h: number) => {
+      const scale = 260 / (260 + z);
+      return {
+        sx: w * 0.5 + x * scale,
+        sy: h * 0.28 + y * scale + z * 0.22,
+      };
+    };
+
+    const drawFloorGrid = (w: number, h: number) => {
+      const horizon = h * 0.22;
+      const vanishingX = w * 0.5;
+      ctx.save();
+      for (let i = 1; i <= 18; i++) {
+        const y = horizon + ((h - horizon) * i) / 18;
+        const prog = i / 18;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.strokeStyle = `rgba(14, 165, 233, ${0.04 + prog * 0.18})`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+      for (let i = -16; i <= 16; i++) {
+        const xBottom = vanishingX + i * (w / 14);
+        ctx.beginPath();
+        ctx.moveTo(vanishingX, horizon);
+        ctx.lineTo(xBottom, h);
+        ctx.strokeStyle = `rgba(249, 115, 22, ${0.03 + (1 - Math.abs(i) / 16) * 0.12})`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+      ctx.restore();
     };
 
     const draw = () => {
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
       ctx.clearRect(0, 0, w, h);
-      for (const p of particles) {
-        p.x += p.vx;
-        p.y += p.vy;
-        if (p.x < 0 || p.x > 1) p.vx *= -1;
-        if (p.y < 0 || p.y > 1) p.vy *= -1;
-        ctx.beginPath();
-        ctx.arc(p.x * w, p.y * h, p.r, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(56, 189, 248, ${p.a})`;
-        ctx.fill();
+      if (!reduce) t += 0.014;
+
+      const wash = ctx.createLinearGradient(0, h * 0.3, w, h);
+      wash.addColorStop(0, 'rgba(249,115,22,0.22)');
+      wash.addColorStop(0.45, 'rgba(249,115,22,0.06)');
+      wash.addColorStop(1, 'rgba(14,165,233,0.2)');
+      ctx.fillStyle = wash;
+      ctx.fillRect(0, h * 0.2, w, h * 0.8);
+      drawFloorGrid(w, h);
+
+      const cols = 36;
+      const rows = 22;
+      const pts: Array<Array<{ sx: number; sy: number; elev: number; u: number }>> = [];
+
+      for (let row = 0; row <= rows; row++) {
+        const line: Array<{ sx: number; sy: number; elev: number; u: number }> = [];
+        for (let col = 0; col <= cols; col++) {
+          const u = col / cols;
+          const v = row / rows;
+          const x = (u - 0.5) * w * 1.55;
+          const z = v * 380 + 20;
+          const elev =
+            Math.sin(u * 6.2 + t) * 34 +
+            Math.cos(v * 5.1 - t * 0.85) * 26 +
+            Math.sin((u * 2 + v) * 7 + t * 0.55) * 16 +
+            Math.sin(u * 12 - t * 1.2) * 8;
+          const y = 55 - elev + (v - 0.25) * 36;
+          const p = project(x, y, z, w, h);
+          line.push({ ...p, elev, u });
+        }
+        pts.push(line);
       }
+
+      for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+          const a = pts[row][col];
+          const b = pts[row][col + 1];
+          const c = pts[row + 1][col];
+          const d = pts[row + 1][col + 1];
+          const depth = row / rows;
+          const mix = a.u;
+          const r = Math.round(249 * (1 - mix) + 14 * mix);
+          const g = Math.round(115 * (1 - mix) + 165 * mix);
+          const bch = Math.round(22 * (1 - mix) + 233 * mix);
+          const alpha = (0.03 + (1 - depth) * 0.07) * (0.5 + (a.elev + 40) / 120);
+          ctx.beginPath();
+          ctx.moveTo(a.sx, a.sy);
+          ctx.lineTo(b.sx, b.sy);
+          ctx.lineTo(d.sx, d.sy);
+          ctx.lineTo(c.sx, c.sy);
+          ctx.closePath();
+          ctx.fillStyle = `rgba(${r},${g},${bch},${alpha})`;
+          ctx.fill();
+        }
+      }
+
+      for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+          const a = pts[row][col];
+          const b = pts[row][col + 1];
+          const c = pts[row + 1][col];
+          const depth = row / rows;
+          const mix = (a.u + b.u) / 2;
+          const alpha = 0.1 + (1 - depth) * 0.45;
+          const r = Math.round(249 * (1 - mix) + 14 * mix);
+          const g = Math.round(115 * (1 - mix) + 165 * mix);
+          const bl = Math.round(22 * (1 - mix) + 233 * mix);
+          ctx.beginPath();
+          ctx.moveTo(a.sx, a.sy);
+          ctx.lineTo(b.sx, b.sy);
+          ctx.strokeStyle = `rgba(${r},${g},${bl},${alpha})`;
+          ctx.lineWidth = depth < 0.35 ? 1.35 : 1;
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(a.sx, a.sy);
+          ctx.lineTo(c.sx, c.sy);
+          ctx.strokeStyle = `rgba(${r},${g},${bl},${alpha * 0.85})`;
+          ctx.stroke();
+        }
+      }
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      if (!reduce) {
+        for (let k = 0; k < 6; k++) {
+          const row = 4 + ((k * 3) % (rows - 6));
+          const colF = (t * 8 + k * 5) % cols;
+          const col = Math.floor(colF);
+          const frac = colF - col;
+          const p0 = pts[row][col];
+          const p1 = pts[row][Math.min(col + 1, cols)];
+          const sx = p0.sx + (p1.sx - p0.sx) * frac;
+          const sy = p0.sy + (p1.sy - p0.sy) * frac;
+          const grd = ctx.createRadialGradient(sx, sy, 0, sx, sy, 8);
+          grd.addColorStop(0, k % 2 === 0 ? 'rgba(249,115,22,0.9)' : 'rgba(14,165,233,0.9)');
+          grd.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grd;
+          ctx.beginPath();
+          ctx.arc(sx, sy, 8, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      ctx.restore();
+
       raf = requestAnimationFrame(draw);
     };
 
@@ -272,25 +343,65 @@ function ParticleCanvas() {
       cancelAnimationFrame(raf);
       window.removeEventListener('resize', resize);
     };
-  }, []);
+  }, [reduce]);
 
   return (
     <canvas
       ref={ref}
-      className="absolute inset-0 w-full h-full pointer-events-none opacity-60"
+      className="pointer-events-none absolute inset-x-0 bottom-0 h-[62%] w-full"
       aria-hidden
     />
   );
 }
 
-function InteractiveTerminal({ metricsHint }: { metricsHint: number | null }) {
+function CircuitOverlay() {
+  return (
+    <svg
+      className="pointer-events-none absolute inset-0 h-full w-full opacity-[0.35]"
+      aria-hidden
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <defs>
+        <linearGradient id="ckt-o" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#F97316" stopOpacity="0.7" />
+          <stop offset="100%" stopColor="#F97316" stopOpacity="0.1" />
+        </linearGradient>
+        <linearGradient id="ckt-c" x1="100%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor="#0EA5E9" stopOpacity="0.7" />
+          <stop offset="100%" stopColor="#0EA5E9" stopOpacity="0.1" />
+        </linearGradient>
+      </defs>
+      <g fill="none" stroke="url(#ckt-o)" strokeWidth="1">
+        <path d="M0 80 H120 V40 H200" />
+        <path d="M40 0 V100 H90 V160" />
+        <circle cx="120" cy="40" r="2.5" fill="#F97316" stroke="none" />
+        <circle cx="90" cy="100" r="2.5" fill="#F97316" stroke="none" />
+      </g>
+      <g fill="none" stroke="url(#ckt-c)" strokeWidth="1" transform="translate(100%,0) scale(-1,1)">
+        <path d="M0 60 H100 V30 H180" />
+        <path d="M50 0 V90 H110 V150" />
+        <circle cx="100" cy="30" r="2.5" fill="#0EA5E9" stroke="none" />
+        <circle cx="110" cy="90" r="2.5" fill="#0EA5E9" stroke="none" />
+      </g>
+    </svg>
+  );
+}
+
+function InteractiveTerminal() {
   const [activeId, setActiveId] = useState(DEMO_COMMANDS[0].id);
   const [typing, setTyping] = useState('');
   const [showOutput, setShowOutput] = useState(false);
+  const timers = useRef<number[]>([]);
 
   const active = DEMO_COMMANDS.find((c) => c.id === activeId) ?? DEMO_COMMANDS[0];
 
+  const clearTimers = () => {
+    for (const t of timers.current) window.clearTimeout(t);
+    timers.current = [];
+  };
+
   const runCommand = useCallback((cmd: DemoCommand) => {
+    clearTimers();
     setActiveId(cmd.id);
     setTyping('');
     setShowOutput(false);
@@ -300,9 +411,9 @@ function InteractiveTerminal({ metricsHint }: { metricsHint: number | null }) {
       i += 1;
       setTyping(line.slice(0, i));
       if (i < line.length) {
-        window.setTimeout(typeTick, 16);
+        timers.current.push(window.setTimeout(typeTick, 11));
       } else {
-        window.setTimeout(() => setShowOutput(true), 400);
+        timers.current.push(window.setTimeout(() => setShowOutput(true), 260));
       }
     };
     typeTick();
@@ -310,33 +421,45 @@ function InteractiveTerminal({ metricsHint }: { metricsHint: number | null }) {
 
   useEffect(() => {
     runCommand(DEMO_COMMANDS[0]);
+    return clearTimers;
   }, [runCommand]);
 
-  const outputText =
-    active.id === 'metrics' && metricsHint != null ? String(metricsHint) : active.output;
+  useEffect(() => {
+    if (!showOutput) return;
+    const idx = DEMO_COMMANDS.findIndex((c) => c.id === activeId);
+    const next = DEMO_COMMANDS[(idx + 1) % DEMO_COMMANDS.length];
+    const t = window.setTimeout(() => runCommand(next), 4000);
+    return () => window.clearTimeout(t);
+  }, [showOutput, activeId, runCommand]);
 
   return (
-    <TechPanel className="relative overflow-hidden shadow-2xl shadow-primary/5 !bg-[#050810] flex flex-col h-full">
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-border/60 bg-slate-900/80 shrink-0">
-        <span className="w-2.5 h-2.5 rounded-full bg-red-500/90" />
-        <span className="w-2.5 h-2.5 rounded-full bg-amber-500/90" />
-        <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/90" />
-        <span className="ml-2 text-[10px] font-mono text-muted-foreground tracking-wider flex items-center gap-1.5">
-          <Terminal className="w-3 h-3" />
-          gateway-shell · interactive
+    <div
+      className="guest-term-frame relative flex h-full min-h-[340px] flex-col overflow-hidden rounded-2xl bg-[#06080f]/80 backdrop-blur-xl"
+      role="region"
+      aria-label="Ví dụ gọi API qua gateway"
+    >
+      <div className="flex items-center gap-2 border-b border-white/10 bg-slate-950/80 px-4 py-3 shrink-0">
+        <span className="h-2.5 w-2.5 rounded-full bg-red-500" aria-hidden />
+        <span className="h-2.5 w-2.5 rounded-full bg-amber-400" aria-hidden />
+        <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" aria-hidden />
+        <span className="ml-2 flex items-center gap-1.5 font-mono text-[10px] tracking-wider text-slate-400">
+          <Terminal className="h-3 w-3" />
+          Ví dụ tích hợp
         </span>
       </div>
 
-      <div className="flex flex-wrap gap-1.5 p-3 border-b border-border/40 bg-slate-950/50">
+      <div className="flex flex-wrap gap-1 border-b border-white/5 bg-black/30 p-2.5" role="tablist">
         {DEMO_COMMANDS.map((c) => (
           <button
             key={c.id}
             type="button"
+            role="tab"
+            aria-selected={activeId === c.id}
             onClick={() => runCommand(c)}
-            className={`px-2.5 py-1 rounded-md text-[10px] font-mono uppercase tracking-wide border transition-colors ${
+            className={`rounded-md px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-wide transition-colors ${
               activeId === c.id
-                ? 'border-primary/50 bg-primary/15 text-primary'
-                : 'border-border/60 text-slate-400 hover:border-primary/30 hover:text-slate-200'
+                ? 'bg-primary/25 text-primary'
+                : 'text-slate-500 hover:bg-white/5 hover:text-slate-200'
             }`}
           >
             {c.label}
@@ -344,337 +467,304 @@ function InteractiveTerminal({ metricsHint }: { metricsHint: number | null }) {
         ))}
       </div>
 
-      <pre className="p-5 text-xs md:text-sm font-mono leading-relaxed min-h-[160px] flex-1">
-        <div className="text-emerald-400/95">
+      <pre className="flex-1 overflow-auto p-5 font-mono text-xs leading-relaxed md:text-sm" aria-live="polite">
+        <div className="text-emerald-400">
+          <span className="select-none text-slate-600">$ </span>
           {typing}
-          {!showOutput && <span className="inline-block w-2 h-4 ml-0.5 bg-primary/80 animate-pulse align-middle" />}
+          {!showOutput && (
+            <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-primary align-middle" />
+          )}
         </div>
         {showOutput ? (
           <div
             className={`mt-3 whitespace-pre-wrap ${
-              active.tone === 'http' ? 'text-primary' : active.tone === 'json' ? 'text-cyan-300/90' : 'text-slate-300'
+              active.tone === 'http'
+                ? 'text-primary'
+                : active.tone === 'json'
+                  ? 'text-sky-300'
+                  : 'text-slate-300'
             }`}
           >
-            {outputText}
+            {active.output}
           </div>
         ) : null}
       </pre>
+    </div>
+  );
+}
 
-      <div
-        className="pointer-events-none absolute inset-0 opacity-[0.06]"
-        style={{
-          backgroundImage:
-            'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(255,255,255,0.4) 2px, rgba(255,255,255,0.4) 3px)',
-        }}
-      />
-    </TechPanel>
+function FlowConnector({ delay }: { delay: number }) {
+  const reduce = useReducedMotion();
+  return (
+    <div className="relative mx-1 hidden w-10 shrink-0 items-center sm:flex" aria-hidden>
+      <div className="h-px w-full bg-gradient-to-r from-primary/40 via-sky-400/70 to-primary/40" />
+      {!reduce ? (
+        <motion.span
+          className="absolute top-1/2 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary shadow-[0_0_12px_rgba(249,115,22,0.95)]"
+          initial={{ left: '0%' }}
+          animate={{ left: '100%' }}
+          transition={{ duration: 1.6, repeat: Infinity, ease: 'linear', delay }}
+        />
+      ) : null}
+    </div>
   );
 }
 
 export function OverviewGuest() {
   const { health, online } = useGatewayHealth();
-  const { requests, rlHits, uptimeSecs, simulated } = useLiveMetrics(online);
-  const [demoOpen, setDemoOpen] = useState(false);
 
   return (
-    <div className="lg:-m-8 min-h-[calc(100dvh-3.5rem)]">
+    <div className="guest-landing min-h-full bg-[#06080f] text-slate-300">
       <style>{`
-        @keyframes guest-float {
-          0%, 100% { transform: translateY(0) scale(1); }
-          50% { transform: translateY(-12px) scale(1.02); }
+        @keyframes guest-in {
+          from { opacity: 0; transform: translateY(20px); }
+          to { opacity: 1; transform: translateY(0); }
         }
-        @keyframes flow-pulse {
-          0%, 100% { opacity: 0.4; transform: scaleY(1); }
-          50% { opacity: 1; transform: scaleY(1.15); }
+        .guest-in { animation: guest-in 0.75s ease-out both; }
+        .guest-in-1 { animation-delay: 0.08s; }
+        .guest-in-2 { animation-delay: 0.16s; }
+        .guest-in-3 { animation-delay: 0.26s; }
+        .guest-brand {
+          text-shadow:
+            0 0 28px rgba(249,115,22,0.35),
+            0 0 60px rgba(249,115,22,0.18);
         }
-        .guest-card-tilt {
-          transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+        .guest-neon-orange {
+          box-shadow:
+            0 0 0 1px rgba(249,115,22,0.4),
+            0 0 20px rgba(249,115,22,0.12);
         }
-        .guest-card-tilt:hover {
-          transform: translateY(-3px) perspective(800px) rotateX(1deg);
+        .guest-neon-sky {
+          box-shadow:
+            0 0 0 1px rgba(14,165,233,0.35),
+            0 0 20px rgba(14,165,233,0.1);
+        }
+        .guest-glass {
+          background: linear-gradient(160deg, rgba(15,20,32,0.85), rgba(6,8,15,0.92));
+          backdrop-filter: blur(14px);
+        }
+        .guest-term-frame {
+          border: 1px solid transparent;
+          background:
+            linear-gradient(rgba(6,8,15,0.88), rgba(6,8,15,0.92)) padding-box,
+            linear-gradient(135deg, rgba(249,115,22,0.75), rgba(14,165,233,0.65)) border-box;
+          box-shadow:
+            0 0 40px rgba(14,165,233,0.12),
+            0 0 28px rgba(249,115,22,0.08);
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .guest-in { animation: none; }
         }
       `}</style>
 
       {/* Hero */}
-      <section className="relative overflow-hidden border-b border-border/60">
-        <div className="absolute inset-0 tech-grid-bg opacity-70" />
-        <ParticleCanvas />
-        <div
-          className="absolute -top-32 -right-32 w-96 h-96 rounded-full bg-primary/20 blur-[100px] pointer-events-none"
-          style={{ animation: 'guest-float 8s ease-in-out infinite' }}
-        />
-        <div
-          className="absolute -bottom-24 -left-24 w-80 h-80 rounded-full bg-blue-600/15 blur-[90px] pointer-events-none"
-          style={{ animation: 'guest-float 10s ease-in-out infinite 1s' }}
-        />
+      <section className="relative min-h-[min(100dvh,52rem)] overflow-hidden">
+        <div className="absolute inset-0 bg-[#06080f]" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_25%_0%,rgba(249,115,22,0.14),transparent_48%),radial-gradient(ellipse_at_85%_15%,rgba(14,165,233,0.12),transparent_42%)]" />
+        <div className="absolute inset-0 tech-grid-bg opacity-[0.22]" />
+        <CircuitOverlay />
+        <HeroTerrainMesh />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-[#06080f] via-[#06080f]/85 to-transparent" />
 
-        <div className="relative px-4 sm:px-6 lg:px-8 py-10 sm:py-14 md:py-20 max-w-6xl mx-auto">
-          <div className="flex flex-wrap items-center gap-3 mb-6">
-            <Badge
-              variant="outline"
-              className="border-primary/40 bg-primary/10 text-primary font-mono text-[10px] tracking-widest uppercase"
-            >
-              <Sparkles className="w-3 h-3 mr-1.5" />
-              Production Ready · Rust Backend
-            </Badge>
-            {online === true && (
-              <Badge
+        <div className="relative z-10 mx-auto grid max-w-6xl gap-10 px-4 pb-24 pt-12 sm:px-6 sm:pt-16 lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:gap-12 lg:px-8 lg:pb-28 lg:pt-18">
+          <div>
+            <p className="guest-in font-mono text-[11px] uppercase tracking-[0.22em] text-primary">
+              API Gateway · Rust
+              {health?.version ? <span className="text-primary/80"> · v{health.version}</span> : null}
+              {online === true ? (
+                <span className="ml-2 inline-flex items-center gap-1.5 normal-case tracking-normal text-emerald-400">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+                  status: online
+                </span>
+              ) : null}
+            </p>
+
+            <h1 className="guest-in guest-in-1 guest-brand font-display mt-4 text-[clamp(3.5rem,12vw,6.75rem)] font-bold leading-[0.9] tracking-[-0.04em] text-white">
+              AVASO
+            </h1>
+            <p className="guest-in guest-in-1 mt-4 font-display text-xl font-semibold tracking-tight sm:text-2xl">
+              <span className="text-primary">AVASO:</span>{' '}
+              <span className="text-white">Gateway & Integrations</span>
+            </p>
+            <p className="guest-in guest-in-2 mt-5 max-w-md text-base leading-relaxed text-slate-300 sm:text-lg">
+              Bảo vệ và định tuyến API của bạn — xác thực OAuth2, giới hạn lưu lượng, quản trị tập trung.
+            </p>
+
+            <div className="guest-in guest-in-3 mt-8 flex flex-col gap-3 sm:flex-row">
+              <Button
+                asChild
+                size="lg"
+                className="min-h-12 rounded-xl bg-gradient-to-r from-primary to-orange-600 px-7 text-base font-semibold text-white shadow-[0_0_28px_rgba(249,115,22,0.4)] hover:from-primary/95 hover:to-orange-600/95"
+              >
+                <Link to="/login">
+                  Đăng nhập
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </Link>
+              </Button>
+              <Button
+                asChild
+                size="lg"
                 variant="outline"
-                className="border-emerald-500/40 bg-emerald-500/10 text-emerald-400 font-mono text-[10px]"
+                className="min-h-12 rounded-xl border-sky-400/50 bg-[#06080f]/60 px-7 text-base text-sky-100 hover:bg-sky-500/10 hover:text-white"
               >
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse mr-1.5" />
-                LIVE · {health?.version ? `v${health.version}` : 'gateway'}
-                {health?.instance ? ` · ${health.instance}` : ''}
-              </Badge>
-            )}
-            {online === false && (
-              <Badge variant="outline" className="border-amber-500/40 text-amber-400 text-[10px]">
-                Gateway offline (demo UI vẫn xem được)
-              </Badge>
-            )}
+                <Link to="/api-docs">
+                  <FileCode className="mr-2 h-4 w-4" />
+                  Xem tài liệu
+                </Link>
+              </Button>
+            </div>
           </div>
 
-          <h1 className="text-4xl sm:text-5xl md:text-7xl font-black tracking-tighter text-white mb-6 leading-[1.05]">
-            AVASO{' '}
-            <span className="tech-shimmer-title bg-clip-text text-transparent bg-gradient-to-r from-primary via-cyan-400 to-primary">
-              Gateway
-            </span>
-            <br />
-            <span className="text-2xl sm:text-3xl md:text-4xl font-semibold text-slate-400">
-              Rust · High-Performance · Production Grade
-            </span>
-          </h1>
-
-          <p className="text-lg text-slate-400 max-w-xl mb-8 leading-relaxed">
-            API Gateway với <span className="text-primary font-medium">OAuth2 + PKCE</span>, dynamic routing,
-            Token Bucket rate limit, DLQ và tích hợp CRM SF→Zoho.
-          </p>
-
-          <div className="flex flex-wrap gap-2 mb-8">
-            {STACK.map((t) => (
-              <span
-                key={t}
-                className="px-3 py-1 rounded-full text-[11px] font-mono font-medium border border-border/80 bg-slate-900/60 text-slate-300"
-              >
-                {t}
-              </span>
-            ))}
-          </div>
-
-          <div className="flex flex-col sm:flex-row flex-wrap gap-3 w-full sm:w-auto">
-            <Button
-              asChild
-              size="lg"
-              className="w-full sm:w-auto bg-primary hover:bg-primary/90 shadow-lg shadow-primary/25 min-h-[48px]"
-            >
-              <Link to="/login">
-                Vào console quản trị
-                <ArrowRight className="w-4 h-4 ml-2" />
-              </Link>
-            </Button>
-            <Button
-              asChild
-              size="lg"
-              variant="outline"
-              className="w-full sm:w-auto border-border bg-slate-900/50 min-h-[48px]"
-            >
-              <Link to="/api-docs">
-                <FileCode className="w-4 h-4 mr-2" />
-                Tài liệu API
-              </Link>
-            </Button>
+          <div className="guest-in guest-in-2 relative z-10 lg:min-h-[360px]">
+            <InteractiveTerminal />
           </div>
         </div>
       </section>
 
-      <div className="px-4 sm:px-6 lg:px-8 py-8 sm:py-12 max-w-6xl mx-auto space-y-10 sm:space-y-14">
-        {/* Live stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-          <TechPanel
-            corners={false}
-            className="p-5 col-span-2 lg:col-span-1 border-primary/25 bg-primary/5 guest-card-tilt"
-          >
-            <p className="tech-label">Data plane</p>
-            <p className="text-3xl sm:text-4xl font-bold text-primary mt-1 font-mono tabular-nums">
-              {requests != null ? requests.toLocaleString() : '…'}
-            </p>
-            <p className="text-xs text-muted-foreground mt-1 font-mono-tech">
-              {simulated ? 'requests (ước lượng)' : 'requests_total · /metrics'}
-            </p>
-          </TechPanel>
-          {[
-            { icon: Cpu, label: 'Runtime', value: 'Tokio async', sub: 'Không GC pause' },
-            { icon: Shield, label: 'Auth', value: 'JWT + PKCE', sub: 'Argon2id secret' },
-            { icon: Network, label: 'Protocol', value: 'HTTP/1.1', sub: 'Proxy + DLQ' },
-            {
-              icon: Server,
-              label: 'Service',
-              value: online ? 'Online' : online === false ? 'Offline' : '…',
-              sub:
-                online && uptimeSecs != null
-                  ? `uptime ${Math.floor(uptimeSecs / 60)}m · RL ${rlHits ?? 0}`
-                  : health?.status === 'ok'
-                    ? 'health: ok'
-                    : (health?.service ?? 'avaso-gateway'),
-            },
-          ].map(({ icon: Icon, label, value, sub }) => (
-            <TechPanel
-              key={label}
-              corners={false}
-              className="p-5 hover:border-primary/30 guest-card-tilt group"
-            >
-              <Icon className="w-5 h-5 text-primary mb-3 group-hover:scale-110 transition-transform" />
-              <p className="tech-label">{label}</p>
-              <p className="text-xl font-bold text-white mt-1 font-mono-tech">{value}</p>
-              <p className="text-xs text-muted-foreground mt-1 font-mono-tech">{sub}</p>
-            </TechPanel>
-          ))}
-        </div>
-
-        {/* Architecture + terminal */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8 items-stretch">
-          <div>
-            <h2 className="tech-label text-primary mb-4 flex items-center gap-2 font-mono-tech">
-              <GitBranch className="w-4 h-4" />
-              Kiến trúc luồng
-            </h2>
-            <div className="flex flex-col items-stretch max-w-md">
-              {FLOW.map(({ label, icon: Icon, tone }, i) => (
-                <div key={label} className="flex flex-col items-center w-full">
-                  <Card
-                    className={`guest-card-tilt w-full min-h-[56px] rounded-xl p-4 border bg-gradient-to-r ${tone} flex items-center gap-3`}
-                  >
-                    <div className="p-2 rounded-lg bg-black/30 shrink-0">
-                      <Icon className="w-5 h-5 text-white" />
-                    </div>
-                    <span className="font-semibold text-white text-sm">{label}</span>
-                  </Card>
-                  {i < FLOW.length - 1 && (
-                    <div className="flex items-center justify-center h-8 w-full" aria-hidden>
-                      <ArrowDown
-                        className="w-5 h-5 text-primary"
-                        style={{ animation: 'flow-pulse 2s ease-in-out infinite', animationDelay: `${i * 0.2}s` }}
-                      />
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-            <p className="text-xs text-muted-foreground mt-4 leading-relaxed">
-              JWT validate → Token Bucket → route match → proxy upstream → transaction log. Click terminal bên phải
-              để xem curl mẫu.
-            </p>
-          </div>
-          <InteractiveTerminal metricsHint={requests} />
-        </div>
-
-        {/* Security upgrades */}
-        <div>
-          <h2 className="text-2xl font-bold text-white mb-2">Security upgrades</h2>
-          <p className="text-muted-foreground mb-6 max-w-xl">
-            Các cải tiến bảo mật gần đây — nói trực tiếp khi demo cho hội đồng.
+      <div className="relative z-10 mx-auto max-w-6xl space-y-20 px-4 py-16 sm:px-6 lg:px-8 lg:py-20">
+        {/* Why */}
+        <section aria-labelledby="why">
+          <h2 id="why" className="font-display text-3xl font-bold tracking-tight text-white">
+            Vì sao chọn AVASO Gateway
+          </h2>
+          <p className="mt-2 max-w-xl text-sm text-slate-400">
+            Ba điều khách hàng thường cần ở một API gateway
           </p>
-          <div className="grid md:grid-cols-3 gap-4">
-            {SECURITY_UPGRADES.map(({ icon: Icon, title, text, tag, badge }) => (
-              <Card
-                key={title}
-                className="guest-card-tilt rounded-2xl p-5 bg-card/40 border-border/80 backdrop-blur-sm hover:border-emerald-500/25 h-full"
-              >
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 rounded-lg bg-emerald-500/10 ring-1 ring-emerald-500/20">
-                    <Icon className="w-5 h-5 text-emerald-400" />
-                  </div>
-                  <div className="flex gap-1.5">
-                    {badge ? (
-                      <Badge className="text-[9px] bg-violet-500/15 text-violet-300 border-violet-500/30">
-                        {badge}
-                      </Badge>
-                    ) : null}
-                    <Badge variant="secondary" className="text-[9px] font-mono uppercase">
-                      {tag}
-                    </Badge>
-                  </div>
+          <div className="mt-8 grid gap-4 md:grid-cols-3">
+            {BENEFITS.map(({ icon: Icon, title, text }) => (
+              <div key={title} className="guest-glass guest-neon-orange rounded-2xl px-5 py-6">
+                <Icon className="h-5 w-5 text-primary" />
+                <h3 className="mt-4 font-display text-lg font-semibold text-white">{title}</h3>
+                <p className="mt-2 text-sm leading-relaxed text-slate-400">{text}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* Pillars: xác thực · giới hạn · định tuyến */}
+        <section aria-labelledby="pillars">
+          <h2 id="pillars" className="font-display text-3xl font-bold tracking-tight text-white">
+            Xác thực · giới hạn · định tuyến
+          </h2>
+          <p className="mt-2 max-w-xl text-sm text-slate-400">
+            Ba việc gateway làm trên mỗi request — trước khi tới API của bạn.
+          </p>
+          <div className="mt-8 grid gap-4 md:grid-cols-3">
+            {PILLARS.map(({ icon: Icon, title, text }) => (
+              <div key={title} className="guest-glass guest-neon-sky rounded-2xl px-5 py-6">
+                <Icon className="h-5 w-5 text-sky-400" />
+                <h3 className="mt-4 font-semibold text-white">{title}</h3>
+                <p className="mt-2 text-sm leading-relaxed text-slate-400">{text}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* How it works */}
+        <section aria-labelledby="how">
+          <h2 id="how" className="font-display text-3xl font-bold tracking-tight text-white">
+            Cách hoạt động
+          </h2>
+          <p className="mt-2 max-w-xl text-sm text-slate-400">
+            Request đi qua gateway trước khi tới API của bạn.
+          </p>
+          <ol className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-stretch">
+            {FLOW.map(({ label, sub, icon: Icon, featured }, i) => (
+              <li key={label} className="flex flex-1 items-stretch">
+                <div
+                  className={`guest-glass flex w-full flex-col rounded-2xl px-5 py-6 ${
+                    featured ? 'guest-neon-orange' : 'guest-neon-sky'
+                  }`}
+                >
+                  <Icon className={`h-5 w-5 ${featured ? 'text-primary' : 'text-sky-400'}`} />
+                  <p className="mt-4 font-display text-lg font-semibold text-white">{label}</p>
+                  <p className="mt-1 text-xs leading-relaxed text-slate-400">{sub}</p>
                 </div>
-                <h3 className="font-bold text-white text-sm mb-2">{title}</h3>
-                <p className="text-xs text-muted-foreground leading-relaxed">{text}</p>
-              </Card>
+                {i < FLOW.length - 1 ? <FlowConnector delay={i * 0.4} /> : null}
+              </li>
+            ))}
+          </ol>
+        </section>
+
+        {/* Trust / security */}
+        <section aria-labelledby="trust">
+          <h2 id="trust" className="font-display text-3xl font-bold tracking-tight text-white">
+            An toàn khi vận hành
+          </h2>
+          <p className="mt-2 max-w-xl text-sm text-slate-400">
+            Chuẩn mực bảo mật mà đội kỹ thuật và bảo mật thường hỏi trước khi dùng.
+          </p>
+          <div className="mt-8 space-y-3">
+            {TRUST.map(({ icon: Icon, title, text }) => (
+              <div key={title} className="guest-glass guest-neon-orange flex gap-4 rounded-2xl px-5 py-5">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/15">
+                  <Icon className="h-5 w-5 text-primary" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-white">{title}</h3>
+                  <p className="mt-1 max-w-2xl text-sm leading-relaxed text-slate-400">{text}</p>
+                </div>
+              </div>
             ))}
           </div>
-        </div>
+        </section>
 
-        {/* Capabilities */}
-        <div>
-          <h2 className="text-2xl font-bold text-white mb-2">Năng lực nền tảng</h2>
-          <p className="text-muted-foreground mb-8 max-w-xl">Xây dựng cho vận hành thật</p>
-          <div className="grid md:grid-cols-2 gap-5">
-            {CAPABILITIES.map(({ icon: Icon, title, text, tag, to }) => (
-              <Link
-                key={title}
-                to={to}
-                className="block rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Card className="guest-card-tilt rounded-2xl p-6 bg-card/40 border-border/80 backdrop-blur-sm cursor-pointer hover:bg-card/70 hover:border-primary/25 hover:shadow-lg hover:shadow-primary/5 h-full">
-                  <div className="flex justify-between items-start mb-4">
-                    <div className="p-2.5 rounded-xl bg-primary/15 ring-1 ring-primary/25">
-                      <Icon className="w-5 h-5 text-primary" />
-                    </div>
-                    <Badge variant="secondary" className="text-[10px] font-mono uppercase">
-                      {tag}
-                    </Badge>
-                  </div>
-                  <h3 className="font-bold text-white mb-2">{title}</h3>
-                  <p className="text-sm text-muted-foreground leading-relaxed">{text}</p>
-                  <p className="text-[10px] text-primary/80 mt-3 font-mono-tech uppercase tracking-wider">
-                    Tìm hiểu →
-                  </p>
-                </Card>
+        {/* Getting started */}
+        <section aria-labelledby="start">
+          <h2 id="start" className="font-display text-3xl font-bold tracking-tight text-white">
+            Bắt đầu nhanh
+          </h2>
+          <p className="mt-2 max-w-xl text-sm text-slate-400">Ba bước để đưa traffic qua AVASO.</p>
+          <ol className="mt-8 grid gap-4 md:grid-cols-3">
+            {STEPS.map((s) => (
+              <li key={s.n} className="guest-glass guest-neon-sky rounded-2xl px-5 py-6">
+                <p className="font-mono text-xs text-primary">{s.n}</p>
+                <h3 className="mt-3 font-semibold text-white">{s.title}</h3>
+                <p className="mt-2 text-sm leading-relaxed text-slate-400">{s.text}</p>
+              </li>
+            ))}
+          </ol>
+          <div className="mt-6 flex flex-wrap gap-3">
+            <Button asChild className="bg-primary hover:bg-primary/90">
+              <Link to="/login">
+                Đăng nhập
+                <ArrowRight className="ml-2 h-4 w-4" />
               </Link>
-            ))}
+            </Button>
+            <Button asChild variant="outline" className="border-border">
+              <Link to="/api-docs">Đọc tài liệu API</Link>
+            </Button>
           </div>
-        </div>
+        </section>
 
-        {/* CTA */}
-        <TechPanel className="p-8 md:p-10 border-primary/30 bg-gradient-to-br from-primary/10 via-slate-900/80 to-slate-950 overflow-hidden">
-          <div className="absolute top-0 right-0 w-64 h-64 bg-primary/10 rounded-full blur-3xl pointer-events-none" />
-          <div className="relative flex flex-col md:flex-row md:items-center md:justify-between gap-6">
+        {/* Final CTA */}
+        <section
+          className="guest-glass guest-neon-orange relative overflow-hidden rounded-2xl px-6 py-10 sm:px-10 sm:py-12"
+          aria-labelledby="cta"
+        >
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_0%_50%,rgba(249,115,22,0.18),transparent_55%)]" />
+          <div className="relative flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h3 className="text-2xl font-bold text-white mb-2">Sẵn sàng vận hành?</h3>
-              <p className="text-muted-foreground max-w-md">
-                Đăng nhập Admin / Operator / Viewer — menu và quyền tự ẩn theo role.
+              <h2 id="cta" className="font-display text-3xl font-bold tracking-tight text-white">
+                Sẵn sàng dùng AVASO?
+              </h2>
+              <p className="mt-2 max-w-md text-sm text-slate-400">
+                Đăng nhập để quản trị, hoặc mở tài liệu để tích hợp client.
               </p>
             </div>
-            <Button asChild size="lg" className="bg-primary hover:bg-primary/90 shrink-0">
+            <Button
+              asChild
+              size="lg"
+              className="min-h-12 shrink-0 rounded-xl bg-primary px-7 font-semibold shadow-[0_0_28px_rgba(249,115,22,0.45)] hover:bg-primary/90"
+            >
               <Link to="/login">
-                Đăng nhập ngay
-                <ArrowRight className="w-4 h-4 ml-2" />
+                Đăng nhập
+                <ArrowRight className="ml-2 h-4 w-4" />
               </Link>
             </Button>
           </div>
-        </TechPanel>
+        </section>
       </div>
-
-      <Dialog open={demoOpen} onOpenChange={setDemoOpen}>
-        <DialogContent className="bg-slate-950 border-border max-w-lg">
-          <DialogHeader>
-            <DialogTitle className="text-white">Demo 90 giây</DialogTitle>
-            <DialogDescription>
-              Quay màn hình: đăng nhập → tạo route → Postman lấy JWT → gọi /v1/api → xem transaction log &
-              rate limit 429. Gắn link YouTube/Loom vào đây khi có video.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="rounded-lg border border-border bg-black/40 p-4 font-mono text-xs text-slate-400 space-y-2">
-            <p>1. POST /oauth/token (client_credentials)</p>
-            <p>2. GET /v1/api/… + Bearer</p>
-            <p>3. Dashboard → Logs → outcome success / denied</p>
-            <p>4. Spam → 429 Token Bucket</p>
-          </div>
-          <Button asChild variant="outline" className="w-full">
-            <Link to="/login" onClick={() => setDemoOpen(false)}>
-              Bắt đầu demo live
-            </Link>
-          </Button>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

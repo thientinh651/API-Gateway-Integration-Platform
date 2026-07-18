@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
-import { RefreshCw, Download, Search, Eye } from 'lucide-react';
+import { RefreshCw, Download, Search, Eye, CalendarDays, X, ChevronDown } from 'lucide-react';
 import { Card } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -18,7 +18,12 @@ import {
   type TransactionLogRow,
 } from '../../../lib/api';
 import { toastApiError } from '../../../lib/apiClientError';
-import { formatDbTimestamp, formatDbTimestampForExport } from '../../../lib/formatDbTimestamp';
+import {
+  dbDayKey,
+  formatDbDayLabel,
+  formatDbTimestamp,
+  formatDbTimestampForExport,
+} from '../../../lib/formatDbTimestamp';
 import { reasonLabel, MIDDLEWARE_REASON_FILTER_OPTIONS } from '../../../lib/middlewareLabels';
 import { MiddlewareStageBadge } from '../../components/auth/MiddlewareStageBadge';
 import { getMethodColor, getStatusBadgeClass, HTTP_STATUS_FILTER_HINT } from './logsShared';
@@ -74,11 +79,30 @@ const GRID = 'grid w-full min-w-0 grid-cols-[26%_13%_20%_13%_15%_13%] items-cent
 const CELL = 'px-4 sm:px-6 py-3 min-w-0';
 const HEAD = 'text-[10px] uppercase text-muted-foreground font-bold whitespace-nowrap bg-slate-950';
 
+const PAGE_SIZE = 100;
+
+function ymdLocal(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+type QuickRange = { id: string; label: string; days: number | null };
+const QUICK_RANGES: QuickRange[] = [
+  { id: 'today', label: 'Hôm nay', days: 0 },
+  { id: '7d', label: '7 ngày', days: 6 },
+  { id: '30d', label: '30 ngày', days: 29 },
+  { id: 'all', label: 'Tất cả', days: null },
+];
+
 export function TrafficLogPanel({ clientKeyFilter, onClearClientKey }: Props) {
   const [rows, setRows] = useState<TransactionLogRow[]>([]);
   const [clientNames, setClientNames] = useState<Map<number, string>>(() => new Map());
   const [initialLoading, setInitialLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const loadGenRef = useRef(0);
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -86,6 +110,8 @@ export function TrafficLogPanel({ clientKeyFilter, onClearClientKey }: Props) {
   const [statusFilter, setStatusFilter] = useState<'all' | '2xx' | '4xx' | '5xx'>('all');
   const [resultFilter, setResultFilter] = useState<'all' | 'success' | 'failure'>('all');
   const [reasonFilter, setReasonFilter] = useState('all');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
 
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -112,21 +138,28 @@ export function TrafficLogPanel({ clientKeyFilter, onClearClientKey }: Props) {
     return fromRegistry || fromApi || `Client #${log.client_key_id}`;
   };
 
+  const baseQuery = useCallback(
+    () => ({
+      method: methodFilter,
+      status: statusFilter,
+      outcome: resultFilter === 'all' ? undefined : resultFilter,
+      search: searchTerm,
+      reason: reasonFilter,
+      client_key_id: clientKeyFilter ?? undefined,
+      date_from: dateFrom || undefined,
+      date_to: dateTo || undefined,
+    }),
+    [methodFilter, statusFilter, resultFilter, searchTerm, reasonFilter, clientKeyFilter, dateFrom, dateTo],
+  );
+
   const load = useCallback(async () => {
     const gen = ++loadGenRef.current;
     setRefreshing(true);
     try {
-      const data = await fetchTransactionLogs({
-        limit: 200,
-        method: methodFilter,
-        status: statusFilter,
-        outcome: resultFilter === 'all' ? undefined : resultFilter,
-        search: searchTerm,
-        reason: reasonFilter,
-        client_key_id: clientKeyFilter ?? undefined,
-      });
+      const data = await fetchTransactionLogs({ limit: PAGE_SIZE, ...baseQuery() });
       if (gen !== loadGenRef.current) return;
       setRows(data);
+      setHasMore(data.length === PAGE_SIZE);
     } catch (e) {
       if (gen !== loadGenRef.current) return;
       toastApiError(e);
@@ -136,7 +169,68 @@ export function TrafficLogPanel({ clientKeyFilter, onClearClientKey }: Props) {
         setInitialLoading(false);
       }
     }
-  }, [methodFilter, statusFilter, resultFilter, searchTerm, reasonFilter, clientKeyFilter]);
+  }, [baseQuery]);
+
+  const loadMore = useCallback(async () => {
+    const gen = loadGenRef.current;
+    const cursor = rows.length > 0 ? rows[rows.length - 1].id : undefined;
+    if (cursor == null) return;
+    setLoadingMore(true);
+    try {
+      const data = await fetchTransactionLogs({ limit: PAGE_SIZE, before_id: cursor, ...baseQuery() });
+      if (gen !== loadGenRef.current) return;
+      setRows((prev) => {
+        const seen = new Set(prev.map((r) => r.id));
+        return [...prev, ...data.filter((r) => !seen.has(r.id))];
+      });
+      setHasMore(data.length === PAGE_SIZE);
+    } catch (e) {
+      if (gen !== loadGenRef.current) return;
+      toastApiError(e);
+    } finally {
+      if (gen === loadGenRef.current) setLoadingMore(false);
+    }
+  }, [rows, baseQuery]);
+
+  const applyQuickRange = useCallback((r: QuickRange) => {
+    if (r.days == null) {
+      setDateFrom('');
+      setDateTo('');
+      return;
+    }
+    const today = new Date();
+    const from = new Date();
+    from.setDate(today.getDate() - r.days);
+    setDateFrom(ymdLocal(from));
+    setDateTo(ymdLocal(today));
+  }, []);
+
+  const activeQuickRange = useMemo(() => {
+    if (!dateFrom && !dateTo) return 'all';
+    const today = ymdLocal(new Date());
+    if (dateTo !== today) return null;
+    for (const r of QUICK_RANGES) {
+      if (r.days == null) continue;
+      const from = new Date();
+      from.setDate(new Date().getDate() - r.days);
+      if (dateFrom === ymdLocal(from)) return r.id;
+    }
+    return null;
+  }, [dateFrom, dateTo]);
+
+  const groupedByDay = useMemo(() => {
+    const out: { key: string; label: string; rows: TransactionLogRow[] }[] = [];
+    for (const log of rows) {
+      const key = dbDayKey(log.created_at) ?? 'unknown';
+      const last = out[out.length - 1];
+      if (last && last.key === key) {
+        last.rows.push(log);
+      } else {
+        out.push({ key, label: formatDbDayLabel(log.created_at), rows: [log] });
+      }
+    }
+    return out;
+  }, [rows]);
 
   useEffect(() => {
     const t = setTimeout(() => void load(), searchTerm ? 300 : 0);
@@ -208,6 +302,39 @@ export function TrafficLogPanel({ clientKeyFilter, onClearClientKey }: Props) {
                 ))}
               </SelectContent>
             </Select>
+            <div className="flex items-center gap-1.5 rounded-md border border-border bg-input px-2">
+              <CalendarDays className="w-4 h-4 text-muted-foreground shrink-0" />
+              <input
+                type="date"
+                value={dateFrom}
+                max={dateTo || undefined}
+                onChange={(e) => setDateFrom(e.target.value)}
+                aria-label="Từ ngày"
+                className="bg-transparent text-sm text-foreground outline-none py-2 [color-scheme:dark]"
+              />
+              <span className="text-muted-foreground text-xs">→</span>
+              <input
+                type="date"
+                value={dateTo}
+                min={dateFrom || undefined}
+                onChange={(e) => setDateTo(e.target.value)}
+                aria-label="Đến ngày"
+                className="bg-transparent text-sm text-foreground outline-none py-2 [color-scheme:dark]"
+              />
+              {dateFrom || dateTo ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDateFrom('');
+                    setDateTo('');
+                  }}
+                  className="text-muted-foreground hover:text-primary shrink-0"
+                  aria-label="Xóa lọc ngày"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              ) : null}
+            </div>
             <Button variant="outline" className="border-border" onClick={() => void load()} disabled={refreshing}>
               <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
               Làm mới
@@ -216,6 +343,24 @@ export function TrafficLogPanel({ clientKeyFilter, onClearClientKey }: Props) {
               <Download className="w-4 h-4 mr-2" />
               Xuất CSV
             </Button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] text-muted-foreground mr-1">Khoảng nhanh:</span>
+            {QUICK_RANGES.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => applyQuickRange(r)}
+                className={`rounded-full border px-3 py-1 text-xs transition-colors ${
+                  activeQuickRange === r.id
+                    ? 'border-primary/60 bg-primary/15 text-primary'
+                    : 'border-border text-muted-foreground hover:text-foreground hover:border-primary/40'
+                }`}
+              >
+                {r.label}
+              </button>
+            ))}
           </div>
 
           {statusFilter !== 'all' ? (
@@ -258,64 +403,97 @@ export function TrafficLogPanel({ clientKeyFilter, onClearClientKey }: Props) {
           </p>
         ) : (
           <div className={refreshing ? 'opacity-60 transition-opacity duration-150' : 'transition-opacity duration-150'}>
-            {rows.map((log) => (
-              <div key={log.id} className={`${GRID} border-b border-border/50 hover:bg-primary/5`}>
-                <div className={CELL}>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <Badge className={`${getMethodColor(log.method)} border font-mono text-[10px]`}>{log.method}</Badge>
-                    <span className="font-mono text-xs text-slate-300 truncate max-w-[16rem]">{log.path}</span>
-                  </div>
-                  <p className="text-[10px] text-muted-foreground mt-1 font-mono truncate">{log.request_id}</p>
+            {groupedByDay.map((group, gi) => (
+              <div key={group.key} className={gi === 0 ? '' : 'mt-5'}>
+                <div className="flex items-center gap-2 px-4 sm:px-6 py-2 border-y border-border/60 bg-slate-950/70">
+                  <CalendarDays className="w-3.5 h-3.5 text-primary shrink-0" />
+                  <span className="text-xs font-bold text-primary capitalize">{group.label}</span>
+                  <span className="text-[10px] text-muted-foreground">· {group.rows.length} bản ghi</span>
                 </div>
-                <div className={`${CELL} text-slate-400 font-mono text-xs whitespace-nowrap`}>
-                  {formatDbTimestamp(log.created_at)}
-                  <span className="block text-[10px] text-slate-500">{log.duration_ms}ms</span>
-                </div>
-                <div className={`${CELL} hidden sm:block text-xs text-slate-400 min-w-0`}>
-                  {log.client_key_id != null ? (
-                    <p className="truncate">
-                      <Link
-                        to={`/auth?open=${log.client_key_id}`}
-                        className="text-sky-400 hover:underline font-medium"
-                        title={log.api_key_masked ?? undefined}
+                {group.rows.map((log) => (
+                  <div key={log.id} className={`${GRID} border-b border-border/50 hover:bg-primary/5`}>
+                    <div className={CELL}>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Badge className={`${getMethodColor(log.method)} border font-mono text-[10px]`}>{log.method}</Badge>
+                        <span className="font-mono text-xs text-slate-300 truncate max-w-[16rem]">{log.path}</span>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground mt-1 font-mono truncate">{log.request_id}</p>
+                    </div>
+                    <div className={`${CELL} text-slate-400 font-mono text-xs whitespace-nowrap`}>
+                      {formatDbTimestamp(log.created_at)}
+                      <span className="block text-[10px] text-slate-500">{log.duration_ms}ms</span>
+                    </div>
+                    <div className={`${CELL} hidden sm:block text-xs text-slate-400 min-w-0`}>
+                      {log.client_key_id != null ? (
+                        <p className="truncate">
+                          <Link
+                            to={`/auth?open=${log.client_key_id}`}
+                            className="text-sky-400 hover:underline font-medium"
+                            title={log.api_key_masked ?? undefined}
+                          >
+                            {clientLabel(log)}
+                          </Link>
+                        </p>
+                      ) : (
+                        <p className="text-slate-500">—</p>
+                      )}
+                      <p className="text-[10px] text-slate-500 truncate mt-0.5" title={log.upstream ?? undefined}>
+                        {log.upstream ?? '—'}
+                      </p>
+                    </div>
+                    <div className={`${CELL} hidden sm:block font-mono text-xs text-slate-500 whitespace-nowrap`}>
+                      {log.client_ip ?? '—'}
+                    </div>
+                    <div className={CELL}>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Badge className={`${getStatusBadgeClass(log.status)} border font-mono`}>{log.status}</Badge>
+                        <MiddlewareStageBadge status={log.status} reason={log.reason} outcome={log.outcome} />
+                      </div>
+                      {log.outcome !== 'success' ? (
+                        <p className="text-[10px] text-red-400/90 mt-0.5 font-mono">{log.outcome}</p>
+                      ) : null}
+                    </div>
+                    <div className={`${CELL} text-right`}>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="border-border h-7 px-2 text-[11px]"
+                        onClick={() => openDetail(log.id)}
                       >
-                        {clientLabel(log)}
-                      </Link>
-                    </p>
-                  ) : (
-                    <p className="text-slate-500">—</p>
-                  )}
-                  <p className="text-[10px] text-slate-500 truncate mt-0.5" title={log.upstream ?? undefined}>
-                    {log.upstream ?? '—'}
-                  </p>
-                </div>
-                <div className={`${CELL} hidden sm:block font-mono text-xs text-slate-500 whitespace-nowrap`}>
-                  {log.client_ip ?? '—'}
-                </div>
-                <div className={CELL}>
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <Badge className={`${getStatusBadgeClass(log.status)} border font-mono`}>{log.status}</Badge>
-                    <MiddlewareStageBadge status={log.status} reason={log.reason} outcome={log.outcome} />
+                        <Eye className="w-3.5 h-3.5 mr-1" />
+                        Xem
+                      </Button>
+                    </div>
                   </div>
-                  {log.outcome !== 'success' ? (
-                    <p className="text-[10px] text-red-400/90 mt-0.5 font-mono">{log.outcome}</p>
-                  ) : null}
-                </div>
-                <div className={`${CELL} text-right`}>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="border-border h-7 px-2 text-[11px]"
-                    onClick={() => openDetail(log.id)}
-                  >
-                    <Eye className="w-3.5 h-3.5 mr-1" />
-                    Xem
-                  </Button>
-                </div>
+                ))}
               </div>
             ))}
           </div>
         )}
+
+        {rows.length > 0 ? (
+          <div className="flex items-center justify-center gap-3 px-6 py-5 border-t border-border/60">
+            {hasMore ? (
+              <Button
+                variant="outline"
+                className="border-border"
+                onClick={() => void loadMore()}
+                disabled={loadingMore || refreshing}
+              >
+                {loadingMore ? (
+                  <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <ChevronDown className="w-4 h-4 mr-2" />
+                )}
+                Tải thêm {PAGE_SIZE} bản ghi cũ hơn
+              </Button>
+            ) : (
+              <span className="text-xs text-muted-foreground">
+                Đã tải hết {rows.length} bản ghi trong khoảng lọc.
+              </span>
+            )}
+          </div>
+        ) : null}
       </div>
 
       <TransactionDetailSheet logId={detailId} open={detailOpen} onOpenChange={setDetailOpen} />

@@ -8,6 +8,7 @@ import {
   canMutateProxyQueue,
   canUpdateRoute,
   canViewAudit,
+  canViewClientKeys,
   canViewLogs,
   canWriteClientKeys,
   rbacAllow,
@@ -23,10 +24,21 @@ describe('rbacAllow (sync backend admin_auth)', () => {
   it('viewer read only scoped', () => {
     expect(rbacAllow('GET', '/api/routes', 'viewer')).toBe(true);
     expect(rbacAllow('POST', '/api/routes', 'viewer')).toBe(false);
-    expect(rbacAllow('GET', '/api/client-keys', 'viewer')).toBe(false);
-    expect(rbacAllow('GET', '/api/transaction-logs', 'viewer')).toBe(false);
+    // API Client + transaction log: read-only cho viewer.
+    expect(rbacAllow('GET', '/api/client-keys', 'viewer')).toBe(true);
+    expect(rbacAllow('GET', '/api/client-keys/5', 'viewer')).toBe(true);
+    expect(rbacAllow('GET', '/api/client-keys/traffic-summary', 'viewer')).toBe(true);
+    expect(rbacAllow('GET', '/api/transaction-logs', 'viewer')).toBe(true);
+    expect(rbacAllow('GET', '/api/transaction-logs/9/detail', 'viewer')).toBe(true);
+    // Nhưng không mutate / secret / audit / queue / token.
+    expect(rbacAllow('POST', '/api/client-keys', 'viewer')).toBe(false);
+    expect(rbacAllow('DELETE', '/api/client-keys/5', 'viewer')).toBe(false);
+    expect(rbacAllow('PATCH', '/api/client-keys/5', 'viewer')).toBe(false);
+    expect(rbacAllow('POST', '/api/client-keys/5/rotate', 'viewer')).toBe(false);
+    expect(rbacAllow('POST', '/api/client-keys/encrypted', 'viewer')).toBe(false);
     expect(rbacAllow('GET', '/api/audit-logs', 'viewer')).toBe(false);
     expect(rbacAllow('GET', '/api/proxy-queue', 'viewer')).toBe(false);
+    expect(rbacAllow('GET', '/api/oauth/tokens', 'viewer')).toBe(false);
   });
 
   it('operator can PUT routes not POST/DELETE', () => {
@@ -74,9 +86,10 @@ describe('rbac helpers', () => {
     expect(canWriteClientKeys(operator)).toBe(true);
     expect(canWriteClientKeys(viewer)).toBe(false);
     expect(canAccessClientKeys(viewer)).toBe(false);
+    expect(canViewClientKeys(viewer)).toBe(true);
     expect(canMutateProxyQueue(viewer)).toBe(false);
     expect(canMutateProxyQueue(operator)).toBe(true);
-    expect(canViewLogs(viewer)).toBe(false);
+    expect(canViewLogs(viewer)).toBe(true);
     expect(canViewAudit(viewer)).toBe(false);
     expect(canViewLogs(operator)).toBe(true);
   });
@@ -99,8 +112,10 @@ describe('canAccessNavPath', () => {
     expect(canAccessNavPath('/users', viewer)).toBe(false);
     expect(canAccessNavPath('/settings', viewer)).toBe(false);
     expect(canAccessNavPath('/integrations', viewer)).toBe(false);
-    expect(canAccessNavPath('/auth', viewer)).toBe(false);
-    expect(canAccessNavPath('/logs', viewer)).toBe(false);
+    // Viewer read-only: xem client + transaction log.
+    expect(canAccessNavPath('/auth', viewer)).toBe(true);
+    expect(canAccessNavPath('/logs', viewer)).toBe(true);
+    // Nhưng không proxy-try (chủ động gọi API).
     expect(canAccessNavPath('/proxy-try', viewer)).toBe(false);
   });
 
