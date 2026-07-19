@@ -3,7 +3,6 @@ import { Link } from 'react-router';
 import { motion, useReducedMotion } from 'motion/react';
 import {
   ArrowRight,
-  FileCode,
   Gauge,
   GitBranch,
   KeyRound,
@@ -119,7 +118,7 @@ const DEMO_COMMANDS: DemoCommand[] = [
   },
   {
     id: 'token',
-    label: 'Lấy token',
+    label: 'Token',
     cmd: 'curl -X POST /oauth/token -d grant_type=client_credentials&client_id=…',
     output: `{
   "access_token": "eyJhbGciOiJIUzI1NiIs…",
@@ -130,7 +129,7 @@ const DEMO_COMMANDS: DemoCommand[] = [
   },
   {
     id: 'proxy',
-    label: 'Gọi API',
+    label: 'API',
     cmd: 'curl -H "Authorization: Bearer eyJ…" /v1/api/products',
     output: 'HTTP/1.1 200 OK\nroute: /v1/api/products → upstream',
     tone: 'http',
@@ -436,7 +435,7 @@ function InteractiveTerminal() {
     <div
       className="guest-term-frame relative flex h-full min-h-[340px] flex-col overflow-hidden rounded-2xl bg-[#06080f]/80 backdrop-blur-xl"
       role="region"
-      aria-label="Ví dụ gọi API qua gateway"
+      aria-label="Terminal"
     >
       <div className="flex items-center gap-2 border-b border-white/10 bg-slate-950/80 px-4 py-3 shrink-0">
         <span className="h-2.5 w-2.5 rounded-full bg-red-500" aria-hidden />
@@ -444,7 +443,7 @@ function InteractiveTerminal() {
         <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" aria-hidden />
         <span className="ml-2 flex items-center gap-1.5 font-mono text-[10px] tracking-wider text-slate-400">
           <Terminal className="h-3 w-3" />
-          Ví dụ tích hợp
+          Terminal
         </span>
       </div>
 
@@ -566,8 +565,8 @@ export function OverviewGuest() {
         <HeroTerrainMesh />
         <div className="pointer-events-none absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-[#06080f] via-[#06080f]/85 to-transparent" />
 
-        <div className="relative z-10 mx-auto grid max-w-6xl gap-10 px-4 pb-24 pt-12 sm:px-6 sm:pt-16 lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:gap-12 lg:px-8 lg:pb-28 lg:pt-18">
-          <div>
+        <div className="relative z-10 mx-auto grid max-w-6xl gap-8 px-4 pb-16 pt-12 sm:gap-10 sm:px-6 sm:pb-20 sm:pt-16 lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:gap-12 lg:px-8 lg:pb-28 lg:pt-18">
+          <div className="min-w-0">
             <p className="guest-in font-mono text-[11px] uppercase tracking-[0.22em] text-primary">
               API Gateway · Rust
               {health?.version ? <span className="text-primary/80"> · v{health.version}</span> : null}
@@ -579,43 +578,19 @@ export function OverviewGuest() {
               ) : null}
             </p>
 
-            <h1 className="guest-in guest-in-1 guest-brand font-display mt-4 text-[clamp(3.5rem,12vw,6.75rem)] font-bold leading-[0.9] tracking-[-0.04em] text-white">
+            <h1 className="guest-in guest-in-1 guest-brand font-display mt-4 text-[clamp(2.75rem,14vw,6.75rem)] font-bold leading-[0.9] tracking-[-0.04em] text-white">
               AVASO
             </h1>
-            <p className="guest-in guest-in-1 mt-4 font-display text-xl font-semibold tracking-tight sm:text-2xl">
+            <p className="guest-in guest-in-1 mt-4 font-display text-lg font-semibold tracking-tight sm:text-2xl">
               <span className="text-primary">AVASO:</span>{' '}
               <span className="text-white">Gateway & Integrations</span>
             </p>
-            <p className="guest-in guest-in-2 mt-5 max-w-md text-base leading-relaxed text-slate-300 sm:text-lg">
+            <p className="guest-in guest-in-2 mt-5 max-w-md text-sm leading-relaxed text-slate-300 sm:text-lg">
               Bảo vệ và định tuyến API của bạn — xác thực OAuth2, giới hạn lưu lượng, quản trị tập trung.
             </p>
-
-            <div className="guest-in guest-in-3 mt-8 flex flex-col gap-3 sm:flex-row">
-              <Button
-                asChild
-                size="lg"
-                className="min-h-12 rounded-xl bg-gradient-to-r from-primary to-orange-600 px-7 text-base font-semibold text-white shadow-[0_0_28px_rgba(249,115,22,0.4)] hover:from-primary/95 hover:to-orange-600/95"
-              >
-                <Link to="/login">
-                  Đăng nhập
-                  <ArrowRight className="ml-2 h-4 w-4" />
-                </Link>
-              </Button>
-              <Button
-                asChild
-                size="lg"
-                variant="outline"
-                className="min-h-12 rounded-xl border-sky-400/50 bg-[#06080f]/60 px-7 text-base text-sky-100 hover:bg-sky-500/10 hover:text-white"
-              >
-                <Link to="/api-docs">
-                  <FileCode className="mr-2 h-4 w-4" />
-                  Xem tài liệu
-                </Link>
-              </Button>
-            </div>
           </div>
 
-          <div className="guest-in guest-in-2 relative z-10 lg:min-h-[360px]">
+          <div className="guest-in guest-in-2 relative z-10 min-w-0 lg:min-h-[360px]">
             <InteractiveTerminal />
           </div>
         </div>
@@ -724,38 +699,27 @@ export function OverviewGuest() {
               </li>
             ))}
           </ol>
-          <div className="mt-6 flex flex-wrap gap-3">
-            <Button asChild className="bg-primary hover:bg-primary/90">
-              <Link to="/login">
-                Đăng nhập
-                <ArrowRight className="ml-2 h-4 w-4" />
-              </Link>
-            </Button>
-            <Button asChild variant="outline" className="border-border">
-              <Link to="/api-docs">Đọc tài liệu API</Link>
-            </Button>
-          </div>
         </section>
 
         {/* Final CTA */}
         <section
-          className="guest-glass guest-neon-orange relative overflow-hidden rounded-2xl px-6 py-10 sm:px-10 sm:py-12"
+          className="guest-glass guest-neon-orange relative overflow-hidden rounded-2xl px-5 py-8 sm:px-10 sm:py-12"
           aria-labelledby="cta"
         >
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_0%_50%,rgba(249,115,22,0.18),transparent_55%)]" />
-          <div className="relative flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 id="cta" className="font-display text-3xl font-bold tracking-tight text-white">
+          <div className="relative flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+            <div className="min-w-0">
+              <h2 id="cta" className="font-display text-2xl font-bold tracking-tight text-white sm:text-3xl">
                 Sẵn sàng dùng AVASO?
               </h2>
               <p className="mt-2 max-w-md text-sm text-slate-400">
-                Đăng nhập để quản trị, hoặc mở tài liệu để tích hợp client.
+                Đăng nhập để sử dụng hệ thống.
               </p>
             </div>
             <Button
               asChild
               size="lg"
-              className="min-h-12 shrink-0 rounded-xl bg-primary px-7 font-semibold shadow-[0_0_28px_rgba(249,115,22,0.45)] hover:bg-primary/90"
+              className="min-h-12 w-full shrink-0 rounded-xl bg-primary px-7 font-semibold shadow-[0_0_28px_rgba(249,115,22,0.45)] hover:bg-primary/90 sm:w-auto"
             >
               <Link to="/login">
                 Đăng nhập
