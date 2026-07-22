@@ -127,7 +127,7 @@ export function OAuthDemoCallback() {
                 type="password"
                 value={clientSecret}
                 onChange={(e) => setClientSecret(e.target.value)}
-                placeholder="avaso_sk_…"
+                placeholder="avaso_csec_…"
                 className="mt-1 bg-input border-border font-mono text-xs"
                 autoComplete="off"
               />

@@ -13,7 +13,7 @@ API_KEY="${API_KEY:-$(jwt_client_id)}"
 SECRET_KEY="${SECRET_KEY:-$(jwt_client_secret)}"
 
 if [[ -z "$API_KEY" || -z "$SECRET_KEY" ]]; then
-  echo "Usage: API_KEY=avaso_pk_... SECRET_KEY=avaso_sk_... $0" >&2
+  echo "Usage: API_KEY=avaso_cid_... SECRET_KEY=avaso_csec_... $0" >&2
   echo "Optional: GATEWAY_BASE=https://thientinh.io.vn" >&2
   exit 1
 fi

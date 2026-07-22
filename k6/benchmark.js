@@ -6,7 +6,7 @@
  *
  * JWT + routing (full pipeline):
  *   k6 run -e BASE_URL=https://thientinh.io.vn -e SCENARIO=jwt ^
- *     -e CLIENT_ID=avaso_pk_... -e CLIENT_SECRET=avaso_sk_... ^
+ *     -e CLIENT_ID=avaso_cid_... -e CLIENT_SECRET=avaso_csec_... ^
  *     -e DATA_PLANE_PATH=/v1/api/get -e VUS=100 -e DURATION=30s benchmark.js
  *
  * Ghi JSON cho báo cáo:

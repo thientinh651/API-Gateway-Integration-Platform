@@ -1,31 +1,29 @@
 import {
+  AlertTriangle,
   BookOpen,
   Boxes,
   Gauge,
   Globe,
   HelpCircle,
-  Layers,
   ListOrdered,
   Plug,
   Rocket,
   Server,
   Shield,
   Terminal,
-  AlertTriangle,
   type LucideIcon,
 } from 'lucide-react';
 
 export type ApiDocTab =
-  | 'overview'
-  | 'architecture'
-  | 'quick-start'
-  | 'authentication'
-  | 'client-registry'
-  | 'routing'
-  | 'proxy-queue'
+  | 'start-here'
+  | 'first-call'
+  | 'configure-route'
+  | 'configure-client'
+  | 'get-token'
+  | 'call-api'
+  | 'ops-dlq'
   | 'integrations'
-  | 'concepts'
-  | 'faq'
+  | 'troubleshoot'
   | 'data-plane'
   | 'admin-api'
   | 'errors'
@@ -36,160 +34,166 @@ export type TabMeta = {
   short: string;
   description: string;
   icon: LucideIcon;
-  frameClass: string;
-  headerClass: string;
-  /** guide = hướng dẫn; reference = catalog endpoint */
   kind: 'guide' | 'reference';
 };
 
-/** Tầng 1 — hướng dẫn sử dụng. */
-export const GUIDE_TABS: ApiDocTab[] = [
-  'overview',
-  'architecture',
-  'quick-start',
-  'authentication',
-  'client-registry',
-  'routing',
-  'proxy-queue',
-  'integrations',
-  'concepts',
-  'faq',
+export type NavSection = {
+  id: string;
+  title: string;
+  tabs: ApiDocTab[];
+};
+
+/** Hash cũ → tab mới (bookmark / link cũ không gãy). */
+export const LEGACY_HASH_REDIRECT: Record<string, ApiDocTab> = {
+  overview: 'start-here',
+  architecture: 'start-here',
+  'quick-start': 'first-call',
+  authentication: 'get-token',
+  'client-registry': 'configure-client',
+  routing: 'configure-route',
+  'proxy-queue': 'ops-dlq',
+  concepts: 'start-here',
+  faq: 'troubleshoot',
+};
+
+export const NAV_SECTIONS: NavSection[] = [
+  {
+    id: 'start',
+    title: 'Bắt đầu',
+    tabs: ['start-here', 'first-call'],
+  },
+  {
+    id: 'config',
+    title: 'Cấu hình Dashboard',
+    tabs: ['configure-route', 'configure-client'],
+  },
+  {
+    id: 'call',
+    title: 'Gọi API',
+    tabs: ['get-token', 'call-api'],
+  },
+  {
+    id: 'ops',
+    title: 'Vận hành',
+    tabs: ['ops-dlq', 'integrations', 'troubleshoot'],
+  },
+  {
+    id: 'ref',
+    title: 'Tra cứu',
+    tabs: ['data-plane', 'admin-api', 'errors', 'examples'],
+  },
 ];
 
-/** Tầng 2 — API Reference (4 tab cách đều). */
+export const GUIDE_TABS: ApiDocTab[] = NAV_SECTIONS.filter((s) => s.id !== 'ref').flatMap(
+  (s) => s.tabs,
+);
+
 export const REFERENCE_TABS: ApiDocTab[] = ['data-plane', 'admin-api', 'errors', 'examples'];
 
 export const TAB_ORDER: ApiDocTab[] = [...GUIDE_TABS, ...REFERENCE_TABS];
 
 export const TAB_CONFIG: Record<ApiDocTab, TabMeta> = {
-  overview: {
-    label: 'Giới thiệu',
-    short: 'Giới thiệu',
-    description: 'Giới thiệu về Gateway và hệ thống.',
+  'start-here': {
+    label: 'Bắt đầu',
+    short: 'Bắt đầu',
+    description: 'Làm quen AVASO Gateway và tìm đúng hướng dẫn cho việc bạn cần làm.',
     icon: BookOpen,
-    frameClass: 'border-slate-500/40 bg-slate-500/[0.06] shadow-[inset_0_1px_0_rgba(148,163,184,0.12)]',
-    headerClass: 'from-slate-500/15 to-transparent border-slate-500/30',
     kind: 'guide',
   },
-  architecture: {
-    label: 'Kiến trúc',
-    short: 'Kiến trúc',
-    description: 'Request đi qua gateway thế nào? PostgreSQL và Redis ở đâu?',
-    icon: Layers,
-    frameClass: 'border-cyan-500/40 bg-cyan-500/[0.06] shadow-[inset_0_1px_0_rgba(6,182,212,0.12)]',
-    headerClass: 'from-cyan-500/15 to-transparent border-cyan-500/30',
-    kind: 'guide',
-  },
-  'quick-start': {
-    label: 'Quick Start',
-    short: 'Quick Start',
-    description: 'Làm theo 5 bước để gọi API thành công lần đầu.',
+  'first-call': {
+    label: 'Gọi API',
+    short: 'Gọi API',
+    description: 'Checklist từng bước: tạo route, client, lấy JWT và gọi API thành công.',
     icon: Rocket,
-    frameClass: 'border-primary/45 bg-primary/[0.07] shadow-[inset_0_1px_0_rgba(249,115,22,0.2)]',
-    headerClass: 'from-primary/20 to-transparent border-primary/35',
     kind: 'guide',
   },
-  authentication: {
-    label: 'Authentication',
-    short: 'Auth',
-    description: 'Lấy JWT ở đâu? Gửi token thế nào? Secret dùng khi nào?',
-    icon: Shield,
-    frameClass: 'border-emerald-500/40 bg-emerald-500/[0.06] shadow-[inset_0_1px_0_rgba(16,185,129,0.12)]',
-    headerClass: 'from-emerald-500/15 to-transparent border-emerald-500/30',
-    kind: 'guide',
-  },
-  'client-registry': {
-    label: 'Client Registry',
-    short: 'Clients',
-    description: 'Vì sao phải tạo client? Client ID / Secret dùng để làm gì?',
-    icon: Boxes,
-    frameClass: 'border-amber-500/40 bg-amber-500/[0.06] shadow-[inset_0_1px_0_rgba(245,158,11,0.12)]',
-    headerClass: 'from-amber-500/15 to-transparent border-amber-500/30',
-    kind: 'guide',
-  },
-  routing: {
-    label: 'Routing',
-    short: 'Routing',
-    description: 'Path nào đi đâu? Gateway chọn route như thế nào?',
+  'configure-route': {
+    label: 'Tạo Route',
+    short: 'Route',
+    description: 'Cách ánh xạ đường dẫn tới upstream — điền từng trường trên form.',
     icon: Gauge,
-    frameClass: 'border-sky-500/40 bg-sky-500/[0.06] shadow-[inset_0_1px_0_rgba(14,165,233,0.12)]',
-    headerClass: 'from-sky-500/15 to-transparent border-sky-500/30',
     kind: 'guide',
   },
-  'proxy-queue': {
-    label: 'Proxy Queue',
+  'configure-client': {
+    label: 'Tạo Client & ACL',
+    short: 'Client',
+    description: 'Đăng ký ứng dụng, lấy Client ID/Secret và gán quyền gọi route.',
+    icon: Boxes,
+    kind: 'guide',
+  },
+  'get-token': {
+    label: 'Lấy JWT',
+    short: 'JWT',
+    description: 'Đổi Client ID và Secret lấy access_token để gọi data plane.',
+    icon: Shield,
+    kind: 'guide',
+  },
+  'call-api': {
+    label: 'Gọi Data plane',
+    short: 'Gọi API',
+    description: 'Gửi Bearer JWT tới /v1/api/… và đọc phản hồi từ upstream.',
+    icon: Globe,
+    kind: 'guide',
+  },
+  'ops-dlq': {
+    label: 'Retry & DLQ',
     short: 'DLQ',
-    description: 'Upstream lỗi thì sao? Retry và hàng đợi (DLQ) hoạt động ra sao?',
+    description: 'Xử lý khi upstream lỗi: retry, xếp hàng và replay trên Proxy Queue.',
     icon: ListOrdered,
-    frameClass: 'border-orange-500/40 bg-orange-500/[0.06] shadow-[inset_0_1px_0_rgba(249,115,22,0.12)]',
-    headerClass: 'from-orange-500/15 to-transparent border-orange-500/30',
     kind: 'guide',
   },
   integrations: {
-    label: 'Integrations',
-    short: 'SF→Zoho',
-    description: 'Đồng bộ Salesforce → Zoho trên dashboard như thế nào?',
+    label: 'Tích hợp SF → Zoho',
+    short: 'Tích hợp',
+    description: 'Kết nối CRM, đồng bộ snapshot, chạy pipeline và đặt lịch tự động.',
     icon: Plug,
-    frameClass: 'border-violet-500/40 bg-violet-500/[0.06] shadow-[inset_0_1px_0_rgba(139,92,246,0.12)]',
-    headerClass: 'from-violet-500/15 to-transparent border-violet-500/30',
     kind: 'guide',
   },
-  concepts: {
-    label: 'Concepts',
-    short: 'Concepts',
-    description: 'Giải thích ngắn các thuật ngữ hay gặp trên dashboard.',
-    icon: BookOpen,
-    frameClass: 'border-slate-500/40 bg-slate-500/[0.05] shadow-[inset_0_1px_0_rgba(148,163,184,0.1)]',
-    headerClass: 'from-slate-500/12 to-transparent border-slate-500/25',
-    kind: 'guide',
-  },
-  faq: {
-    label: 'FAQ',
-    short: 'FAQ',
-    description: 'Gặp 401, 403, 429, 502… thì làm gì?',
+  troubleshoot: {
+    label: 'Xử lý sự cố',
+    short: 'Sự cố',
+    description: 'Khắc phục lỗi 401, 403, 404, 429, 502, 504 trên dashboard hoặc qua API.',
     icon: HelpCircle,
-    frameClass: 'border-rose-500/35 bg-rose-500/[0.05] shadow-[inset_0_1px_0_rgba(244,63,94,0.1)]',
-    headerClass: 'from-rose-500/15 to-transparent border-rose-500/30',
     kind: 'guide',
   },
   'data-plane': {
     label: 'Data plane',
-    short: 'Data plane',
-    description: 'Endpoint client gọi qua gateway (/v1/api/*, token, health).',
+    short: 'Data',
+    description: 'Endpoint ứng dụng gọi qua gateway.',
     icon: Globe,
-    frameClass: 'border-blue-500/40 bg-blue-500/[0.06] shadow-[inset_0_1px_0_rgba(59,130,246,0.15)]',
-    headerClass: 'from-blue-500/15 to-transparent border-blue-500/30',
     kind: 'reference',
   },
   'admin-api': {
-    label: 'Quản trị trên dashboard',
-    short: 'Admin API',
-    description: 'Endpoint dashboard: route, client, user, log, tích hợp.',
+    label: 'Admin API',
+    short: 'Admin',
+    description: 'Endpoint dashboard: route, client, log, tích hợp.',
     icon: Server,
-    frameClass: 'border-primary/45 bg-primary/[0.07] shadow-[inset_0_1px_0_rgba(249,115,22,0.2)]',
-    headerClass: 'from-primary/20 to-transparent border-primary/35',
     kind: 'reference',
   },
   errors: {
-    label: 'Error Codes',
+    label: 'Mã lỗi',
     short: 'Errors',
-    description: 'Mã HTTP và mã lỗi JSON khi gateway từ chối hoặc upstream lỗi.',
+    description: 'HTTP status và JSON error field.',
     icon: AlertTriangle,
-    frameClass: 'border-red-500/35 bg-red-500/[0.05] shadow-[inset_0_1px_0_rgba(239,68,68,0.12)]',
-    headerClass: 'from-red-500/15 to-transparent border-red-500/30',
     kind: 'reference',
   },
   examples: {
-    label: 'Examples',
-    short: 'Examples',
-    description: 'Lệnh curl mẫu: lấy JWT, gọi API, đăng nhập admin.',
+    label: 'Curl mẫu',
+    short: 'Curl',
+    description: 'Bộ lệnh golden path copy-paste.',
     icon: Terminal,
-    frameClass: 'border-emerald-500/35 bg-emerald-500/[0.05] shadow-[inset_0_1px_0_rgba(16,185,129,0.12)]',
-    headerClass: 'from-emerald-500/15 to-transparent border-emerald-500/30',
     kind: 'reference',
   },
 };
 
 export function isApiDocTab(v: string): v is ApiDocTab {
   return (TAB_ORDER as string[]).includes(v);
+}
+
+export function resolveDocHash(raw: string): ApiDocTab {
+  const hash = raw.replace(/^#/, '');
+  if (isApiDocTab(hash)) return hash;
+  const redirected = LEGACY_HASH_REDIRECT[hash];
+  if (redirected) return redirected;
+  return 'start-here';
 }

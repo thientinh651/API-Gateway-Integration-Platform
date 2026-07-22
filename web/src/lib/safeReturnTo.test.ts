@@ -4,7 +4,7 @@ import { sanitizeReturnTo } from './safeReturnTo';
 describe('sanitizeReturnTo', () => {
   it('allows relative authorize path', () => {
     const v =
-      '/oauth/authorize?response_type=code&client_id=avaso_pk_x&redirect_uri=http%3A%2F%2Flocalhost%3A3001%2Foauth%2Fcallback';
+      '/oauth/authorize?response_type=code&client_id=avaso_cid_x&redirect_uri=http%3A%2F%2Flocalhost%3A3001%2Foauth%2Fcallback';
     expect(sanitizeReturnTo(v)).toBe(v);
   });
 

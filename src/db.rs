@@ -1247,7 +1247,7 @@ pub async fn client_key_traffic_stats(
     client_key_id: i64,
     hours: i32,
 ) -> Result<ClientKeyTrafficStats, sqlx::Error> {
-    let hours = hours.clamp(1, 168);
+    let hours = hours.clamp(1, 744);
     let exists: Option<i64> = sqlx::query_scalar(
         "SELECT id FROM gateway_client_keys WHERE id = $1 AND tenant_id = $2",
     )
@@ -1354,7 +1354,7 @@ pub async fn client_traffic_top(
     hours: i32,
     limit: i64,
 ) -> Result<Vec<ClientTrafficTopRow>, sqlx::Error> {
-    let hours = hours.clamp(1, 168);
+    let hours = hours.clamp(1, 744);
     let lim = limit.clamp(1, 20);
     sqlx::query_as(
         "SELECT k.id AS client_key_id, k.name, COUNT(*)::bigint AS total
@@ -2074,18 +2074,49 @@ fn random_token(prefix: &str, len: usize) -> String {
     format!("{prefix}{tail}")
 }
 
-/// OAuth2 `client_id` — prefix `avaso_pk_` (định danh API, không phải RSA public key).
+/// OAuth2 `client_id` prefix — identifier, not a cryptographic public key.
+pub const OAUTH_CLIENT_ID_PREFIX: &str = "avaso_cid_";
+/// Legacy Stripe-style prefix — still accepted for existing clients.
+pub const OAUTH_CLIENT_ID_PREFIX_LEGACY: &str = "avaso_pk_";
+/// OAuth2 `client_secret` prefix.
+pub const OAUTH_CLIENT_SECRET_PREFIX: &str = "avaso_csec_";
+/// Legacy secret prefix — still accepted until rotated.
+pub const OAUTH_CLIENT_SECRET_PREFIX_LEGACY: &str = "avaso_sk_";
+
+/// OAuth2 `client_id` — prefix `avaso_cid_`.
+pub fn random_oauth_client_id() -> String {
+    random_token(OAUTH_CLIENT_ID_PREFIX, 24)
+}
+
+/// OAuth2 `client_secret` — prefix `avaso_csec_`; stored as Argon2id hash only.
+pub fn random_oauth_client_secret() -> String {
+    random_token(OAUTH_CLIENT_SECRET_PREFIX, 40)
+}
+
+/// Alias — prefer [`random_oauth_client_id`].
 pub fn random_api_key_id() -> String {
-    random_token("avaso_pk_", 24)
+    random_oauth_client_id()
 }
 
-/// OAuth2 `client_secret` — prefix `avaso_sk_`; stored as Argon2id hash only.
+/// Alias — prefer [`random_oauth_client_secret`].
 pub fn random_secret_key() -> String {
-    random_token("avaso_sk_", 40)
+    random_oauth_client_secret()
 }
 
-/// OAuth2 client_id (public) + client_secret (encrypted at rest).
-pub const SYNC_WORKER_API_KEY: &str = "avaso_pk_sync_worker";
+pub fn is_oauth_client_id(client_id: &str) -> bool {
+    client_id.starts_with(OAUTH_CLIENT_ID_PREFIX)
+        || client_id.starts_with(OAUTH_CLIENT_ID_PREFIX_LEGACY)
+}
+
+/// OAuth2 client_id for sync worker loopback (canonical).
+pub const SYNC_WORKER_API_KEY: &str = "avaso_cid_sync_worker";
+/// Pre-rename sync worker client_id — migrated in place on ensure.
+pub const SYNC_WORKER_API_KEY_LEGACY: &str = "avaso_pk_sync_worker";
+pub const SYNC_WORKER_DISPLAY_NAME: &str = "sync-worker";
+
+pub fn is_sync_worker_client_id(client_id: &str) -> bool {
+    client_id == SYNC_WORKER_API_KEY || client_id == SYNC_WORKER_API_KEY_LEGACY
+}
 
 /// OAuth client cố định cho sync worker loopback — rate limit cao, empty ACL (= mọi data-plane path).
 pub async fn ensure_sync_worker_client_key(
@@ -2099,15 +2130,51 @@ pub async fn ensure_sync_worker_client_key(
         .unwrap_or(10_000);
 
     type Row = (i64, String, Option<String>, i64, i32, i32);
-    if let Some((id, api_key, secret_hash, tid, _rl, tv)) = sqlx::query_as::<_, Row>(
+
+    let mut existing = sqlx::query_as::<_, Row>(
         "SELECT id, api_key, secret_hash, tenant_id, rate_limit_per_min, COALESCE(token_version, 0)
          FROM gateway_client_keys WHERE api_key = $1 AND tenant_id = $2",
     )
     .bind(SYNC_WORKER_API_KEY)
     .bind(tenant_id)
     .fetch_optional(pool)
-    .await?
-    {
+    .await?;
+
+    if existing.is_none() {
+        if let Some((id, _api_key, secret_hash, tid, rl, tv)) = sqlx::query_as::<_, Row>(
+            "SELECT id, api_key, secret_hash, tenant_id, rate_limit_per_min, COALESCE(token_version, 0)
+             FROM gateway_client_keys WHERE api_key = $1 AND tenant_id = $2",
+        )
+        .bind(SYNC_WORKER_API_KEY_LEGACY)
+        .bind(tenant_id)
+        .fetch_optional(pool)
+        .await?
+        {
+            sqlx::query(
+                "UPDATE gateway_client_keys SET api_key = $1 WHERE id = $2 AND tenant_id = $3",
+            )
+            .bind(SYNC_WORKER_API_KEY)
+            .bind(id)
+            .bind(tenant_id)
+            .execute(pool)
+            .await?;
+            tracing::info!(
+                from = SYNC_WORKER_API_KEY_LEGACY,
+                to = SYNC_WORKER_API_KEY,
+                "migrated sync worker client_id prefix"
+            );
+            existing = Some((
+                id,
+                SYNC_WORKER_API_KEY.to_string(),
+                secret_hash,
+                tid,
+                rl,
+                tv,
+            ));
+        }
+    }
+
+    if let Some((id, api_key, secret_hash, tid, _rl, tv)) = existing {
         let hash = if let Some(h) = secret_hash.filter(|s| !s.is_empty()) {
             h
         } else {
@@ -2120,7 +2187,7 @@ pub async fn ensure_sync_worker_client_key(
              SET name = $1, rate_limit_per_min = $2, status = 'active', integration_type = 'salesforce'
              WHERE id = $3",
         )
-        .bind("sync-worker")
+        .bind(SYNC_WORKER_DISPLAY_NAME)
         .bind(rate_limit)
         .bind(id)
         .execute(pool)
@@ -2143,10 +2210,10 @@ pub async fn ensure_sync_worker_client_key(
     .await?
     .unwrap_or(1);
 
-    let secret = random_secret_key();
+    let secret = random_oauth_client_secret();
     let id = insert_oauth_client(
         pool,
-        "sync-worker",
+        SYNC_WORKER_DISPLAY_NAME,
         SYNC_WORKER_API_KEY,
         &secret,
         tenant_id,
@@ -2801,7 +2868,7 @@ pub async fn traffic_denial_reasons(
     hours: i32,
     limit: i64,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
-    let hours = hours.clamp(1, 168);
+    let hours = hours.clamp(1, 744);
     sqlx::query_as(&format!(
         "SELECT COALESCE(NULLIF(reason, ''), 'unknown') AS reason, COUNT(*) AS cnt
          FROM gateway_transaction_logs
@@ -2830,7 +2897,7 @@ pub async fn audit_counts(
     tenant_id: i64,
     hours: i32,
 ) -> Result<(i64, i64, i64), sqlx::Error> {
-    let hours = hours.clamp(1, 168);
+    let hours = hours.clamp(1, 744);
     let total: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM audit_logs
          WHERE tenant_id = $1 AND created_at >= NOW() - ($2::bigint * INTERVAL '1 hour')",
@@ -2897,7 +2964,7 @@ pub async fn audit_top_actions(
     hours: i32,
     limit: i64,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
-    let hours = hours.clamp(1, 168);
+    let hours = hours.clamp(1, 744);
     sqlx::query_as::<_, (String, i64)>(
         "SELECT action, COUNT(*) AS cnt
          FROM audit_logs
@@ -2920,7 +2987,6 @@ fn series_bucket_parts(hours: i32) -> (&'static str, &'static str) {
     } else if hours <= 24 {
         ("hour", "HH24:00")
     } else {
-        // 3 ngày / 1 tuần: gom theo ngày — tránh 72–168 điểm giờ nhìn như không đổi.
         ("day", "DD/MM")
     }
 }
@@ -2930,7 +2996,7 @@ pub async fn audit_series(
     tenant_id: i64,
     hours: i32,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
-    let hours = hours.clamp(1, 168);
+    let hours = hours.clamp(1, 744);
     let (trunc, fmt) = series_bucket_parts(hours);
     let sql = format!(
         "SELECT to_char(date_trunc('{trunc}', created_at AT TIME ZONE 'UTC'), '{fmt}') AS bucket,
@@ -2952,7 +3018,7 @@ pub async fn traffic_outcome_counts(
     tenant_id: i64,
     hours: i32,
 ) -> Result<(i64, i64, i64, i64, i64, f64), sqlx::Error> {
-    let hours = hours.clamp(1, 168);
+    let hours = hours.clamp(1, 744);
     let row: (i64, i64, i64, i64, i64, Option<f64>) = sqlx::query_as(&format!(
         "SELECT
             COUNT(*) AS total,
@@ -2977,7 +3043,7 @@ pub async fn traffic_status_buckets(
     tenant_id: i64,
     hours: i32,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
-    let hours = hours.clamp(1, 168);
+    let hours = hours.clamp(1, 744);
     sqlx::query_as(&format!(
         "SELECT bucket, COUNT(*) AS cnt FROM (
             SELECT CASE
@@ -3003,7 +3069,7 @@ pub async fn traffic_series(
     tenant_id: i64,
     hours: i32,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
-    let hours = hours.clamp(1, 168);
+    let hours = hours.clamp(1, 744);
     let (trunc, fmt) = series_bucket_parts(hours);
     let sql = format!(
         "SELECT to_char(date_trunc('{trunc}', created_at AT TIME ZONE 'UTC'), '{fmt}') AS bucket,
@@ -3027,7 +3093,7 @@ pub async fn traffic_top_paths(
     hours: i32,
     limit: i64,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
-    let hours = hours.clamp(1, 168);
+    let hours = hours.clamp(1, 744);
     sqlx::query_as(&format!(
         "SELECT COALESCE(NULLIF(path, ''), '(không rõ)') AS path, COUNT(*) AS cnt
          FROM gateway_transaction_logs
@@ -3049,7 +3115,7 @@ pub async fn traffic_method_counts(
     tenant_id: i64,
     hours: i32,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
-    let hours = hours.clamp(1, 168);
+    let hours = hours.clamp(1, 744);
     sqlx::query_as(&format!(
         "SELECT method, COUNT(*) AS cnt
          FROM gateway_transaction_logs
@@ -3401,9 +3467,12 @@ mod tests {
 
     #[test]
     fn client_secret_hash_and_verify() {
-        let hash = hash_client_secret("avaso_sk_demo_secret_value").expect("hash");
+        let hash = hash_client_secret("avaso_csec_demo_secret_value").expect("hash");
         assert!(hash.starts_with("$argon2"));
-        assert!(verify_client_secret("avaso_sk_demo_secret_value", &hash));
+        assert!(verify_client_secret("avaso_csec_demo_secret_value", &hash));
         assert!(!verify_client_secret("wrong", &hash));
+        assert!(is_oauth_client_id("avaso_cid_abc"));
+        assert!(is_oauth_client_id("avaso_pk_legacy"));
+        assert!(!is_oauth_client_id("other"));
     }
 }

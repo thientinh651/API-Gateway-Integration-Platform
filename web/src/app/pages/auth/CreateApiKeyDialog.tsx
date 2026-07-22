@@ -383,6 +383,12 @@ export function CreateApiKeyDialog({
               value={generatedSecret}
               onCopy={() => void copyText(generatedSecret, 'Client Secret')}
             />
+            <p className="text-[11px] text-muted-foreground leading-snug">
+              Dùng cặp này ở <code className="font-mono text-[10px]">POST /api/oauth/token</code> (
+              <code className="font-mono text-[10px]">grant_type=client_credentials</code>), rồi gửi{' '}
+              <code className="font-mono text-[10px]">Authorization: Bearer</code> JWT tới{' '}
+              <code className="font-mono text-[10px]">/v1/api/…</code>.
+            </p>
 
             <div className="flex flex-col gap-2 pt-1">
               <Button

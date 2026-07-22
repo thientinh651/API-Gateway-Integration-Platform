@@ -14,7 +14,8 @@ import {
   type RouteAclSummaryRow,
 } from '../../lib/api';
 import { toastApiError } from '../../lib/apiClientError';
-import { handleFormApiError } from '../../lib/formValidation';
+import { handleFormApiError, failClientValidation } from '../../lib/formValidation';
+import { DATA_PLANE_PREFIX } from '../../lib/proxyTry';
 import { parseDefaultNumber } from '../../lib/zeroDefaultNumberInput';
 import { DEFAULT_ALLOWED_METHODS, allowedMethodsToApi } from '../../lib/allowedMethodsOptions';
 import { parseRetryOnStatus } from '../../lib/retryOnStatusOptions';
@@ -139,7 +140,37 @@ function RoutesAdmin() {
     handleFormApiError(e, setFieldErrors);
   };
 
+  const validateRouteForm = (form: RouteFormState): Record<string, string> | null => {
+    const path = form.path.trim();
+    const target = form.upstream.trim();
+    const errors: Record<string, string> = {};
+    if (!path) {
+      errors.path = `Nhập path data plane (vd: ${DATA_PLANE_PREFIX}/phuluc)`;
+    } else if (!path.startsWith('/')) {
+      errors.path = 'Path phải bắt đầu bằng /';
+    } else if (path.includes(' ')) {
+      errors.path = 'Path không được chứa khoảng trắng';
+    } else if (
+      DATA_PLANE_PREFIX &&
+      path !== DATA_PLANE_PREFIX &&
+      !path.startsWith(`${DATA_PLANE_PREFIX}/`)
+    ) {
+      errors.path = `Path phải nằm dưới ${DATA_PLANE_PREFIX}/… (vd: ${DATA_PLANE_PREFIX}/phuluc)`;
+    }
+    if (!target) {
+      errors.target = 'Nhập upstream URL (vd: https://httpbin.org)';
+    } else if (!/^https?:\/\//i.test(target)) {
+      errors.target = 'Upstream phải là URL http:// hoặc https://';
+    }
+    return Object.keys(errors).length ? errors : null;
+  };
+
   const handleCreate = async () => {
+    const clientErr = validateRouteForm(formData);
+    if (clientErr) {
+      failClientValidation(setFieldErrors, clientErr);
+      return;
+    }
     setSaving(true);
     try {
       await createGatewayRoute(routeBodyFromForm(formData, formNumericDefaults));
@@ -157,6 +188,11 @@ function RoutesAdmin() {
 
   const handleUpdate = async () => {
     if (!editingRoute) return;
+    const clientErr = validateRouteForm(formData);
+    if (clientErr) {
+      failClientValidation(setFieldErrors, clientErr);
+      return;
+    }
     setSaving(true);
     try {
       await updateGatewayRoute(Number(editingRoute.id), routeBodyFromForm(formData, formNumericDefaults));

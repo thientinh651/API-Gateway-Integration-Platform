@@ -966,7 +966,7 @@ export type DashboardStats = {
 };
 
 export function fetchDashboardStats(hours = 24): Promise<DashboardStats> {
-  const h = [1, 24, 72, 168].includes(hours) ? hours : 24;
+  const h = [1, 24, 72, 168, 744].includes(hours) ? hours : 24;
   return fetchJson<DashboardStats>(`/api/dashboard/stats?hours=${h}`);
 }
 

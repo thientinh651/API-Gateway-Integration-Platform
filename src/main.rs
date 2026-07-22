@@ -287,7 +287,7 @@ pub(crate) struct AppState {
     oauth_pending: Arc<DashMap<String, OAuthPending>>,
     proxy_queue: proxy_ext::ProxyQueue,
     gateway_metrics: Arc<metrics::GatewayMetrics>,
-    /// JWT loopback cho integration sync worker (`avaso_pk_sync_worker`).
+    /// JWT loopback cho integration sync worker (`avaso_cid_sync_worker`).
     worker_jwt: Arc<RwLock<sync_worker_gateway::WorkerJwtState>>,
 }
 
@@ -505,10 +505,14 @@ fn append_rate_limit_to_builder(
 
 fn validate_route_write(path: &str, target: &str, timeout_secs: i32, rate_limit_per_min: i32) -> Option<Response> {
     let mut fields = serde_json::Map::new();
+    let dp = data_plane_prefix();
     if path.is_empty() {
         fields.insert(
             "path".into(),
-            serde_json::Value::String("Nhập path (vd: /v1/api)".into()),
+            serde_json::Value::String(format!(
+                "Nhập path data plane (vd: {}/phuluc)",
+                if dp.is_empty() { "/v1/api" } else { dp }
+            )),
         );
     } else if !path.starts_with('/') {
         fields.insert(
@@ -519,6 +523,13 @@ fn validate_route_write(path: &str, target: &str, timeout_secs: i32, rate_limit_
         fields.insert(
             "path".into(),
             serde_json::Value::String("Path không được chứa khoảng trắng".into()),
+        );
+    } else if !dp.is_empty() && !path_is_under_data_plane(path) {
+        fields.insert(
+            "path".into(),
+            serde_json::Value::String(format!(
+                "Path phải nằm dưới data plane {dp}/… (vd: {dp}/phuluc). Gọi /phuluc thuần không vào proxy JWT."
+            )),
         );
     }
     if target.is_empty() {
@@ -4775,7 +4786,7 @@ async fn api_rotate_client_key(
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": "rotate_not_supported",
-                "message": "Chỉ OAuth client (avaso_pk_*) mới rotate secret"
+                "message": "Chỉ OAuth client (avaso_cid_* / legacy avaso_pk_*) mới rotate secret"
             })),
         )
             .into_response(),
@@ -6725,6 +6736,7 @@ mod path_tests {
 
     #[test]
     fn mask_subject_for_log_prefix() {
+        assert_eq!(mask_subject_for_log("client:avaso_cid_ab"), "client:a…");
         assert_eq!(mask_subject_for_log("client:avaso_pk_ab"), "client:a…");
         assert_eq!(mask_subject_for_log(""), "(none)");
     }

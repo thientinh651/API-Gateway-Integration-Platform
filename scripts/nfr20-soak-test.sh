@@ -4,8 +4,8 @@
 #
 # Ví dụ:
 #   export SOAK_URL="https://thientinh.io.vn/v1/api/get"
-#   export SOAK_API_KEY="avaso_pk_..."
-#   export SOAK_SECRET_KEY="avaso_sk_..."
+#   export SOAK_API_KEY="avaso_cid_..."
+#   export SOAK_SECRET_KEY="avaso_csec_..."
 #   ./scripts/nfr20-soak-test.sh
 #
 # Hoặc 1 giờ thử nhanh:

@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt_secret_roundtrip() {
-        let plain = "avaso_sk_super_secret_value";
+        let plain = "avaso_csec_super_secret_value";
         let enc = encrypt_secret(plain).expect("encrypt");
         assert_ne!(enc, plain);
         assert_eq!(decrypt_secret(&enc).expect("decrypt"), plain);

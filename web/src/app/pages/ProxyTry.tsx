@@ -304,7 +304,7 @@ export function ProxyTry() {
                       setApiKey(e.target.value);
                       clearOneFieldError(setFieldErrors, 'api_key');
                     }}
-                    placeholder="avaso_pk_..."
+                    placeholder="avaso_cid_..."
                     className={fieldInputErrorClass(
                       Boolean(fieldErrors.api_key),
                       'mt-1 h-9 bg-input border-border font-mono text-xs',
@@ -320,7 +320,7 @@ export function ProxyTry() {
                       setSecretKey(e.target.value);
                       clearOneFieldError(setFieldErrors, 'secret_key');
                     }}
-                    placeholder="avaso_sk_..."
+                    placeholder="avaso_csec_..."
                     className={fieldInputErrorClass(
                       Boolean(fieldErrors.secret_key),
                       'mt-1 h-9 bg-input border-border font-mono text-xs',

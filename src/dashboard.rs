@@ -19,7 +19,7 @@ pub struct DashboardStatsQuery {
     pub hours: Option<i32>,
 }
 
-const ALLOWED_WINDOWS: [i32; 4] = [1, 24, 72, 168];
+const ALLOWED_WINDOWS: [i32; 5] = [1, 24, 72, 168, 744];
 
 pub fn normalize_dashboard_hours(raw: Option<i32>) -> i32 {
     let h = raw.unwrap_or(24);
@@ -86,7 +86,7 @@ pub struct ClientTrafficTopPublic {
 
 #[derive(Debug, Serialize)]
 pub struct DashboardStats {
-    /// Selected window in hours (1 / 24 / 72 / 168).
+    /// Selected window in hours (1 / 24 / 72 / 168 / 744).
     pub window_hours: i32,
     pub routes_count: i64,
     pub client_keys_count: i64,

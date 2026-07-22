@@ -232,7 +232,7 @@ mod tests {
         OAuthClientKey {
             id,
             client_id: client_id.into(),
-            secret_hash: crate::db::hash_client_secret("avaso_sk_test").expect("hash"),
+            secret_hash: crate::db::hash_client_secret("avaso_csec_test").expect("hash"),
             tenant_id: 1,
             rate_limit_per_min: 60,
             allowed_route_ids: vec![9],
@@ -242,7 +242,7 @@ mod tests {
 
     #[tokio::test]
     async fn client_token_maps_to_verified_client() {
-        let client = test_oauth_client(3, "avaso_pk_demo");
+        let client = test_oauth_client(3, "avaso_cid_demo");
         let creds = ClientCredentials {
             oauth_clients: vec![client.clone()],
             disabled_clients: vec![],
@@ -259,7 +259,7 @@ mod tests {
     async fn stale_client_token_version_rejected() {
         let client = OAuthClientKey {
             allowed_route_ids: vec![],
-            ..test_oauth_client(3, "avaso_pk_demo")
+            ..test_oauth_client(3, "avaso_cid_demo")
         };
         let issued = identity::issue_client_token(&client).unwrap();
         let creds = ClientCredentials {
@@ -283,14 +283,14 @@ mod tests {
             oauth_clients: vec![],
             disabled_clients: vec![DisabledClientKey {
                 id: 1,
-                client_id: "avaso_pk_off".into(),
+                client_id: "avaso_cid_off".into(),
                 tenant_id: 1,
             }],
             user_token_versions: std::collections::HashMap::new(),
         };
         let client = OAuthClientKey {
             id: 1,
-            client_id: "avaso_pk_off".into(),
+            client_id: "avaso_cid_off".into(),
             secret_hash: crate::db::hash_client_secret("x").expect("hash"),
             tenant_id: 1,
             rate_limit_per_min: 0,

@@ -2,15 +2,15 @@
 
 Gateway embed Identity Module theo RFC 6749 (token endpoint) + JWT RFC 7519.
 
-## Thuật ngữ (tránh nhầm với RSA)
+## Thuật ngữ
 
 | Tên hiển thị | Field OAuth2 | Ví dụ | Ghi chú |
 |--------------|--------------|-------|---------|
-| **Client ID** | `client_id` | `avaso_pk_...` | Định danh client — **không** phải RSA public key |
-| **Client Secret** | `client_secret` | `avaso_sk_...` | Shared secret — **không** phải RSA private key |
-| **Gateway RSA public key** | `GET /api/crypto/public-key` | PEM | Chỉ cho envelope mã hóa đăng ký client (tùy chọn) |
+| **Client ID** | `client_id` | `avaso_cid_...` | Định danh ứng dụng (identifier) |
+| **Client Secret** | `client_secret` | `avaso_csec_...` | Shared secret — chỉ gửi tới token endpoint |
+| **Gateway RSA public key** | `GET /api/crypto/public-key` | PEM | Envelope mã hóa khi đăng ký client (tùy chọn) — không phải OAuth credential |
 
-Prefix `pk`/`sk` là quy ước đặt tên API credential (giống Stripe/AWS), không liên quan mật mã bất đối xứng client.
+Prefix `cid` / `csec` = *client id* / *client secret*. Client cũ với `avaso_pk_` / `avaso_sk_` vẫn xác thực được cho đến khi rotate.
 
 ## Luồng xác thực
 
@@ -40,7 +40,7 @@ Production nginx có thể alias `/oauth/token` → cùng handler.
 ```bash
 curl -sS -X POST https://thientinh.io.vn/api/oauth/token \
   -H 'Content-Type: application/x-www-form-urlencoded' \
-  -d 'grant_type=client_credentials&client_id=avaso_pk_xxx&client_secret=avaso_sk_xxx'
+  -d 'grant_type=client_credentials&client_id=avaso_cid_xxx&client_secret=avaso_csec_xxx'
 ```
 
 ### User (demo / automation)
@@ -118,15 +118,18 @@ Gateway: validate JWT → rate limit (token bucket, burst ≤3) → match route 
 3. App: `GET /v1/api/...` với `Authorization: Bearer`.
 4. Response luôn qua gateway (không gọi thẳng upstream).
 
-## Token lifecycle (revoke + audit)
+## Admin vs machine client
 
-Mỗi JWT có `jti` (ID duy nhất) và `tv` (token version).
+| | Dashboard admin | OAuth machine client |
+|--|-----------------|----------------------|
+| Auth | Session cookie `gw_sid` | Client ID + Secret → JWT |
+| Path | `/api/...` | `/v1/api/...` |
+| Subject | User (RBAC) | App (route ACL) |
 
-| Tính năng | Endpoint | Mô tả |
-|-----------|----------|--------|
-| Revoke 1 token | `POST /api/oauth/revoke` body `token=` | Blacklist Redis + `revoked_at` trong DB |
-| Logout Bearer | `POST /api/oauth/logout` + `Authorization: Bearer` | Revoke token đang dùng |
-| Revoke toàn bộ client | `POST /api/client-keys/{id}/revoke-tokens` | Tăng `token_version` → mọi JWT cũ vô hiệu ngay |
+## Token lifecycle / mở rộng
+
+| Tính năng | Endpoint / cơ chế | Ghi chú |
+|-----------|-------------------|---------|
 | Audit token đang live | `GET /api/oauth/tokens?active_only=true` | Admin/operator — bảng `oauth_access_tokens` |
 | Authorization Code + **PKCE S256** | `GET /oauth/authorize?code_challenge&code_challenge_method=S256` → (nếu chưa login: `/login?return_to=…`) → consent → `POST /api/oauth/token` với `code_verifier` | App bên thứ 3 + consent user |
 | Đăng ký app bên thứ 3 | `POST /api/oauth/apps` | `redirect_uris`, optional secret |
@@ -138,4 +141,5 @@ Mỗi JWT có `jti` (ID duy nhất) và `tv` (token version).
 ## Không làm
 
 - Gửi `client_secret` trên mọi request `/v1/api/*`.
-- Gọi `avaso_pk_` / `avaso_sk_` là “Public Key / Private Key RSA” trong báo cáo.
+- Nhầm Client ID/Secret với RSA key pair (RSA public key chỉ dùng envelope đăng ký).
+- Gọi data plane bằng path thiếu prefix (vd `/phuluc` thay vì `/v1/api/phuluc`).

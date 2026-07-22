@@ -49,7 +49,7 @@ Client → Nginx (TLS) → avaso-gateway :3000
 Longest prefix, `{id}`, method filter, header transform, timeout, upstream proxy.
 
 ### 4.2 Client Registry (OAuth2 — KHÔNG phải HMAC mọi request)
-- **Client ID** (`avaso_pk_…`) + **Client Secret** (`avaso_sk_…`) — prefix quy ước, không phải RSA key pair
+- **Client ID** (`avaso_cid_…`) + **Client Secret** (`avaso_csec_…`) — prefix tự mô tả OAuth2; legacy `avaso_pk_`/`avaso_sk_` vẫn chấp nhận
 - Secret **Argon2id one-way** at rest (`secret_hash`); plaintext chỉ lúc tạo/rotate client
 - Integration connector config vẫn **AES-256-GCM** (`config_encrypted`)
 - ACL: `gateway_client_key_routes` — rỗng = full tenant

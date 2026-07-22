@@ -18,7 +18,7 @@
 | **45%** | 6 | **Resilience & Reliability** | FR-H1–H3 | ✅ | `proxy_ext.rs`: configurable retry (status/timeout), DLQ persist PostgreSQL, replay idempotent (`pending`→`replayed`), background replay worker |
 | **40%** | 7 | **Observability & Logging** | FR-D1–D4 | ✅ | Async transaction log (`gateway_transaction_logs`), admin audit trail, `metrics.rs` — JSON + Prometheus text (`/metrics?format=prometheus`) |
 | **35%** | 8 | **Admin Control Plane + Dashboard** | FR-G4 | ✅ | React/Vite SPA: route/client/log/DLQ/proxy-try; RBAC UX (`rbac.ts`) + session Redis (`gw_sid`) |
-| **30%** | 9 | **Client Registry & Secret Management** | FR-F2 | ✅ | `avaso_pk_*` / `avaso_sk_*`; secret **Argon2id** at rest; RSA envelope tạo client (`gateway_rsa.rs`); rotate → bump `token_version` |
+| **30%** | 9 | **Client Registry & Secret Management** | FR-F2 | ✅ | `avaso_cid_*` / `avaso_csec_*` (legacy `pk_`/`sk_` OK); secret **Argon2id** at rest; RSA envelope tạo client (`gateway_rsa.rs`); rotate → bump `token_version` |
 | **25%** | 10 | **Extensible Integration Framework** | FR-E1–E5 | ✅ | Connector pattern qua data plane JWT proxy; sync worker loopback (`sync_worker_gateway.rs`); SF→Zoho pipeline + entity link idempotent |
 | **15%** | 11 | **Deploy & Operations** | FR-C3 | ✅ | systemd + Nginx TLS (`deploy/`), Docker Compose dev/HA, `/health` dependency probe |
 

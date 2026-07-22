@@ -67,7 +67,7 @@ k6 run -e BASE_URL=https://thientinh.io.vn -e SCENARIO=health -e VUS=50 -e DURAT
 
 ```cmd
 k6 run -e BASE_URL=https://thientinh.io.vn -e SCENARIO=jwt ^
-  -e CLIENT_ID=avaso_pk_XXXX -e CLIENT_SECRET=avaso_sk_XXXX ^
+  -e CLIENT_ID=avaso_cid_XXXX -e CLIENT_SECRET=avaso_csec_XXXX ^
   -e DATA_PLANE_PATH=/v1/api/get -e VUS=50 -e DURATION=30s benchmark.js
 ```
 
@@ -80,8 +80,8 @@ k6 run -e BASE_URL=https://thientinh.io.vn -e SCENARIO=jwt ^
 ```cmd
 cd k6
 run-suite.cmd health
-set CLIENT_ID=avaso_pk_...
-set CLIENT_SECRET=avaso_sk_...
+set CLIENT_ID=avaso_cid_...
+set CLIENT_SECRET=avaso_csec_...
 run-suite.cmd jwt
 ```
 

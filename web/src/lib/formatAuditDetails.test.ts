@@ -23,7 +23,7 @@ describe('formatAuditDetails', () => {
   });
 
   it('keeps short key=value as-is', () => {
-    const f = formatAuditDetails('app="Test" client_id=avaso_pk_x id=3', 'update_oauth_app');
+    const f = formatAuditDetails('app="Test" client_id=avaso_cid_x id=3', 'update_oauth_app');
     expect(f).toContain('app="Test"');
     expect(f).toContain('client_id=');
   });

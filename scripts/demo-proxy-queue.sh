@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Demo DLQ: cần gateway chạy, route /v1/api → https://httpbin.org, DLQ bật trong Cài đặt.
-# Usage: API_KEY=avaso_pk_... SECRET_KEY=avaso_sk_... ./scripts/demo-proxy-queue.sh
+# Usage: API_KEY=avaso_cid_... SECRET_KEY=avaso_csec_... ./scripts/demo-proxy-queue.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

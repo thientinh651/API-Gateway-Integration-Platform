@@ -11,6 +11,7 @@ import {
   rotateClientKey,
   type ClientKeyTrafficStats,
 } from '../../../lib/api';
+import { isGatewayOAuthClientId } from '../../../lib/oauthClientId';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -226,7 +227,7 @@ export function ClientKeyConfigSheet({
                   {client.lastUsedAt ? new Date(client.lastUsedAt).toLocaleString('vi-VN') : 'Chưa có'}
                 </span>
               </div>
-              {canManage && client.apiKey.startsWith('avaso_pk_') ? (
+              {canManage && isGatewayOAuthClientId(client.apiKey) ? (
                 <div className="mt-2 space-y-2">
                   <ConfirmDangerButton
                     title="Rotate secret?"

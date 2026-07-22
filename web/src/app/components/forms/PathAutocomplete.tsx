@@ -2,7 +2,6 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ChevronDown } from 'lucide-react';
 import { cn } from '../ui/utils';
 import { fetchGatewayRoutes } from '../../../lib/api';
-import { DATA_PLANE_PREFIX } from '../../../lib/proxyTry';
 
 export type PathSuggestion = {
   path: string;
@@ -21,12 +20,11 @@ type Props = {
   className?: string;
 };
 
-function toDataPlanePath(routePath: string): string {
+/** Giữ đúng Path đã lưu trên Route — không tự ghép /v1/api. */
+function normalizeRoutePath(routePath: string): string {
   const p = routePath.trim();
   if (!p) return '';
-  if (p.startsWith(DATA_PLANE_PREFIX)) return p;
-  const segment = p.startsWith('/') ? p : `/${p}`;
-  return `${DATA_PLANE_PREFIX}${segment}`;
+  return p.startsWith('/') ? p : `/${p}`;
 }
 
 function buildSuggestions(presets: readonly Preset[], routePaths: string[]): PathSuggestion[] {
@@ -41,7 +39,7 @@ function buildSuggestions(presets: readonly Preset[], routePaths: string[]): Pat
   };
 
   for (const p of presets) add(p.path, p.label, 'preset');
-  for (const raw of routePaths) add(toDataPlanePath(raw), 'Route dashboard', 'route');
+  for (const raw of routePaths) add(normalizeRoutePath(raw), 'Route dashboard', 'route');
 
   const groupOrder: Record<PathSuggestion['group'], number> = {
     preset: 0,

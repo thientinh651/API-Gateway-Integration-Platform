@@ -13,6 +13,14 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import {
+  format as fmtDate,
+  subDays,
+  subHours,
+  eachDayOfInterval,
+  eachHourOfInterval,
+  differenceInHours,
+} from 'date-fns';
 import { NavCard } from '../components/dashboard/NavCard';
 import { StatsCard } from '../components/dashboard/StatsCard';
 import { Card } from '../components/ui/card';
@@ -26,6 +34,11 @@ import {
   SelectValue,
 } from '../components/ui/select';
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '../components/ui/popover';
+import {
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
@@ -34,6 +47,7 @@ import {
 import {
   Activity,
   AlertTriangle,
+  CalendarDays,
   Key,
   ListOrdered,
   RefreshCw,
@@ -59,22 +73,50 @@ import { OverviewGuest } from './OverviewGuest';
 import { TechPageHeader } from '../components/tech/TechPageHeader';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
+import { isSyncWorkerClient } from '../../lib/oauthClientId';
 
 const CHART_COLORS = ['#10b981', '#3b82f6', '#f97316', '#ef4444', '#a855f7', '#fb923c'];
-
-const SYNC_WORKER_CLIENT_NAME = 'avaso_pk_sync_worker';
 
 const DASHBOARD_RANGES = [
   { hours: 1, label: '1 giờ' },
   { hours: 24, label: '1 ngày' },
   { hours: 72, label: '3 ngày' },
   { hours: 168, label: '1 tuần' },
+  { hours: 744, label: '1 tháng' },
 ] as const;
 
 type DashboardRangeHours = (typeof DASHBOARD_RANGES)[number]['hours'];
 
 function rangeLabel(hours: number): string {
   return DASHBOARD_RANGES.find((r) => r.hours === hours)?.label ?? `${hours}h`;
+}
+
+function fillTimeSeries(
+  data: Array<{ time: string; count: number }>,
+  hours: number,
+): Array<{ time: string; count: number }> {
+  const now = new Date();
+  const map = new Map(data.map((d) => [d.time, d.count]));
+
+  if (hours <= 1) {
+    return data;
+  }
+
+  if (hours <= 24) {
+    const start = subHours(now, hours);
+    const allHours = eachHourOfInterval({ start, end: now });
+    return allHours.map((h) => {
+      const key = fmtDate(h, 'HH:00');
+      return { time: key, count: map.get(key) ?? 0 };
+    });
+  }
+
+  const start = subDays(now, Math.ceil(hours / 24));
+  const allDays = eachDayOfInterval({ start, end: now });
+  return allDays.map((d) => {
+    const key = fmtDate(d, 'dd/MM');
+    return { time: key, count: map.get(key) ?? 0 };
+  });
 }
 
 const AXIS_TICK = '#94a3b8';
@@ -215,10 +257,22 @@ function OverviewAdmin() {
   const [proxyQueueItems, setProxyQueueItems] = useState<ProxyQueueItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [rangeHours, setRangeHours] = useState<DashboardRangeHours>(24);
+  const [rangeHours, setRangeHours] = useState<number>(24);
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+  const [customOpen, setCustomOpen] = useState(false);
   const win = rangeLabel(rangeHours);
   const dataReady =
     !loading && stats != null && (stats.window_hours == null || stats.window_hours === rangeHours);
+
+  const applyCustomRange = useCallback(() => {
+    if (!customFrom || !customTo) return;
+    const from = new Date(customFrom);
+    const to = new Date(customTo);
+    const hrs = Math.max(1, Math.min(744, differenceInHours(to, from)));
+    setRangeHours(hrs as DashboardRangeHours);
+    setCustomOpen(false);
+  }, [customFrom, customTo]);
 
   const load = useCallback(async () => {
     if (!user) return;
@@ -275,11 +329,11 @@ function OverviewAdmin() {
 
   const trafficHourlyData = useMemo(
     () =>
-      (stats?.traffic_hourly ?? []).map((h) => ({
-        time: h.label,
-        count: h.count,
-      })),
-    [stats]
+      fillTimeSeries(
+        (stats?.traffic_hourly ?? []).map((h) => ({ time: h.label, count: h.count })),
+        rangeHours,
+      ),
+    [stats, rangeHours]
   );
 
   const topPathsData = useMemo(
@@ -334,11 +388,19 @@ function OverviewAdmin() {
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Select
-              value={String(rangeHours)}
-              onValueChange={(v) => setRangeHours(Number(v) as DashboardRangeHours)}
+              value={DASHBOARD_RANGES.some((r) => r.hours === rangeHours) ? String(rangeHours) : 'custom'}
+              onValueChange={(v) => {
+                if (v === 'custom') {
+                  setCustomOpen(true);
+                } else {
+                  setRangeHours(Number(v) as DashboardRangeHours);
+                }
+              }}
             >
               <SelectTrigger className="w-[140px] bg-input border-border font-mono-tech text-xs h-9">
-                <SelectValue />
+                <SelectValue>
+                  {DASHBOARD_RANGES.find((r) => r.hours === rangeHours)?.label ?? `${rangeHours}h`}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent className="bg-card border-border">
                 {DASHBOARD_RANGES.map((r) => (
@@ -346,8 +408,56 @@ function OverviewAdmin() {
                     {r.label}
                   </SelectItem>
                 ))}
+                <SelectItem value="custom" className="font-mono-tech text-xs">
+                  Tuỳ chọn…
+                </SelectItem>
               </SelectContent>
             </Select>
+            <Popover open={customOpen} onOpenChange={setCustomOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  className="border-border font-mono-tech text-xs h-9"
+                  onClick={() => setCustomOpen(true)}
+                >
+                  <CalendarDays className="w-4 h-4 mr-1.5" />
+                  Từ – Đến
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-4 bg-card border-border space-y-3" align="end">
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="space-y-1">
+                    <span className="text-xs text-muted-foreground">Từ ngày</span>
+                    <input
+                      type="date"
+                      value={customFrom}
+                      onChange={(e) => setCustomFrom(e.target.value)}
+                      max={customTo || undefined}
+                      className="w-full rounded-md border border-border bg-input px-2 py-1.5 text-xs font-mono-tech text-white"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs text-muted-foreground">Đến ngày</span>
+                    <input
+                      type="date"
+                      value={customTo}
+                      onChange={(e) => setCustomTo(e.target.value)}
+                      min={customFrom || undefined}
+                      max={fmtDate(new Date(), 'yyyy-MM-dd')}
+                      className="w-full rounded-md border border-border bg-input px-2 py-1.5 text-xs font-mono-tech text-white"
+                    />
+                  </label>
+                </div>
+                <Button
+                  size="sm"
+                  className="w-full text-xs"
+                  disabled={!customFrom || !customTo}
+                  onClick={applyCustomRange}
+                >
+                  Áp dụng
+                </Button>
+              </PopoverContent>
+            </Popover>
             <Button
               variant="outline"
               className="border-border font-mono-tech text-xs"
@@ -568,7 +678,7 @@ function OverviewAdmin() {
           ) : (
             <ul className="space-y-2 text-xs">
               {clientTrafficTop.map((c) => {
-                const isSyncWorker = c.name === SYNC_WORKER_CLIENT_NAME;
+                const isSyncWorker = isSyncWorkerClient(c.name);
                 const pct =
                   traffic && traffic.total > 0
                     ? Math.round((c.total / traffic.total) * 100)

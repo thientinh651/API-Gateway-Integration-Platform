@@ -20,9 +20,9 @@ export const NAV_ITEMS: NavItem[] = [
   { path: '/auth', icon: Shield, label: 'OAuth & Clients' },
   { path: '/proxy-try', icon: FlaskConical, label: 'Thử gọi proxy' },
   { path: '/proxy-queue', icon: ListOrdered, label: 'Proxy Queue' },
-  { path: '/api-docs', icon: FileCode, label: 'Tài liệu API' },
   { path: '/integrations', icon: Plug, label: 'Tích hợp' },
   { path: '/users', icon: Users, label: 'Quản lý Users' },
   { path: '/logs', icon: ScrollText, label: 'Log vận hành' },
   { path: '/settings', icon: Settings, label: 'Cài đặt hệ thống' },
+  { path: '/api-docs', icon: FileCode, label: 'Docs' },
 ];

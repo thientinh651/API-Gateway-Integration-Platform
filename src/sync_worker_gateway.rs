@@ -9,7 +9,9 @@ use crate::db::{self, OAuthClientKey};
 use crate::identity::{self, IssuedToken};
 use crate::STATE;
 
-pub const SYNC_WORKER_API_KEY: &str = "avaso_pk_sync_worker";
+pub use crate::db::{
+    SYNC_WORKER_API_KEY, SYNC_WORKER_API_KEY_LEGACY, is_sync_worker_client_id,
+};
 
 #[derive(Clone)]
 pub struct WorkerJwtState {
@@ -96,7 +98,7 @@ async fn refresh_worker_jwt_if_needed(state: &crate::AppState) -> Result<String,
     let fresh_client = creds
         .oauth_clients
         .iter()
-        .find(|c| c.client_id == SYNC_WORKER_API_KEY)
+        .find(|c| is_sync_worker_client_id(&c.client_id))
         .cloned()
         .unwrap_or_else(|| guard.client.clone());
     let issued = issue_worker_token(&fresh_client)?;
@@ -104,7 +106,7 @@ async fn refresh_worker_jwt_if_needed(state: &crate::AppState) -> Result<String,
     guard.expires_at_unix = issued.claims.exp as u64;
     guard.client = fresh_client;
     tracing::info!(
-        client_id = %SYNC_WORKER_API_KEY,
+        client_id = %guard.client.client_id,
         expires_at = guard.expires_at_unix,
         "sync worker JWT renewed"
     );

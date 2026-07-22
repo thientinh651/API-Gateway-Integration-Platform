@@ -776,15 +776,6 @@ function IntegrationsAdmin() {
             </section>
           ) : null}
 
-          {showPipeline ? (
-            <section className="space-y-3">
-              <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
-                Pipeline
-              </h2>
-              <IntegrationPipelinePanel steps={pipelineSteps} onScrollLogs={scrollToSyncLogs} />
-            </section>
-          ) : null}
-
           <section className="space-y-3">
             <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
               Connector OAuth
@@ -846,6 +837,26 @@ function IntegrationsAdmin() {
                 <IntegrationSyncLogsPanel logs={syncLogs} />
                 <IntegrationSnapshotsPanel snapshots={snapshots} />
               </div>
+
+              {showPipeline ? (
+                <details className="group rounded-xl border border-border/70 bg-background/30 p-4">
+                  <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-semibold text-white">Chi tiết pipeline đồng bộ</h3>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Snapshot SF → lọc Closed Won → push Zoho → ghi Sync Log. Phần này dành cho lúc cần
+                        kiểm tra luồng xử lý.
+                      </p>
+                    </div>
+                    <span className="shrink-0 text-xs text-primary group-open:hidden">Mở</span>
+                    <span className="shrink-0 text-xs text-primary hidden group-open:inline">Ẩn</span>
+                  </summary>
+
+                  <div className="mt-4">
+                    <IntegrationPipelinePanel steps={pipelineSteps} onScrollLogs={scrollToSyncLogs} />
+                  </div>
+                </details>
+              ) : null}
             </section>
           ) : null}
         </div>

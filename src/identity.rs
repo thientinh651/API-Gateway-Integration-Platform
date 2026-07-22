@@ -400,10 +400,10 @@ mod tests {
 
     #[test]
     fn client_token_roundtrip() {
-        let hash = db::hash_client_secret("avaso_sk_test").expect("hash");
+        let hash = db::hash_client_secret("avaso_csec_test").expect("hash");
         let client = OAuthClientKey {
             id: 7,
-            client_id: "avaso_pk_test".into(),
+            client_id: "avaso_cid_test".into(),
             secret_hash: hash,
             tenant_id: 1,
             rate_limit_per_min: 100,
