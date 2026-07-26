@@ -85,7 +85,6 @@ Chi tiết: [`OAUTH2_IDENTITY.md`](OAUTH2_IDENTITY.md), [`BAN_VE_HE_THONG.md`](B
 | Mọi deal SKIPPED | Kiểm tra Stage = Closed Won; `INTEGRATION_MIN_DEAL_AMOUNT` |
 | SKIPPED “không đủ giá trị” | Hạ ngưỡng (`sf-dev`) hoặc tăng Amount trên SF |
 | FAILED “chưa connected” | OAuth cả SF và Zoho |
-| PDF không tạo | Office API key + template `templates/hop-dong-vip.docx` |
 
 ### Gateway
 

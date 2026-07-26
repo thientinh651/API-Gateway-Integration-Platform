@@ -2,9 +2,13 @@
 /web/node_modules
 /web/dist
 /web/data
+/web/tsconfig.tsbuildinfo
 /data/*.db
+/data/*.db.bak*
 /data/.bench-credentials
 /data/integration-oauth-urls*.txt
+/data/integration-docs/
+/web/cookies.txt
 .env
 /exports/db/*.sql
 !exports/db/avaso_gateway_schema_latest.sql
@@ -13,3 +17,11 @@ __pycache__/
 *.pyc
 docs/diagrams/
 docs/explain/
+docs/TaiLieuBaoCao
+# Local secrets / scratch — never commit
+/key
+/key.pub
+/body.json
+*.pem
+id_rsa
+id_rsa.pub

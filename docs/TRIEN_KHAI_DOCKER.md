@@ -235,16 +235,7 @@ Các biến khác lấy từ `.env`: `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `CLIENT
 
 **OAuth Salesforce/Zoho:** Client ID và Secret cấu hình trên Dashboard sau khi container chạy — không đặt trong Dockerfile.
 
-**Tích hợp file PDF:** Thư mục `data/integration-docs` và `templates/` nên mount volume nếu cần persist PDF giữa rebuild:
-
-```yaml
-# ví dụ thêm vào service gateway
-volumes:
-  - ./data:/app/data
-  - ./templates:/app/templates
-```
-
-Hiện compose mặc định chưa mount — phù hợp dev; production Docker nên thêm volume cho `data/`.
+Compose mặc định chưa mount `data/` — phù hợp dev. Production Docker nên mount volume cho `data/` nếu cần persist evidence/log local.
 
 ---
 

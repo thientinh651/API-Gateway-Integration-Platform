@@ -82,9 +82,6 @@ source "$ENV_FILE"
 set +a
 timeout 25 "$ROOT/target/release/avaso-gateway" 2>/dev/null || true
 
-echo "==> Migrate dữ liệu SQLite → PostgreSQL (nếu có gateway.db)"
-python3 "$ROOT/deploy/scripts/migrate-sqlite-to-postgres.py" || true
-
 echo "==> Khởi động stack"
 systemctl enable postgresql redis-server avaso-gateway
 systemctl restart postgresql redis-server

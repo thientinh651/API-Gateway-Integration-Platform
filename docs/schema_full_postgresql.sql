@@ -1,17 +1,28 @@
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Avaso Gateway — PostgreSQL schema (trạng thái cuối sau toàn bộ migrations/)
+-- Tài liệu / ERD / báo cáo. Runtime áp schema qua sqlx migrate, không chạy file này.
+-- Đồng bộ: migrations đến 20260717120000_route_array_columns.sql
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- ═══ CORE / TENANTS ═══
 
 CREATE TABLE tenants (
     id BIGSERIAL PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+INSERT INTO tenants (name) VALUES ('default') ON CONFLICT (name) DO NOTHING;
+
 CREATE TABLE dashboard_users (
     id BIGSERIAL PRIMARY KEY,
-    username TEXT UNIQUE NOT NULL,
+    username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
-    role TEXT NOT NULL CHECK (role IN ('admin', 'operator', 'viewer')),
-    tenant_id BIGINT NOT NULL REFERENCES tenants (id),
-    is_active INTEGER NOT NULL CHECK (is_active IN (0, 1)),
+    role TEXT NOT NULL DEFAULT 'admin'
+        CHECK (role IN ('admin', 'operator', 'viewer')),
+    tenant_id BIGINT NOT NULL DEFAULT 1 REFERENCES tenants (id),
+    is_active INTEGER NOT NULL DEFAULT 1
+        CHECK (is_active IN (0, 1)),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     email TEXT,
     token_version INTEGER NOT NULL DEFAULT 0
@@ -22,10 +33,11 @@ CREATE TABLE tenant_memberships (
     tenant_id BIGINT NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
     user_id BIGINT NOT NULL REFERENCES dashboard_users (id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK (role IN ('admin', 'operator', 'viewer')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (tenant_id, user_id)
 );
 
--- ═══ GATEWAY DATA PLANE (7) ═══
+-- ═══ GATEWAY DATA PLANE ═══
 
 CREATE TABLE gateway_routes (
     id BIGSERIAL PRIMARY KEY,
@@ -33,23 +45,23 @@ CREATE TABLE gateway_routes (
     target TEXT NOT NULL,
     timeout_secs INTEGER NOT NULL DEFAULT 30,
     rate_limit_per_min INTEGER NOT NULL DEFAULT 100,
-    tenant_id BIGINT NOT NULL REFERENCES tenants (id),
+    tenant_id BIGINT NOT NULL DEFAULT 1 REFERENCES tenants (id),
     transform_add_headers TEXT NOT NULL DEFAULT '{}',
     transform_remove_headers TEXT NOT NULL DEFAULT '[]',
     retry_max INTEGER NOT NULL DEFAULT 0,
-    retry_on_status INTEGER[] NOT NULL DEFAULT ARRAY[502, 503, 504],
+    retry_on_status INTEGER[] DEFAULT ARRAY[502, 503, 504]::INTEGER[],
     retry_on_timeout INTEGER NOT NULL DEFAULT 1,
     queue_on_failure INTEGER NOT NULL DEFAULT 0,
-    allowed_methods TEXT[] NOT NULL DEFAULT ARRAY['*']
+    allowed_methods TEXT[] DEFAULT ARRAY['*']::TEXT[]
 );
 
 CREATE TABLE gateway_client_keys (
     id BIGSERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
-    secret_sha256_hex TEXT UNIQUE NOT NULL,
-    api_key TEXT UNIQUE,
+    name TEXT NOT NULL DEFAULT '',
+    secret_sha256_hex TEXT NOT NULL UNIQUE,
+    api_key TEXT,
     secret_encrypted TEXT,
-    tenant_id BIGINT NOT NULL REFERENCES tenants (id),
+    tenant_id BIGINT NOT NULL DEFAULT 1 REFERENCES tenants (id),
     integration_type TEXT NOT NULL DEFAULT 'app',
     owner_user_id BIGINT REFERENCES dashboard_users (id) ON DELETE SET NULL,
     status TEXT NOT NULL DEFAULT 'active',
@@ -71,9 +83,10 @@ CREATE TABLE gateway_settings (
     v TEXT NOT NULL
 );
 
+-- tenant_id / route_id: không có FK trên DB migrate (giữ đúng hiện trạng)
 CREATE TABLE gateway_transaction_logs (
     id BIGSERIAL PRIMARY KEY,
-    tenant_id BIGINT REFERENCES tenants (id),
+    tenant_id BIGINT,
     request_id TEXT NOT NULL,
     method TEXT NOT NULL,
     path TEXT NOT NULL,
@@ -98,10 +111,11 @@ CREATE TABLE gateway_transaction_logs (
     upstream_url TEXT
 );
 
+-- route_id: không có FK trên DB migrate
 CREATE TABLE gateway_proxy_queue (
     id TEXT PRIMARY KEY,
     tenant_id BIGINT NOT NULL REFERENCES tenants (id),
-    route_id BIGINT NOT NULL REFERENCES gateway_routes (id),
+    route_id BIGINT NOT NULL,
     method TEXT NOT NULL,
     path TEXT NOT NULL,
     upstream_url TEXT NOT NULL,
@@ -115,11 +129,12 @@ CREATE TABLE gateway_proxy_queue (
     replayed_at TIMESTAMPTZ
 );
 
--- ═══ ADMIN / AUDIT (1) ═══
+-- ═══ ADMIN / AUDIT ═══
 
+-- tenant_id: không có FK trên DB migrate
 CREATE TABLE audit_logs (
     id BIGSERIAL PRIMARY KEY,
-    tenant_id BIGINT NOT NULL REFERENCES tenants (id),
+    tenant_id BIGINT NOT NULL DEFAULT 1,
     actor TEXT NOT NULL,
     role TEXT NOT NULL,
     action TEXT NOT NULL,
@@ -130,14 +145,14 @@ CREATE TABLE audit_logs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ═══ OAUTH / IDENTITY (5) ═══
+-- ═══ OAUTH / IDENTITY ═══
 
 CREATE TABLE oauth_pending_states (
     state TEXT PRIMARY KEY,
     tenant_id BIGINT NOT NULL,
     provider TEXT NOT NULL,
-    actor TEXT NOT NULL,
-    role TEXT NOT NULL,
+    actor TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL DEFAULT 'admin',
     pkce_verifier TEXT,
     expires_at TIMESTAMPTZ NOT NULL
 );
@@ -190,7 +205,7 @@ CREATE TABLE oauth_user_consents (
     PRIMARY KEY (user_id, app_client_id)
 );
 
--- ═══ INTEGRATION (6) ═══
+-- ═══ INTEGRATION ═══
 
 CREATE TABLE integration_providers (
     id TEXT PRIMARY KEY,
@@ -211,9 +226,27 @@ CREATE TABLE integration_flow_types (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+INSERT INTO integration_providers (id, display_name, auth_type, capabilities_json)
+VALUES
+    ('salesforce', 'Salesforce', 'oauth2', '["crm","snapshot","webhook"]'),
+    ('zoho_projects', 'Zoho Projects', 'oauth2', '["project","task"]')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO integration_flow_types (id, display_name, source_provider, target_provider, description, enabled)
+VALUES (
+    'sales_to_delivery',
+    'Sales-to-Delivery Automation',
+    'salesforce',
+    'zoho_projects',
+    'Closed Won Opportunity → Zoho Project + delivery tasks',
+    1
+)
+ON CONFLICT (id) DO NOTHING;
+
+-- tenant_id: không có FK trên DB migrate (DEFAULT 1)
 CREATE TABLE integrations (
     id BIGSERIAL PRIMARY KEY,
-    tenant_id BIGINT NOT NULL REFERENCES tenants (id),
+    tenant_id BIGINT NOT NULL DEFAULT 1,
     provider TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'disconnected',
     config_encrypted TEXT,
@@ -225,17 +258,17 @@ CREATE TABLE integrations (
 
 CREATE TABLE integration_provider_configs (
     id BIGSERIAL PRIMARY KEY,
-    tenant_id BIGINT NOT NULL REFERENCES tenants (id),
+    tenant_id BIGINT NOT NULL DEFAULT 1,
     provider TEXT NOT NULL,
     config_encrypted TEXT NOT NULL,
-    updated_by TEXT NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT '',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (tenant_id, provider)
 );
 
 CREATE TABLE integration_snapshots (
     id BIGSERIAL PRIMARY KEY,
-    tenant_id BIGINT NOT NULL REFERENCES tenants (id),
+    tenant_id BIGINT NOT NULL DEFAULT 1,
     provider TEXT NOT NULL,
     entity_type TEXT NOT NULL,
     payload_json TEXT NOT NULL,
@@ -245,7 +278,7 @@ CREATE TABLE integration_snapshots (
 
 CREATE TABLE sync_logs (
     id BIGSERIAL PRIMARY KEY,
-    tenant_id BIGINT NOT NULL REFERENCES tenants (id),
+    tenant_id BIGINT NOT NULL DEFAULT 1 REFERENCES tenants (id),
     status TEXT NOT NULL,
     message TEXT NOT NULL,
     error_detail TEXT,
@@ -260,7 +293,7 @@ CREATE TABLE sync_logs (
 
 CREATE TABLE integration_entity_links (
     id BIGSERIAL PRIMARY KEY,
-    tenant_id BIGINT NOT NULL REFERENCES tenants (id),
+    tenant_id BIGINT NOT NULL DEFAULT 1 REFERENCES tenants (id),
     flow_type TEXT NOT NULL DEFAULT 'sales_to_delivery',
     source_provider TEXT NOT NULL DEFAULT 'salesforce',
     source_entity_type TEXT NOT NULL,
@@ -309,17 +342,8 @@ CREATE UNIQUE INDEX idx_gateway_client_keys_api_key
     ON gateway_client_keys (api_key)
     WHERE api_key IS NOT NULL;
 
-CREATE UNIQUE INDEX idx_integrations_tenant_provider
-    ON integrations (tenant_id, provider);
-
-CREATE UNIQUE INDEX idx_integration_provider_configs_tenant_provider
-    ON integration_provider_configs (tenant_id, provider);
-
 CREATE UNIQUE INDEX idx_entity_links_source_unique
     ON integration_entity_links (tenant_id, flow_type, source_provider, source_entity_type, source_id);
-
-CREATE UNIQUE INDEX idx_tenant_memberships_tenant_user
-    ON tenant_memberships (tenant_id, user_id);
 
 -- ═══ PERFORMANCE INDEXES ═══
 
@@ -378,6 +402,12 @@ CREATE INDEX idx_oauth_access_tokens_active_subject
 CREATE INDEX idx_oauth_access_tokens_active_client
     ON oauth_access_tokens (client_key_id)
     WHERE revoked_at IS NULL;
+
+CREATE INDEX idx_integrations_tenant
+    ON integrations (tenant_id);
+
+CREATE INDEX idx_integration_provider_configs_tenant
+    ON integration_provider_configs (tenant_id);
 
 CREATE INDEX idx_integration_snapshots_tenant_provider
     ON integration_snapshots (tenant_id, provider, entity_type, fetched_at DESC);
