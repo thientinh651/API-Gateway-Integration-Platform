@@ -21,8 +21,6 @@
 
 **Script Database:** [docs/schema_full_postgresql.sql](docs/schema_full_postgresql.sql)
 
-**Báo cáo LVTN:** [Báo cáo/Báo cáo LVTN.docx](Báo%20cáo/Báo%20cáo%20LVTN.docx)
-
 
 
 ### Công nghệ
@@ -102,7 +100,7 @@ Migration SQL tự chạy khi gateway khởi động (`migrations/`).
 |------------|-------|
 | **Docker** | `docker-compose.yml` (dev), `docker-compose.ha.yml` (2 instances + Nginx LB), `docker-compose.observability.yml` |
 | **Production** | systemd (`deploy/systemd/`), Nginx TLS `thientinh.io.vn`, tuning VPS 2GB |
-| **Scripts** | `smoke-test.sh`, `deploy-production.sh`, `reset_integration_data.sql`, `run-benchmark-suite.sh`, `collect-thesis-evidence.sh` |
+| **Scripts** | `smoke-test.sh`, `deploy-production.sh`, `reset_integration_data.sql`, `run-benchmark-suite.sh` |
 | **CI** | `.github/workflows/ci.yml` — `cargo test` + build + `npm test` + build |
 
 
@@ -120,7 +118,6 @@ cargo test
 cd web && npm test && npm run build
 ./scripts/smoke-test.sh
 python3 scripts/test_jwt_auth.py
-./scripts/collect-thesis-evidence.sh
 ```
 
 ---

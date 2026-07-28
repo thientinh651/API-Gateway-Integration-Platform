@@ -1,1 +1,0 @@
-{"components":{"database":{"status":"up"},"session_store":{"backend":"redis","status":"up"}},"service":"avaso-gateway","status":"ok","version":"0.1.0"}

@@ -1,20 +1,9 @@
 # Sơ đồ Draw.io
 
-Export PNG chèn Word / slide:
-
-```bash
-./scripts/export-drawio-png.sh
-```
-
 | File | Dùng cho |
 |------|----------|
-| `BAO_VE_KIEN_TRUC.drawio` | Chương 4 — kiến trúc tổng thể |
-| `LUONG_DATA_PLANE.drawio` | Phụ lục — sequence OAuth2 JWT (token → Bearer proxy) |
+| `SO_DO_USE_CASE.drawio` | Use case tổng quat |
+| `SO_DO_CHUC_NANG.drawio` | Sơ đồ chức năng |
+| `Avaso Gateway.png` | Hình kiến trúc |
 
-**Nên bổ sung slide chính (vẽ tay hoặc sửa file):**
-
-```text
-Salesforce → Connector → Transformation Layer → Queue → Zoho Projects
-```
-
-Chi tiết: [`../BAO_CAO.md`](../BAO_CAO.md), [`../BAN_VE_HE_THONG.md`](../BAN_VE_HE_THONG.md)
+Export PNG từ Draw.io Desktop / app.diagrams.net khi cần chèn báo cáo.

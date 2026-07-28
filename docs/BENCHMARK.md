@@ -60,12 +60,6 @@ Output: `data/benchmark/result-YYYYMMDD-HHMMSS.txt`
 python3 scripts/test_jwt_auth.py
 ```
 
-## Thu thập evidence đồ án
-
-```bash
-./scripts/collect-thesis-evidence.sh
-```
-
 ## Biến môi trường
 
 | Biến | Mô tả |

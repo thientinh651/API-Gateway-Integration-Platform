@@ -2,20 +2,22 @@
 
 Production: https://thientinh.io.vn
 
-Báo cáo Word/PDF (SSOT): [`../Báo cáo/Báo cáo LVTN.docx`](../Báo%20cáo/Báo%20cáo%20LVTN.docx)
-
 ---
 
-## Báo cáo & ma trận đồ án
+## Ôn bảo vệ / sổ tay sản phẩm
 
 | File | Vai trò |
 |------|---------|
-| [`THESIS_CONTEXT.md`](THESIS_CONTEXT.md) | Ngữ cảnh bảo vệ / stack / trade-off |
-| [`MA_TRAN_DO_AN.md`](MA_TRAN_DO_AN.md) | Ma trận FR ↔ code |
-| [`TONG_QUAN_DO_AN_VA_DANH_GIA.md`](TONG_QUAN_DO_AN_VA_DANH_GIA.md) | Tổng quan + đánh giá |
-| [`ROUTING_JWT_CORE.md`](ROUTING_JWT_CORE.md) | Trọng tâm bảo vệ — Routing + JWT + Benchmark |
+| [`TaiLieuBaoCao/README.md`](TaiLieuBaoCao/README.md) | Sổ tay: kiến trúc, DB, quy trình, jump code, Q&A |
+
+---
+
+## Kỹ thuật cốt lõi
+
+| File | Vai trò |
+|------|---------|
+| [`ROUTING_JWT_CORE.md`](ROUTING_JWT_CORE.md) | Routing + JWT + Benchmark |
 | [`OAUTH2_IDENTITY.md`](OAUTH2_IDENTITY.md) | Token endpoint, Bearer flow |
-| [`CHUONG_4_THU_NGHIEM.md`](CHUONG_4_THU_NGHIEM.md) | Chương thử nghiệm |
 | [`BENCHMARK.md`](BENCHMARK.md) | Benchmark NFR |
 
 ---
@@ -31,22 +33,13 @@ Báo cáo Word/PDF (SSOT): [`../Báo cáo/Báo cáo LVTN.docx`](../Báo%20cáo/B
 
 ---
 
-## Tích hợp
+## Tích hợp & CSDL
 
 | File | Nội dung |
 |------|----------|
 | [`TICH_HOP_SALESFORCE.md`](TICH_HOP_SALESFORCE.md) | OAuth Salesforce |
 | [`INTEGRATION_DB_DESIGN.md`](INTEGRATION_DB_DESIGN.md) | Schema tích hợp đa provider |
-| [`RBAC_LVTN.md`](RBAC_LVTN.md) | Phân quyền |
-
----
-
-## CSDL & ERD
-
-| File | Nội dung |
-|------|----------|
-| [`schema_full_postgresql.sql`](schema_full_postgresql.sql) | Schema PostgreSQL (trạng thái cuối) |
-| [`Nhap.txt`](Nhap.txt) | ERD PlantUML |
+| [`schema_full_postgresql.sql`](schema_full_postgresql.sql) | Schema PostgreSQL (tham chiếu) |
 
 Runtime áp schema qua `migrations/` (sqlx), không chạy `schema_full_*.sql` trực tiếp.
 
@@ -56,11 +49,7 @@ Runtime áp schema qua `migrations/` (sqlx), không chạy `schema_full_*.sql` t
 
 | File | Mục đích |
 |------|----------|
-| [`diagrams/README.md`](diagrams/README.md) | Hướng dẫn export (nếu có cây diagrams local) |
-
-```bash
-./scripts/export-drawio-png.sh
-```
+| [`diagrams/README.md`](diagrams/README.md) | Sơ đồ drawio / PNG |
 
 ---
 
@@ -70,5 +59,4 @@ Runtime áp schema qua `migrations/` (sqlx), không chạy `schema_full_*.sql` t
 ./scripts/smoke-test.sh
 ./scripts/test-integrations.sh
 docker compose up --build -d
-./scripts/collect-thesis-evidence.sh
 ```

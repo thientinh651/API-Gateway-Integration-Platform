@@ -1,1 +1,0 @@
-{"data_plane":{"denied_total":0,"errors_total":0,"requests_total":0,"success_total":0},"format":"json","note":"Counters từ transaction log data-plane; tắt qua Settings → enable_metrics","service":"avaso-gateway","uptime_secs":14175}

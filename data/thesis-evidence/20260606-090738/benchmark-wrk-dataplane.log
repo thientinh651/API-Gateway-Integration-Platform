@@ -1,2 +1,0 @@
-==> wrk data-plane HMAC (30s)
-./scripts/benchmark-gateway.sh: line 43: BENCH_API_KEY: Set BENCH_API_KEY

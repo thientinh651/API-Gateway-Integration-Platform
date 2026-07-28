@@ -148,7 +148,6 @@ Migration SQL tự áp dụng khi gateway khởi động.
 | Compose 2 instance *(thử)* | `docker-ha-demo.sh` — không gọi HA trong Word |
 | Production HTTPS | Screenshot `thientinh.io.vn`, Nginx config |
 | Health check | `curl /health` — DB + Redis up |
-| Evidence | `./scripts/collect-thesis-evidence.sh` |
 
 ---
 
