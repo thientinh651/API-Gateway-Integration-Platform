@@ -2,7 +2,7 @@
 # Multi-stage — image runtime ~40–80MB (Alpine + binary + web/dist)
 
 FROM rust:1-alpine AS rust-build
-RUN apk add --no-cache musl-dev openssl-dev pkgconf build-base
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconf build-base
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY migrations ./migrations
