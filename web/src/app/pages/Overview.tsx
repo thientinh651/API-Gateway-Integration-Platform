@@ -20,6 +20,8 @@ import {
   eachDayOfInterval,
   eachHourOfInterval,
   differenceInHours,
+  startOfMonth,
+  endOfMonth,
 } from 'date-fns';
 import { NavCard } from '../components/dashboard/NavCard';
 import { StatsCard } from '../components/dashboard/StatsCard';
@@ -34,11 +36,6 @@ import {
   SelectValue,
 } from '../components/ui/select';
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '../components/ui/popover';
-import {
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
@@ -47,7 +44,6 @@ import {
 import {
   Activity,
   AlertTriangle,
-  CalendarDays,
   Key,
   ListOrdered,
   RefreshCw,
@@ -82,7 +78,6 @@ const DASHBOARD_RANGES = [
   { hours: 24, label: '1 ngày' },
   { hours: 72, label: '3 ngày' },
   { hours: 168, label: '1 tuần' },
-  { hours: 744, label: '1 tháng' },
 ] as const;
 
 type DashboardRangeHours = (typeof DASHBOARD_RANGES)[number]['hours'];
@@ -90,6 +85,22 @@ type DashboardRangeHours = (typeof DASHBOARD_RANGES)[number]['hours'];
 function rangeLabel(hours: number): string {
   return DASHBOARD_RANGES.find((r) => r.hours === hours)?.label ?? `${hours}h`;
 }
+
+function buildMonthOptions(): Array<{ value: string; label: string; hours: number }> {
+  const now = new Date();
+  const result: Array<{ value: string; label: string; hours: number }> = [];
+  for (let i = 0; i < 6; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const value = fmtDate(d, 'yyyy-MM');
+    const label = `Tháng ${d.getMonth() + 1}/${d.getFullYear()}`;
+    const from = startOfMonth(d);
+    const to = i === 0 ? now : endOfMonth(d);
+    const hours = Math.max(1, differenceInHours(to, from));
+    result.push({ value, label, hours });
+  }
+  return result;
+}
+
 
 function fillTimeSeries(
   data: Array<{ time: string; count: number }>,
@@ -258,21 +269,25 @@ function OverviewAdmin() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [rangeHours, setRangeHours] = useState<number>(24);
-  const [customFrom, setCustomFrom] = useState('');
-  const [customTo, setCustomTo] = useState('');
-  const [customOpen, setCustomOpen] = useState(false);
-  const win = rangeLabel(rangeHours);
-  const dataReady =
-    !loading && stats != null && (stats.window_hours == null || stats.window_hours === rangeHours);
+  const [activeMonth, setActiveMonth] = useState<string | null>(null);
+  const monthOptions = useMemo(() => buildMonthOptions(), []);
+  const win = activeMonth
+    ? (monthOptions.find((m) => m.value === activeMonth)?.label ?? rangeLabel(rangeHours))
+    : rangeLabel(rangeHours);
+  const dataReady = !loading && stats != null;
 
-  const applyCustomRange = useCallback(() => {
-    if (!customFrom || !customTo) return;
-    const from = new Date(customFrom);
-    const to = new Date(customTo);
-    const hrs = Math.max(1, Math.min(744, differenceInHours(to, from)));
-    setRangeHours(hrs as DashboardRangeHours);
-    setCustomOpen(false);
-  }, [customFrom, customTo]);
+  const selectMonth = useCallback((value: string) => {
+    const opts = buildMonthOptions();
+    const opt = opts.find((m) => m.value === value);
+    if (!opt) return;
+    setActiveMonth(value);
+    setRangeHours(opt.hours);
+  }, []);
+
+  const selectPreset = useCallback((hours: number) => {
+    setActiveMonth(null);
+    setRangeHours(hours as DashboardRangeHours);
+  }, []);
 
   const load = useCallback(async () => {
     if (!user) return;
@@ -388,19 +403,17 @@ function OverviewAdmin() {
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Select
-              value={DASHBOARD_RANGES.some((r) => r.hours === rangeHours) ? String(rangeHours) : 'custom'}
+              value={activeMonth ? `m:${activeMonth}` : String(rangeHours)}
               onValueChange={(v) => {
-                if (v === 'custom') {
-                  setCustomOpen(true);
+                if (v.startsWith('m:')) {
+                  selectMonth(v.slice(2));
                 } else {
-                  setRangeHours(Number(v) as DashboardRangeHours);
+                  selectPreset(Number(v));
                 }
               }}
             >
-              <SelectTrigger className="w-[140px] bg-input border-border font-mono-tech text-xs h-9">
-                <SelectValue>
-                  {DASHBOARD_RANGES.find((r) => r.hours === rangeHours)?.label ?? `${rangeHours}h`}
-                </SelectValue>
+              <SelectTrigger className="w-[170px] bg-input border-border font-mono-tech text-xs h-9">
+                <SelectValue>{win}</SelectValue>
               </SelectTrigger>
               <SelectContent className="bg-card border-border">
                 {DASHBOARD_RANGES.map((r) => (
@@ -408,56 +421,14 @@ function OverviewAdmin() {
                     {r.label}
                   </SelectItem>
                 ))}
-                <SelectItem value="custom" className="font-mono-tech text-xs">
-                  Tuỳ chọn…
-                </SelectItem>
+                <div className="border-t border-border my-1" />
+                {monthOptions.map((m) => (
+                  <SelectItem key={m.value} value={`m:${m.value}`} className="font-mono-tech text-xs">
+                    {m.label}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
-            <Popover open={customOpen} onOpenChange={setCustomOpen}>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="outline"
-                  className="border-border font-mono-tech text-xs h-9"
-                  onClick={() => setCustomOpen(true)}
-                >
-                  <CalendarDays className="w-4 h-4 mr-1.5" />
-                  Từ – Đến
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-auto p-4 bg-card border-border space-y-3" align="end">
-                <div className="grid grid-cols-2 gap-3">
-                  <label className="space-y-1">
-                    <span className="text-xs text-muted-foreground">Từ ngày</span>
-                    <input
-                      type="date"
-                      value={customFrom}
-                      onChange={(e) => setCustomFrom(e.target.value)}
-                      max={customTo || undefined}
-                      className="w-full rounded-md border border-border bg-input px-2 py-1.5 text-xs font-mono-tech text-white"
-                    />
-                  </label>
-                  <label className="space-y-1">
-                    <span className="text-xs text-muted-foreground">Đến ngày</span>
-                    <input
-                      type="date"
-                      value={customTo}
-                      onChange={(e) => setCustomTo(e.target.value)}
-                      min={customFrom || undefined}
-                      max={fmtDate(new Date(), 'yyyy-MM-dd')}
-                      className="w-full rounded-md border border-border bg-input px-2 py-1.5 text-xs font-mono-tech text-white"
-                    />
-                  </label>
-                </div>
-                <Button
-                  size="sm"
-                  className="w-full text-xs"
-                  disabled={!customFrom || !customTo}
-                  onClick={applyCustomRange}
-                >
-                  Áp dụng
-                </Button>
-              </PopoverContent>
-            </Popover>
             <Button
               variant="outline"
               className="border-border font-mono-tech text-xs"
@@ -710,8 +681,8 @@ function OverviewAdmin() {
           )}
         </NavCard>
 
-        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Theo thời gian">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">Theo thời gian</h3>
+        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Request">
+          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">Request</h3>
           {!dataReady ? (
             <p className="text-sm text-muted-foreground">Đang tải…</p>
           ) : trafficHourlyData.length === 0 ? (

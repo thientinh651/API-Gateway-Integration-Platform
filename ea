@@ -1,0 +1,21 @@
+[0;1;32m●[0m avaso-gateway.service - Avaso API Gateway (Rust)
+     Loaded: loaded (]8;;file://ubuntu-AvasoProject/etc/systemd/system/avaso-gateway.service/etc/systemd/system/avaso-gateway.service]8;;; [0;1;32menabled[0m; preset: [0;1;32menabled[0m)
+     Active: [0;1;32mactive (running)[0m since Tue 2026-07-28 06:37:02 UTC; 1 day 2h ago
+       Docs: ]8;;file:///root/avaso-gateway/README.mdfile:///root/avaso-gateway/README.md]8;;
+   Main PID: 272949 (avaso-gateway)
+      Tasks: 2 (limit: 2315)
+     Memory: 29.6M (max: 384.0M available: 354.3M peak: 33.8M swap: 1.8M swap peak: 4.0M)
+        CPU: 5.104s
+     CGroup: /system.slice/avaso-gateway.service
+             └─[0;38;5;245m272949 /root/avaso-gateway/target/release/avaso-gateway[0m
+
+Jul 29 08:31:09 ubuntu-AvasoProject avaso-gateway[272949]: {"timestamp":"2026-07-29T08:31:09.809488Z","level":"WARN","fields":{"message":"JWT_SECRET unset — using dev default; set in production"}}
+Jul 29 08:31:10 ubuntu-AvasoProject avaso-gateway[272949]: {"timestamp":"2026-07-29T08:31:10.788768Z","level":"INFO","fields":{"message":"gateway_transaction","event":"gateway_transaction","request_id":"fcaa3467-db1a-4cc3-8e23-f0848d1c72de","outcome":"upstream_error","reason":"forwarded","method":"PUT","path":"/v1/api/methods-demo","status":503,"api_key_masked":"client:a…","upstream":"https://httpbin.org/anything","elapsed_ms":"978"}}
+Jul 29 08:45:00 ubuntu-AvasoProject avaso-gateway[272949]: {"timestamp":"2026-07-29T08:45:00.440899Z","level":"WARN","fields":{"message":"JWT_SECRET unset — using dev default; set in production"}}
+Jul 29 08:45:01 ubuntu-AvasoProject avaso-gateway[272949]: {"timestamp":"2026-07-29T08:45:01.166606Z","level":"INFO","fields":{"message":"gateway_transaction","event":"gateway_transaction","request_id":"f3942afa-9ab4-4447-ac6a-5ba3de9301c6","outcome":"success","reason":"forwarded","method":"PATCH","path":"/v1/api/demo","status":200,"api_key_masked":"client:a…","upstream":"https://jsonplaceholder.typicode.com/posts/1","elapsed_ms":"723"}}
+Jul 29 08:45:01 ubuntu-AvasoProject avaso-gateway[272949]: {"timestamp":"2026-07-29T08:45:01.169378Z","level":"WARN","fields":{"message":"insert_transaction_log failed — traffic log dropped","error":"error returned from database: invalid byte sequence for encoding \"UTF8\": 0x00","path":"/v1/api/demo"}}
+Jul 29 08:45:39 ubuntu-AvasoProject avaso-gateway[272949]: {"timestamp":"2026-07-29T08:45:39.166774Z","level":"WARN","fields":{"message":"JWT_SECRET unset — using dev default; set in production"}}
+Jul 29 08:45:43 ubuntu-AvasoProject avaso-gateway[272949]: {"timestamp":"2026-07-29T08:45:43.222539Z","level":"WARN","fields":{"message":"JWT_SECRET unset — using dev default; set in production"}}
+Jul 29 08:45:58 ubuntu-AvasoProject avaso-gateway[272949]: {"timestamp":"2026-07-29T08:45:58.835009Z","level":"WARN","fields":{"message":"JWT_SECRET unset — using dev default; set in production"}}
+Jul 29 08:45:59 ubuntu-AvasoProject avaso-gateway[272949]: {"timestamp":"2026-07-29T08:45:59.552970Z","level":"INFO","fields":{"message":"gateway_transaction","event":"gateway_transaction","request_id":"8673dc13-767f-47cf-b4d0-f04873297106","outcome":"success","reason":"forwarded","method":"PATCH","path":"/v1/api/demo","status":200,"api_key_masked":"client:a…","upstream":"https://jsonplaceholder.typicode.com/posts/1","elapsed_ms":"716"}}
+Jul 29 08:45:59 ubuntu-AvasoProject avaso-gateway[272949]: {"timestamp":"2026-07-29T08:45:59.554746Z","level":"WARN","fields":{"message":"insert_transaction_log failed — traffic log dropped","error":"error returned from database: invalid byte sequence for encoding \"UTF8\": 0x00","path":"/v1/api/demo"}}

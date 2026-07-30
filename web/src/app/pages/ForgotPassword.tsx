@@ -1,10 +1,11 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { Layers } from 'lucide-react';
 import { TechPanel } from '../components/tech/TechPanel';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { InputOTP, InputOTPGroup, InputOTPSlot } from '../components/ui/input-otp';
 import { Label } from '../components/ui/label';
 import {
   requestPasswordReset,
@@ -17,6 +18,10 @@ import { FieldError } from '../components/forms/FieldError';
 import { setSavedUsername } from '../../lib/demoAuthStorage';
 
 type Step = 'verify' | 'otp' | 'password';
+type OtpStatus = 'idle' | 'error' | 'success';
+
+const OTP_LENGTH = 6;
+const RESEND_COOLDOWN_SECS = 30;
 
 export function ForgotPassword() {
   const navigate = useNavigate();
@@ -31,6 +36,26 @@ export function ForgotPassword() {
   const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [otpStatus, setOtpStatus] = useState<OtpStatus>('idle');
+  const [resendCooldown, setResendCooldown] = useState(0);
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = window.setTimeout(() => {
+      setResendCooldown((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [resendCooldown]);
+
+  const clearOtpError = () => {
+    setOtpStatus('idle');
+    setFieldErrors((p) => {
+      if (!p.otp) return p;
+      const n = { ...p };
+      delete n.otp;
+      return n;
+    });
+  };
 
   const backToVerify = () => {
     setStep('verify');
@@ -38,17 +63,22 @@ export function ForgotPassword() {
     setResetToken('');
     setPassword('');
     setConfirm('');
+    setOtpStatus('idle');
+    setResendCooldown(0);
     setFieldErrors({});
   };
 
-  const onVerifyAccount = async (e: FormEvent) => {
-    e.preventDefault();
-    const errors: Record<string, string> = {};
-    if (!username.trim()) errors.username = 'Nhập tên đăng nhập';
-    if (!email.trim()) errors.email = 'Nhập email';
-    if (Object.keys(errors).length > 0) {
-      setFieldErrors(errors);
-      return;
+  const sendOtp = async (opts?: { validateInput?: boolean; resent?: boolean }) => {
+    const validateInput = opts?.validateInput ?? false;
+    const resent = opts?.resent ?? false;
+    if (validateInput) {
+      const errors: Record<string, string> = {};
+      if (!username.trim()) errors.username = 'Nhập tên đăng nhập';
+      if (!email.trim()) errors.email = 'Nhập email';
+      if (Object.keys(errors).length > 0) {
+        setFieldErrors(errors);
+        return;
+      }
     }
     setBusy(true);
     setFieldErrors({});
@@ -60,8 +90,14 @@ export function ForgotPassword() {
       setUsername(res.username ?? username.trim());
       setEmailMasked(res.email_masked ?? '');
       setDelivery(res.delivery ?? null);
+      setOtp('');
+      setOtpStatus('idle');
+      setResendCooldown(RESEND_COOLDOWN_SECS);
       setStep('otp');
-      toast.success(res.message, { duration: 12000 });
+      toast.success(
+        resent ? 'Đã gửi lại mã OTP.' : res.message,
+        { duration: resent ? 6000 : 12000 },
+      );
       if (res.delivery === 'dev_log') {
         toast.info('Chưa có mail — OTP nằm log server: journalctl -u avaso-gateway -f', {
           duration: 15000,
@@ -77,20 +113,30 @@ export function ForgotPassword() {
     }
   };
 
+  const onVerifyAccount = async (e: FormEvent) => {
+    e.preventDefault();
+    await sendOtp({ validateInput: true });
+  };
+
   const onVerifyOtp = async (e: FormEvent) => {
     e.preventDefault();
-    if (otp.trim().length !== 6) {
+    if (otp.trim().length !== OTP_LENGTH) {
+      setOtpStatus('error');
       setFieldErrors({ otp: 'OTP gồm 6 chữ số' });
       return;
     }
     setBusy(true);
+    setOtpStatus('idle');
     setFieldErrors({});
     try {
       const res = await verifyResetOtp({ username, otp: otp.trim() });
+      setOtpStatus('success');
       setResetToken(res.reset_token);
+      await new Promise((resolve) => window.setTimeout(resolve, 180));
       setStep('password');
       toast.success('OTP đúng — nhập mật khẩu mới.');
     } catch (err) {
+      setOtpStatus('error');
       if (err instanceof ApiClientError && err.fields) {
         setFieldErrors(err.fields);
       }
@@ -144,10 +190,26 @@ export function ForgotPassword() {
             ? `Mã 6 số đã gửi tới ${emailMasked} (hiệu lực 10 phút).`
             : 'Mã 6 số gửi qua email (hiệu lực 10 phút).'
         : 'OTP đã xác minh — đặt mật khẩu mới.';
+  const otpFilled = otp.length === OTP_LENGTH;
+  const otpBoxClass =
+    otpStatus === 'error'
+      ? 'border-destructive/80 bg-destructive/10 text-destructive animate-[otp-shake_0.24s_ease-in-out_1]'
+      : otpStatus === 'success'
+        ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-300'
+        : otpFilled
+          ? 'border-primary/60 bg-primary/10 text-white'
+          : 'border-border bg-input text-white';
 
   return (
     <div className="min-h-[100dvh] bg-background flex flex-col items-center justify-center p-4 sm:p-6 relative overflow-hidden">
       <div className="pointer-events-none absolute inset-0 tech-grid-bg opacity-50" aria-hidden />
+      <style>{`
+        @keyframes otp-shake {
+          0%, 100% { transform: translateX(0); }
+          25% { transform: translateX(-6px); }
+          75% { transform: translateX(6px); }
+        }
+      `}</style>
       <a
         href="https://thientinh.io.vn"
         rel="noopener noreferrer"
@@ -238,31 +300,71 @@ export function ForgotPassword() {
             </div>
             <div>
               <Label htmlFor="fp-otp">Mã OTP</Label>
-              <Input
-                id="fp-otp"
+              <div className="mt-2">
+                <InputOTP
+                  id="fp-otp"
+                  maxLength={OTP_LENGTH}
+                  pattern={String.raw`\d*`}
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={otp}
+                  onChange={(value) => {
+                    const next = value.replace(/\D/g, '').slice(0, OTP_LENGTH);
+                    setOtp(next);
+                    clearOtpError();
+                  }}
+                  onComplete={() => {
+                    setOtpStatus('idle');
+                  }}
+                  containerClassName="justify-center"
+                  className="justify-center"
+                  aria-invalid={Boolean(fieldErrors.otp)}
+                >
+                  <InputOTPGroup>
+                    {Array.from({ length: OTP_LENGTH }, (_, index) => (
+                      <InputOTPSlot
+                        key={index}
+                        index={index}
+                        className={`h-12 w-11 rounded-md border text-base font-semibold transition-all sm:h-14 sm:w-12 ${otpBoxClass}`}
+                      />
+                    ))}
+                  </InputOTPGroup>
+                </InputOTP>
+              </div>
+              <p className="mt-2 text-center text-[11px] text-muted-foreground">
+                Dán cả mã. Hệ thống tự tách vào 6 ô.
+              </p>
+              <input
+                type="hidden"
                 value={otp}
-                onChange={(e) => {
-                  setOtp(e.target.value.replace(/\D/g, '').slice(0, 6));
-                  setFieldErrors((p) => {
-                    const n = { ...p };
-                    delete n.otp;
-                    return n;
-                  });
-                }}
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                placeholder="000000"
-                className="bg-input border-border font-mono tracking-widest text-center text-lg"
-                aria-invalid={Boolean(fieldErrors.otp)}
+                onChange={() => undefined}
+                aria-hidden="true"
+                tabIndex={-1}
               />
               <FieldError message={fieldErrors.otp} />
             </div>
             <Button type="submit" disabled={busy} className="w-full">
               {busy ? 'Đang kiểm tra…' : 'Xác nhận OTP'}
             </Button>
-            <Button type="button" variant="ghost" className="w-full text-muted-foreground" onClick={backToVerify}>
-              Quay lại / gửi lại OTP
-            </Button>
+            <div className="space-y-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={busy || resendCooldown > 0}
+                onClick={() => void sendOtp({ resent: true })}
+              >
+                {resendCooldown > 0 ? `Gửi lại OTP sau ${resendCooldown}s` : 'Gửi lại OTP'}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className="w-full text-muted-foreground"
+                onClick={backToVerify}
+              >
+                Quay lại
+              </Button>
+            </div>
           </form>
         )}
 

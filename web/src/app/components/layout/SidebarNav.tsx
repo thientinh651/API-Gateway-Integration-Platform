@@ -44,7 +44,7 @@ export function SidebarNav({ onNavigate, className = '' }: Props) {
               key={item.path}
               to={item.path}
               onClick={onNavigate}
-              className={`flex items-center space-x-3 p-3 min-h-[44px] rounded-xl transition touch-manipulation border-l-2 ${
+              className={`flex items-center space-x-2 p-2 min-h-[44px] rounded-xl transition touch-manipulation border-l-2 ${
                 isActive
                   ? 'text-primary bg-primary/10 border-primary shadow-[inset_0_0_20px_rgba(249,115,22,0.08)] font-medium'
                   : 'text-muted-foreground border-transparent hover:bg-primary/10 hover:text-primary hover:border-primary/30 active:bg-primary/15'

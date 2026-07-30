@@ -33,7 +33,7 @@ export function UndoDeleteToast({ message, durationMs, onUndo }: Props) {
         <div className="min-w-0 flex-1">
           <p className="text-sm text-white leading-snug truncate">{message}</p>
           <p className="text-[11px] text-muted-foreground mt-0.5 tabular-nums">
-            Biến mất sau {secs}s
+            Xóa hoàn toàn sau {secs}s
           </p>
         </div>
         <Button

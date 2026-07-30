@@ -182,6 +182,21 @@ const GRID = 'grid w-full min-w-0 grid-cols-[12%_18%_34%_15%_13%_8%] items-cente
 const CELL = 'px-4 sm:px-6 py-3 min-w-0';
 const HEAD = 'text-[10px] uppercase text-muted-foreground font-bold whitespace-nowrap bg-slate-950';
 
+function ymdLocal(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+type QuickRange = { id: string; label: string; days: number | null };
+const QUICK_RANGES: QuickRange[] = [
+  { id: 'today', label: 'Hôm nay', days: 0 },
+  { id: '7d', label: '7 ngày', days: 6 },
+  { id: '30d', label: '30 ngày', days: 29 },
+  { id: 'all', label: 'Tất cả', days: null },
+];
+
 export function IntegrationLogPanel() {
   const [rows, setRows] = useState<SyncLogRow[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -216,6 +231,32 @@ export function IntegrationLogPanel() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const applyQuickRange = useCallback((r: QuickRange) => {
+    if (r.days == null) {
+      setDateFrom('');
+      setDateTo('');
+      return;
+    }
+    const today = new Date();
+    const from = new Date();
+    from.setDate(today.getDate() - r.days);
+    setDateFrom(ymdLocal(from));
+    setDateTo(ymdLocal(today));
+  }, []);
+
+  const activeQuickRange = useMemo(() => {
+    if (!dateFrom && !dateTo) return 'all';
+    const today = ymdLocal(new Date());
+    if (dateTo !== today) return null;
+    for (const r of QUICK_RANGES) {
+      if (r.days == null) continue;
+      const from = new Date();
+      from.setDate(new Date().getDate() - r.days);
+      if (dateFrom === ymdLocal(from)) return r.id;
+    }
+    return null;
+  }, [dateFrom, dateTo]);
 
   const q = searchTerm.trim().toLowerCase();
   const filtered = rows.filter((r) => {
@@ -325,6 +366,22 @@ export function IntegrationLogPanel() {
               <Download className="w-4 h-4 mr-2" />
               Xuất CSV
             </Button>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {QUICK_RANGES.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => applyQuickRange(r)}
+                className={`rounded-full border px-3 py-1 text-xs transition-colors ${
+                  activeQuickRange === r.id
+                    ? 'border-primary/60 bg-primary/15 text-primary'
+                    : 'border-border text-muted-foreground hover:text-foreground hover:border-primary/40'
+                }`}
+              >
+                {r.label}
+              </button>
+            ))}
           </div>
         </div>
 

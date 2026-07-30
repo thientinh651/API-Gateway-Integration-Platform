@@ -19,15 +19,8 @@ pub struct DashboardStatsQuery {
     pub hours: Option<i32>,
 }
 
-const ALLOWED_WINDOWS: [i32; 5] = [1, 24, 72, 168, 744];
-
 pub fn normalize_dashboard_hours(raw: Option<i32>) -> i32 {
-    let h = raw.unwrap_or(24);
-    if ALLOWED_WINDOWS.contains(&h) {
-        h
-    } else {
-        24
-    }
+    raw.unwrap_or(24).clamp(1, 8760)
 }
 
 #[derive(Debug, Serialize)]

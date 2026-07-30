@@ -346,7 +346,6 @@ export function TrafficLogPanel({ clientKeyFilter, onClearClientKey }: Props) {
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[11px] text-muted-foreground mr-1">Khoảng nhanh:</span>
             {QUICK_RANGES.map((r) => (
               <button
                 key={r.id}

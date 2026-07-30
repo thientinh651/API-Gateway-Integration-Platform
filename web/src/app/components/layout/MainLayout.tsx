@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { Outlet } from 'react-router';
 import { useAdminAuth } from '../../../contexts/AdminAuthContext';
 import { Sidebar } from './Sidebar';
@@ -8,12 +8,17 @@ import { ScrollToTopButton } from './ScrollToTopButton';
 export function MainLayout() {
   const { user } = useAdminAuth();
   const mainRef = useRef<HTMLElement>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+
   return (
     <div className="flex h-screen overflow-hidden">
-      {user ? <Sidebar /> : null}
+      {user ? <Sidebar open={sidebarOpen} /> : null}
       <main ref={mainRef} className="flex-grow overflow-y-auto bg-background relative">
         <div className="pointer-events-none absolute inset-0 tech-grid-bg-subtle opacity-40" aria-hidden />
-        <Header />
+        <Header
+          sidebarOpen={sidebarOpen}
+          onToggleSidebar={user ? () => setSidebarOpen((v) => !v) : undefined}
+        />
         <div
           className={
             user

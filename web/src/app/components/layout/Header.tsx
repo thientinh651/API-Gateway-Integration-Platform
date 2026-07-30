@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
-import { FileCode, Layers, LayoutDashboard } from 'lucide-react';
+import { FileCode, Layers, LayoutDashboard, PanelLeftClose, PanelLeft } from 'lucide-react';
 import { MobileNav } from './MobileNav';
 import { WorkspaceSwitcher } from '../workspace/WorkspaceSwitcher';
 import {
@@ -28,7 +28,12 @@ const GUEST_LINKS = [
   { to: '/api-docs', label: 'Docs', icon: FileCode },
 ];
 
-export function Header() {
+type Props = {
+  sidebarOpen?: boolean;
+  onToggleSidebar?: () => void;
+};
+
+export function Header({ sidebarOpen = true, onToggleSidebar }: Props) {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, clearUser } = useAdminAuth();
@@ -54,6 +59,19 @@ export function Header() {
     <header className="min-h-14 border-b border-border/80 flex items-center justify-between gap-3 px-4 sm:px-6 lg:px-8 py-2 sticky top-0 bg-background/85 backdrop-blur-xl z-20 pt-[max(0.5rem,env(safe-area-inset-top))] shadow-[0_1px_0_rgba(249,115,22,0.08)]">
       <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
         <MobileNav />
+        {user && onToggleSidebar ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="hidden lg:inline-flex shrink-0 border-border h-9 w-9"
+            onClick={onToggleSidebar}
+            aria-label={sidebarOpen ? 'Ẩn menu bên trái' : 'Hiện menu bên trái'}
+            title={sidebarOpen ? 'Ẩn menu' : 'Hiện menu'}
+          >
+            {sidebarOpen ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeft className="w-4 h-4" />}
+          </Button>
+        ) : null}
         {user ? (
           <h2 className="text-xs sm:text-sm font-semibold uppercase tracking-widest text-muted-foreground truncate">
             <span className="sm:hidden">Dashboard</span>
