@@ -59,9 +59,18 @@ impl RouteProxyPolicy {
     }
 }
 
+/// Methods an toàn khi gửi lại (auto-retry / DLQ / Replay).
+/// POST/PATCH thay đổi trạng thái — không xếp DLQ cũng không cho Replay (tránh trừ tiền hai lần).
 pub fn method_idempotent(method: &Method) -> bool {
     matches!(
         method.as_str(),
+        "GET" | "HEAD" | "PUT" | "DELETE" | "OPTIONS" | "TRACE"
+    )
+}
+
+pub fn method_idempotent_str(method: &str) -> bool {
+    matches!(
+        method.trim().to_ascii_uppercase().as_str(),
         "GET" | "HEAD" | "PUT" | "DELETE" | "OPTIONS" | "TRACE"
     )
 }
@@ -538,8 +547,9 @@ pub async fn forward_with_policy(
         }
     }
 
+    // Chỉ xếp DLQ khi method an toàn gửi lại — khớp policy auto-retry.
     let mut queued_id = None;
-    if dlq_enabled(toggles, policy) {
+    if dlq_enabled(toggles, policy) && method_idempotent(method) {
         let id = Uuid::new_v4().to_string();
         let headers_map: HashMap<String, String> = headers
             .iter()
@@ -568,6 +578,13 @@ pub async fn forward_with_policy(
             })
             .await;
         queued_id = Some(id);
+    } else if dlq_enabled(toggles, policy) && !method_idempotent(method) {
+        tracing::info!(
+            method = %method,
+            path = %client_path,
+            reason = %last_reason,
+            "skip DLQ enqueue — non-idempotent method (avoid replay side effects)"
+        );
     }
 
     UpstreamResponse {
@@ -652,6 +669,15 @@ pub fn spawn_dlq_replay_worker(pool: PgPool) {
             }
             let items = queue.list_oldest(DLQ_WORKER_BATCH).await;
             for item in items {
+                if !method_idempotent_str(&item.method) {
+                    let _ = queue.mark_failed_permanent(item.tenant_id, &item.id).await;
+                    tracing::warn!(
+                        queue_id = %item.id,
+                        method = %item.method,
+                        "dlq_worker skip non-idempotent method — marked failed_permanent"
+                    );
+                    continue;
+                }
                 if item.retry_attempts >= DLQ_WORKER_MAX_AUTO_ATTEMPTS {
                     let _ = queue.mark_failed_permanent(item.tenant_id, &item.id).await;
                     continue;
@@ -759,5 +785,16 @@ mod tests {
             &policy,
             true
         ));
+    }
+
+    #[test]
+    fn post_and_patch_not_idempotent_for_dlq() {
+        assert!(!method_idempotent(&Method::POST));
+        assert!(!method_idempotent(&Method::PATCH));
+        assert!(!method_idempotent_str("post"));
+        assert!(!method_idempotent_str("PATCH"));
+        assert!(method_idempotent(&Method::GET));
+        assert!(method_idempotent(&Method::PUT));
+        assert!(method_idempotent_str("delete"));
     }
 }

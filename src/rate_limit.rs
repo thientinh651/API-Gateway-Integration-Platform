@@ -18,7 +18,7 @@ pub const OAUTH_TOKEN_IP_PER_MIN: u32 = 50;
 
 const RL_KEY_PREFIX: &str = "gw:rl:";
 const RL_TTL_SECS: u64 = 120;
-
+//Trừ token trên redis
 const TOKEN_BUCKET_LUA: &str = r#"
 local key = KEYS[1]
 local now = tonumber(ARGV[1])

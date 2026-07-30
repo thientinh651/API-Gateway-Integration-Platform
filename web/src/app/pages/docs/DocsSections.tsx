@@ -638,12 +638,13 @@ curl -sS -i "${DEMO_HOST}/v1/api/demo/get" \\
                 {
                   field: 'Queue on failure',
                   value: 'bật',
-                  note: 'Sau khi retry vẫn thất bại, request được lưu vào DLQ (PostgreSQL)',
+                  note: 'Sau khi retry vẫn thất bại, request được lưu vào DLQ (PostgreSQL). Chỉ method idempotent (GET/PUT/DELETE…) — POST/PATCH không vào DLQ.',
                 },
               ]}
             />
             <ExpectBox>
-              Sau khi lưu, các request thất bại đủ điều kiện sẽ xuất hiện trong Proxy Queue.
+              Sau khi lưu, các request thất bại đủ điều kiện (method an toàn gửi lại) sẽ xuất hiện trong Proxy
+              Queue. POST/PATCH timeout chỉ trả lỗi cho client + ghi log, không xếp DLQ.
             </ExpectBox>
           </HowToStep>
 
@@ -655,6 +656,7 @@ curl -sS -i "${DEMO_HOST}/v1/api/demo/get" \\
             <p>
               Mở danh sách bản ghi lỗi, chọn bản ghi cần xử lý, rồi nhấn{' '}
               <strong className="text-white">Retry / Replay</strong> (yêu cầu quyền Operator trở lên).
+              Gateway từ chối Replay POST/PATCH để tránh gửi lại lệnh thay đổi trạng thái.
             </p>
             <ExpectBox>
               Replay thành công khi upstream đã hoạt động trở lại — bản ghi sẽ được xử lý xong.

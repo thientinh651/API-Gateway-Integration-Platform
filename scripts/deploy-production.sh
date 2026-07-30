@@ -28,7 +28,20 @@ wait_port_free() {
 
 echo "==> cargo build --release"
 cd "$ROOT"
-cargo build --release
+# Cursor/sandbox có thể set CARGO_TARGET_DIR ngoài repo — ép ghi vào $ROOT/target
+# để systemd ExecStart=/root/avaso-gateway/target/release/avaso-gateway nhận binary mới.
+unset CARGO_TARGET_DIR || true
+cargo build --release --target-dir "$ROOT/target"
+BIN="$ROOT/target/release/avaso-gateway"
+if [[ ! -x "$BIN" ]]; then
+  echo "ERROR: missing binary $BIN"
+  exit 1
+fi
+if ! strings "$BIN" | grep -q '/testAPI/empty'; then
+  echo "ERROR: binary thiếu mock route /testAPI/empty — build sai target dir?"
+  exit 1
+fi
+echo "==> binary OK: $(stat -c '%y %s' "$BIN")"
 
 echo "==> npm run build (web/dist)"
 cd "$ROOT/web"
@@ -56,6 +69,11 @@ if command -v systemctl >/dev/null 2>&1; then
     exit 1
   fi
   echo "==> health OK"
+  if ! curl -sfS --connect-timeout 3 "http://127.0.0.1:${LISTEN_PORT}/api/testAPI/empty" | grep -q '"result":\[\]'; then
+    echo "WARN: /api/testAPI/empty chưa trả result:[] — kiểm tra mock_api mount"
+  else
+    echo "==> mock /api/testAPI/empty OK"
+  fi
 else
   echo "WARN: systemctl not found — restart gateway process manually"
 fi

@@ -49,9 +49,22 @@ function canRetryDlq(status: string | undefined | null) {
   return s === 'pending' || s === 'failed_permanent';
 }
 
-function retryDisabledTitle(status: DlqItemStatus, canMutate: boolean): string | undefined {
+/** Khớp `method_idempotent` phía Gateway — không Replay POST/PATCH. */
+function methodIdempotentForDlq(method: string | undefined | null): boolean {
+  const m = (method ?? '').trim().toUpperCase();
+  return ['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS', 'TRACE'].includes(m);
+}
+
+function retryDisabledTitle(
+  status: DlqItemStatus,
+  canMutate: boolean,
+  method?: string,
+): string | undefined {
   if (!canMutate) return 'Cần quyền Operator hoặc Admin';
   if (status === 'replayed') return 'Đã replay — không retry lại (idempotent)';
+  if (!methodIdempotentForDlq(method)) {
+    return 'Không Replay method không idempotent (POST/PATCH…) — đối soát Upstream thay vì gửi lại';
+  }
   return undefined;
 }
 
@@ -196,7 +209,8 @@ function ProxyQueueAdmin() {
               {items.map((item) => {
                 const isSelected = selected.has(item.id);
                 const dlqStatus = normalizeDlqStatus(item.status);
-                const retryAllowed = canMutate && canRetryDlq(item.status);
+                const methodSafe = methodIdempotentForDlq(item.method);
+                const retryAllowed = canMutate && canRetryDlq(item.status) && methodSafe;
                 return (
                 <tr
                   key={item.id}
@@ -257,7 +271,7 @@ function ProxyQueueAdmin() {
                           variant="outline"
                           className="border-border"
                           disabled={busyId === item.id || bulkBusy || !retryAllowed}
-                          title={retryDisabledTitle(dlqStatus, canMutate)}
+                          title={retryDisabledTitle(dlqStatus, canMutate, item.method)}
                           onClick={async () => {
                             setBusyId(item.id);
                             try {
@@ -322,7 +336,8 @@ function ProxyQueueAdmin() {
                   <td colSpan={colSpan} className="px-4 py-8 text-center text-muted-foreground text-sm max-w-lg mx-auto">
                     <p className="mb-2">Chưa có bản ghi</p>
                     <p className="text-xs leading-relaxed">
-                      Retry xóa entry khỏi queue (idempotent — replay 2 lần không được). Bật DLQ trong Settings.
+                      Chỉ method idempotent (GET/PUT/DELETE…) vào DLQ và được Replay. POST/PATCH thất bại
+                      không xếp hàng — đối soát Upstream/log để tránh trừ tiền hai lần. Bật DLQ trong Settings.
                     </p>
                   </td>
                 </tr>

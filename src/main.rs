@@ -5611,6 +5611,20 @@ async fn api_retry_proxy_queue(
         )
             .into_response();
     };
+    // POST/PATCH… không Replay — tránh gửi lại lệnh thay đổi trạng thái (vd trừ tiền).
+    if !proxy_ext::method_idempotent_str(&item.method) {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "replay_not_allowed",
+                "message": format!(
+                    "Không Replay method {} từ DLQ — method không idempotent; đối soát Upstream/log thay vì gửi lại",
+                    item.method
+                ),
+            })),
+        )
+            .into_response();
+    }
     let route = match db::fetch_route_by_id(&st.pool, item.route_id).await {
         Ok(Some(r)) if r.tenant_id == ctx.tenant_id => r,
         _ => {
