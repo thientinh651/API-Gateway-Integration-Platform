@@ -1,13 +1,14 @@
 //! Request transform, upstream retry, persistent DLQ (PostgreSQL) + background replay worker.
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -51,11 +52,7 @@ impl RouteProxyPolicy {
             transform_add_headers,
             transform_remove_headers,
             retry_max: row.retry_max.max(0) as u32,
-            retry_on_status: row
-                .retry_on_status
-                .iter()
-                .map(|&c| c as u16)
-                .collect(),
+            retry_on_status: row.retry_on_status.iter().map(|&c| c as u16).collect(),
             retry_on_timeout: row.retry_on_timeout != 0,
             queue_on_failure: row.queue_on_failure != 0,
         }
@@ -169,7 +166,7 @@ pub struct ProxyQueueItem {
 }
 
 mod base64_bytes {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(v: &Vec<u8>, s: S) -> Result<S::Ok, S::Error> {
@@ -289,6 +286,7 @@ impl ProxyQueue {
         rows.into_iter().filter_map(row_to_item).collect()
     }
 
+    // Đọc gateway_proxy_queue (pending|failed_permanent)
     pub async fn fetch_for_retry(&self, tenant_id: i64, id: &str) -> Option<ProxyQueueItem> {
         let sql = format!(
             "{QUEUE_SELECT} FROM gateway_proxy_queue WHERE tenant_id = $1 AND id = $2 AND status IN ('pending', 'failed_permanent')"
@@ -308,10 +306,12 @@ impl ProxyQueue {
             "DELETE FROM gateway_proxy_queue WHERE tenant_id = $1 AND id = $2 RETURNING id, tenant_id, route_id, method, path, upstream_url, headers_json, body_b64, failure_reason, retry_attempts, created_at_unix, status, replayed_at::text"
         );
         let row = sqlx::query_as::<_, QueueRow>(&sql)
-        .fetch_optional(&self.pool)
-        .await
-        .ok()
-        .flatten()?;
+            .bind(tenant_id)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()?;
         row_to_item(row)
     }
 
@@ -386,6 +386,7 @@ impl ProxyQueue {
         .unwrap_or(false)
     }
 
+    // UPDATE status=replayed
     pub async fn mark_replayed(&self, tenant_id: i64, id: &str) -> bool {
         sqlx::query(
             "UPDATE gateway_proxy_queue SET status = $3, replayed_at = NOW() WHERE tenant_id = $1 AND id = $2",
@@ -400,18 +401,17 @@ impl ProxyQueue {
     }
 
     pub async fn mark_failed_permanent(&self, tenant_id: i64, id: &str) -> bool {
-        sqlx::query(
-            "UPDATE gateway_proxy_queue SET status = $3 WHERE tenant_id = $1 AND id = $2",
-        )
-        .bind(tenant_id)
-        .bind(id)
-        .bind(DLQ_STATUS_FAILED_PERMANENT)
-        .execute(&self.pool)
-        .await
-        .map(|r| r.rows_affected() > 0)
-        .unwrap_or(false)
+        sqlx::query("UPDATE gateway_proxy_queue SET status = $3 WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant_id)
+            .bind(id)
+            .bind(DLQ_STATUS_FAILED_PERMANENT)
+            .execute(&self.pool)
+            .await
+            .map(|r| r.rows_affected() > 0)
+            .unwrap_or(false)
     }
 
+    // Tăng retry_attempts / pending hoặc failed_permanent
     pub async fn record_retry_failure(&self, tenant_id: i64, id: &str, attempts: u32) -> bool {
         let status = if attempts >= DLQ_WORKER_MAX_AUTO_ATTEMPTS {
             DLQ_STATUS_FAILED_PERMANENT
@@ -476,8 +476,8 @@ pub async fn forward_with_policy(
 ) -> UpstreamResponse {
     apply_request_transform(&mut headers, policy, toggles.transform_enabled);
 
-    let retry_allowed =
-        toggles.retry_enabled && policy.retry_max > 0 && method_idempotent(method);
+    // Tối đa 1+retry_max (retry_enabled + method idempotent)
+    let retry_allowed = toggles.retry_enabled && policy.retry_max > 0 && method_idempotent(method);
     let max_attempts = if retry_allowed {
         1 + policy.retry_max
     } else {
@@ -495,6 +495,7 @@ pub async fn forward_with_policy(
         if attempt > 0 {
             backoff(attempt - 1).await;
         }
+        // Forward upstream
         match send_upstream_once(http, method, url, &headers, &body, timeout_secs).await {
             Ok((status, hdrs, bytes)) => {
                 last_status = status;
@@ -523,10 +524,7 @@ pub async fn forward_with_policy(
             Err(UpstreamFailure::Timeout) => {
                 last_status = StatusCode::GATEWAY_TIMEOUT;
                 last_reason = "upstream_timeout".into();
-                if retry_allowed
-                    && policy.retry_on_timeout
-                    && attempt + 1 < max_attempts
-                {
+                if retry_allowed && policy.retry_on_timeout && attempt + 1 < max_attempts {
                     continue;
                 }
             }
@@ -545,8 +543,13 @@ pub async fn forward_with_policy(
         let id = Uuid::new_v4().to_string();
         let headers_map: HashMap<String, String> = headers
             .iter()
-            .filter_map(|(k, v)| v.to_str().ok().map(|s| (k.as_str().to_string(), s.to_string())))
+            .filter_map(|(k, v)| {
+                v.to_str()
+                    .ok()
+                    .map(|s| (k.as_str().to_string(), s.to_string()))
+            })
             .collect();
+        // INSERT gateway_proxy_queue (pending)
         queue
             .push(ProxyQueueItem {
                 id: id.clone(),
@@ -576,6 +579,7 @@ pub async fn forward_with_policy(
     }
 }
 
+// Gửi lại request gốc
 pub async fn replay_queue_item(
     http: &Client,
     item: &ProxyQueueItem,
@@ -592,7 +596,15 @@ pub async fn replay_queue_item(
         }
     }
     let body = Bytes::from(item.body.clone());
-    match send_upstream_once(http, &method, &item.upstream_url, &headers, &body, timeout_secs).await
+    match send_upstream_once(
+        http,
+        &method,
+        &item.upstream_url,
+        &headers,
+        &body,
+        timeout_secs,
+    )
+    .await
     {
         Ok((status, _, bytes)) => Ok((status, bytes.to_vec())),
         Err(UpstreamFailure::Timeout) => Err("upstream_timeout".into()),
@@ -641,9 +653,7 @@ pub fn spawn_dlq_replay_worker(pool: PgPool) {
             let items = queue.list_oldest(DLQ_WORKER_BATCH).await;
             for item in items {
                 if item.retry_attempts >= DLQ_WORKER_MAX_AUTO_ATTEMPTS {
-                    let _ = queue
-                        .mark_failed_permanent(item.tenant_id, &item.id)
-                        .await;
+                    let _ = queue.mark_failed_permanent(item.tenant_id, &item.id).await;
                     continue;
                 }
                 let timeout = route_timeout_secs(&pool, item.route_id).await;
@@ -744,6 +754,10 @@ mod tests {
     fn not_queueable_2xx_or_404() {
         let policy = policy_with_retry_status();
         assert!(!is_queueable_http_status(StatusCode::OK, &policy, true));
-        assert!(!is_queueable_http_status(StatusCode::NOT_FOUND, &policy, true));
+        assert!(!is_queueable_http_status(
+            StatusCode::NOT_FOUND,
+            &policy,
+            true
+        ));
     }
 }

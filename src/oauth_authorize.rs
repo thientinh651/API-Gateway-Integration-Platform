@@ -1,4 +1,6 @@
 //! OAuth2 Authorization Code + consent for third-party apps.
+#![allow(dead_code)]
+#![allow(private_interfaces)]
 
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
@@ -49,7 +51,9 @@ pub fn normalize_redirect_uris(uris: &[String]) -> Vec<String> {
 
 pub fn valid_redirect_uri(uri: &str) -> bool {
     let t = uri.trim();
-    t.starts_with("https://") || t.starts_with("http://127.0.0.1") || t.starts_with("http://localhost")
+    t.starts_with("https://")
+        || t.starts_with("http://127.0.0.1")
+        || t.starts_with("http://localhost")
 }
 
 pub async fn list_third_party_apps(
@@ -307,7 +311,7 @@ pub async fn create_authorization_code(
     Ok(code)
 }
 
-struct AuthCodeRow {
+pub(crate) struct AuthCodeRow {
     app_client_id: String,
     user_id: i64,
     tenant_id: i64,

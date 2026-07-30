@@ -1,17 +1,17 @@
 //! PostgreSQL persistence for routes, data-plane API key hashes, and admin API key hash.
+#![allow(dead_code)]
 
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 use sha2::{Digest, Sha256};
-use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 
-use crate::{crypto, RouteRow, YamlBootstrap};
+use crate::{RouteRow, YamlBootstrap, crypto};
 
-pub const ROUTE_SELECT: &str =
-    "id, path, target, timeout_secs, rate_limit_per_min, tenant_id, transform_add_headers, transform_remove_headers, retry_max, retry_on_status, retry_on_timeout, queue_on_failure, allowed_methods";
+pub const ROUTE_SELECT: &str = "id, path, target, timeout_secs, rate_limit_per_min, tenant_id, transform_add_headers, transform_remove_headers, retry_max, retry_on_status, retry_on_timeout, queue_on_failure, allowed_methods";
 
 /// Runtime credentials for data-plane OAuth2 client_credentials.
 #[derive(Debug, Clone, Default)]
@@ -68,6 +68,7 @@ pub fn hash_client_secret(secret: &str) -> Result<String, argon2::password_hash:
     hash_password(secret)
 }
 
+/// Tìm client và so khớp secret_hash
 pub fn verify_client_secret(secret: &str, secret_hash: &str) -> bool {
     verify_password(secret, secret_hash)
 }
@@ -127,16 +128,14 @@ pub async fn bootstrap_admin_user_if_empty(pool: &PgPool) -> Result<(), sqlx::Er
         sqlx::Error::Configuration(format!("argon2 hash admin password: {e}").into())
     })?;
     let tenant_id = create_personal_tenant(pool, username.trim()).await?;
-    let admin_email = std::env::var("ADMIN_EMAIL")
-        .ok()
-        .and_then(|e| {
-            let t = e.trim();
-            if t.is_empty() || !t.contains('@') {
-                None
-            } else {
-                Some(t.to_ascii_lowercase())
-            }
-        });
+    let admin_email = std::env::var("ADMIN_EMAIL").ok().and_then(|e| {
+        let t = e.trim();
+        if t.is_empty() || !t.contains('@') {
+            None
+        } else {
+            Some(t.to_ascii_lowercase())
+        }
+    });
     sqlx::query(
         "INSERT INTO dashboard_users (username, password_hash, role, tenant_id, is_active, email)
          VALUES ($1, $2, 'admin', $3, 1, $4)",
@@ -222,17 +221,7 @@ pub async fn bootstrap_from_yaml_if_empty(
             };
             let client_id = random_api_key_id();
             let secret = random_secret_key();
-            let _ = insert_oauth_client(
-                pool,
-                &name,
-                &client_id,
-                &secret,
-                1,
-                "app",
-                0,
-                0,
-            )
-            .await?;
+            let _ = insert_oauth_client(pool, &name, &client_id, &secret, 1, "app", 0, 0).await?;
             tracing::info!(
                 client_id = %client_id,
                 name = %name,
@@ -342,11 +331,10 @@ pub async fn migrate_personal_admin_tenants(pool: &PgPool) -> Result<(), sqlx::E
 
 /// On-prem: gộp mọi user về tenant `default` (id 1), xóa membership collaborator.
 pub async fn migrate_on_prem_organization(pool: &PgPool) -> Result<(), sqlx::Error> {
-    let done: Option<String> = sqlx::query_scalar(
-        "SELECT v FROM gateway_settings WHERE k = 'on_prem_org_v1'",
-    )
-    .fetch_optional(pool)
-    .await?;
+    let done: Option<String> =
+        sqlx::query_scalar("SELECT v FROM gateway_settings WHERE k = 'on_prem_org_v1'")
+            .fetch_optional(pool)
+            .await?;
     if done.as_deref() == Some("done") {
         return Ok(());
     }
@@ -375,11 +363,10 @@ pub async fn migrate_on_prem_organization(pool: &PgPool) -> Result<(), sqlx::Err
 
 /// Một admin giữ tenant 1 (dữ liệu hiện tại); mọi user khác → workspace riêng.
 pub async fn migrate_workspace_isolation(pool: &PgPool) -> Result<(), sqlx::Error> {
-    let done: Option<String> = sqlx::query_scalar(
-        "SELECT v FROM gateway_settings WHERE k = 'workspace_isolation_v1'",
-    )
-    .fetch_optional(pool)
-    .await?;
+    let done: Option<String> =
+        sqlx::query_scalar("SELECT v FROM gateway_settings WHERE k = 'workspace_isolation_v1'")
+            .fetch_optional(pool)
+            .await?;
     if done.as_deref() == Some("done") {
         return Ok(());
     }
@@ -416,13 +403,11 @@ pub async fn migrate_workspace_isolation(pool: &PgPool) -> Result<(), sqlx::Erro
             .bind(uid)
             .execute(pool)
             .await?;
-        sqlx::query(
-            "UPDATE gateway_client_keys SET tenant_id = $1 WHERE owner_user_id = $2",
-        )
-        .bind(tid)
-        .bind(uid)
-        .execute(pool)
-        .await?;
+        sqlx::query("UPDATE gateway_client_keys SET tenant_id = $1 WHERE owner_user_id = $2")
+            .bind(tid)
+            .bind(uid)
+            .execute(pool)
+            .await?;
         tracing::info!(
             user_id = uid,
             username = %username,
@@ -684,13 +669,12 @@ pub async fn admin_username_taken(
     username: &str,
     except_id: i64,
 ) -> Result<bool, sqlx::Error> {
-    let n: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM dashboard_users WHERE username = $1 AND id <> $2",
-    )
-    .bind(username)
-    .bind(except_id)
-    .fetch_one(pool)
-    .await?;
+    let n: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM dashboard_users WHERE username = $1 AND id <> $2")
+            .bind(username)
+            .bind(except_id)
+            .fetch_one(pool)
+            .await?;
     Ok(n > 0)
 }
 
@@ -704,58 +688,50 @@ pub async fn update_own_profile(
     password_hash: Option<&str>,
 ) -> Result<u64, sqlx::Error> {
     let affected = match (password_hash, email) {
-        (Some(h), Some(em)) => {
-            sqlx::query(
-                "UPDATE dashboard_users SET username = $1, email = $2, password_hash = $3
+        (Some(h), Some(em)) => sqlx::query(
+            "UPDATE dashboard_users SET username = $1, email = $2, password_hash = $3
                  WHERE id = $4 AND COALESCE(tenant_id, 1) = $5 AND is_active = 1",
-            )
-            .bind(username)
-            .bind(em)
-            .bind(h)
-            .bind(id)
-            .bind(tenant_id)
-            .execute(pool)
-            .await?
-            .rows_affected()
-        }
-        (Some(h), None) => {
-            sqlx::query(
-                "UPDATE dashboard_users SET username = $1, password_hash = $2
+        )
+        .bind(username)
+        .bind(em)
+        .bind(h)
+        .bind(id)
+        .bind(tenant_id)
+        .execute(pool)
+        .await?
+        .rows_affected(),
+        (Some(h), None) => sqlx::query(
+            "UPDATE dashboard_users SET username = $1, password_hash = $2
                  WHERE id = $3 AND COALESCE(tenant_id, 1) = $4 AND is_active = 1",
-            )
-            .bind(username)
-            .bind(h)
-            .bind(id)
-            .bind(tenant_id)
-            .execute(pool)
-            .await?
-            .rows_affected()
-        }
-        (None, Some(em)) => {
-            sqlx::query(
-                "UPDATE dashboard_users SET username = $1, email = $2
+        )
+        .bind(username)
+        .bind(h)
+        .bind(id)
+        .bind(tenant_id)
+        .execute(pool)
+        .await?
+        .rows_affected(),
+        (None, Some(em)) => sqlx::query(
+            "UPDATE dashboard_users SET username = $1, email = $2
                  WHERE id = $3 AND COALESCE(tenant_id, 1) = $4 AND is_active = 1",
-            )
-            .bind(username)
-            .bind(em)
-            .bind(id)
-            .bind(tenant_id)
-            .execute(pool)
-            .await?
-            .rows_affected()
-        }
-        (None, None) => {
-            sqlx::query(
-                "UPDATE dashboard_users SET username = $1
+        )
+        .bind(username)
+        .bind(em)
+        .bind(id)
+        .bind(tenant_id)
+        .execute(pool)
+        .await?
+        .rows_affected(),
+        (None, None) => sqlx::query(
+            "UPDATE dashboard_users SET username = $1
                  WHERE id = $2 AND COALESCE(tenant_id, 1) = $3 AND is_active = 1",
-            )
-            .bind(username)
-            .bind(id)
-            .bind(tenant_id)
-            .execute(pool)
-            .await?
-            .rows_affected()
-        }
+        )
+        .bind(username)
+        .bind(id)
+        .bind(tenant_id)
+        .execute(pool)
+        .await?
+        .rows_affected(),
     };
     Ok(affected)
 }
@@ -895,18 +871,13 @@ pub async fn update_admin_user(
     Ok(affected)
 }
 
-pub async fn delete_admin_user(
-    pool: &PgPool,
-    id: i64,
-    tenant_id: i64,
-) -> Result<u64, sqlx::Error> {
-    let r = sqlx::query(
-        "DELETE FROM dashboard_users WHERE id = $1 AND COALESCE(tenant_id, 1) = $2",
-    )
-    .bind(id)
-    .bind(tenant_id)
-    .execute(pool)
-    .await?;
+pub async fn delete_admin_user(pool: &PgPool, id: i64, tenant_id: i64) -> Result<u64, sqlx::Error> {
+    let r =
+        sqlx::query("DELETE FROM dashboard_users WHERE id = $1 AND COALESCE(tenant_id, 1) = $2")
+            .bind(id)
+            .bind(tenant_id)
+            .execute(pool)
+            .await?;
     Ok(r.rows_affected())
 }
 
@@ -1248,13 +1219,12 @@ pub async fn client_key_traffic_stats(
     hours: i32,
 ) -> Result<ClientKeyTrafficStats, sqlx::Error> {
     let hours = hours.clamp(1, 744);
-    let exists: Option<i64> = sqlx::query_scalar(
-        "SELECT id FROM gateway_client_keys WHERE id = $1 AND tenant_id = $2",
-    )
-    .bind(client_key_id)
-    .bind(tenant_id)
-    .fetch_optional(pool)
-    .await?;
+    let exists: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM gateway_client_keys WHERE id = $1 AND tenant_id = $2")
+            .bind(client_key_id)
+            .bind(tenant_id)
+            .fetch_optional(pool)
+            .await?;
     if exists.is_none() {
         return Ok(ClientKeyTrafficStats {
             hours,
@@ -1422,7 +1392,11 @@ pub async fn list_audit_logs_filtered(
     }
     if let Some(s) = search.filter(|s| !s.trim().is_empty()) {
         let pat = format!("%{}%", s.trim());
-        q = q.bind(pat.clone()).bind(pat.clone()).bind(pat.clone()).bind(pat);
+        q = q
+            .bind(pat.clone())
+            .bind(pat.clone())
+            .bind(pat.clone())
+            .bind(pat);
     }
     if let Some(d) = date_from.filter(|d| !d.trim().is_empty()) {
         q = q.bind(d.trim().to_string());
@@ -1440,9 +1414,9 @@ pub async fn list_routes_for_tenant(
     pool: &PgPool,
     tenant_id: i64,
 ) -> Result<Vec<RouteRow>, sqlx::Error> {
-    sqlx::query_as::<_, RouteRow>(
-        &format!("SELECT {ROUTE_SELECT} FROM gateway_routes WHERE tenant_id = $1 ORDER BY path"),
-    )
+    sqlx::query_as::<_, RouteRow>(&format!(
+        "SELECT {ROUTE_SELECT} FROM gateway_routes WHERE tenant_id = $1 ORDER BY path"
+    ))
     .bind(tenant_id)
     .fetch_all(pool)
     .await
@@ -1453,9 +1427,9 @@ pub async fn fetch_route_by_id_tenant(
     id: i64,
     tenant_id: i64,
 ) -> Result<Option<RouteRow>, sqlx::Error> {
-    sqlx::query_as::<_, RouteRow>(
-        &format!("SELECT {ROUTE_SELECT} FROM gateway_routes WHERE id = $1 AND tenant_id = $2"),
-    )
+    sqlx::query_as::<_, RouteRow>(&format!(
+        "SELECT {ROUTE_SELECT} FROM gateway_routes WHERE id = $1 AND tenant_id = $2"
+    ))
     .bind(id)
     .bind(tenant_id)
     .fetch_optional(pool)
@@ -1463,9 +1437,9 @@ pub async fn fetch_route_by_id_tenant(
 }
 
 pub async fn load_route_rows(pool: &PgPool) -> Result<Vec<RouteRow>, sqlx::Error> {
-    sqlx::query_as::<_, RouteRow>(
-        &format!("SELECT {ROUTE_SELECT} FROM gateway_routes ORDER BY path"),
-    )
+    sqlx::query_as::<_, RouteRow>(&format!(
+        "SELECT {ROUTE_SELECT} FROM gateway_routes ORDER BY path"
+    ))
     .fetch_all(pool)
     .await
 }
@@ -1477,11 +1451,9 @@ pub async fn load_client_key_hashes(pool: &PgPool) -> Result<Vec<String>, sqlx::
 }
 
 pub async fn load_admin_hash(pool: &PgPool) -> Result<String, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT v FROM gateway_settings WHERE k = 'admin_x_api_key_sha256' LIMIT 1",
-    )
-    .fetch_one(pool)
-    .await
+    sqlx::query_scalar("SELECT v FROM gateway_settings WHERE k = 'admin_x_api_key_sha256' LIMIT 1")
+        .fetch_one(pool)
+        .await
 }
 
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
@@ -1613,11 +1585,16 @@ pub async fn backfill_client_secret_hashes(pool: &PgPool) -> Result<u64, sqlx::E
                 .await?;
                 migrated += 1;
             }
-            Err(e) => tracing::error!(client_key_id = id, error = %e, "hash client secret backfill failed"),
+            Err(e) => {
+                tracing::error!(client_key_id = id, error = %e, "hash client secret backfill failed")
+            }
         }
     }
     if migrated > 0 {
-        tracing::info!(count = migrated, "migrated OAuth client secrets to Argon2id");
+        tracing::info!(
+            count = migrated,
+            "migrated OAuth client secrets to Argon2id"
+        );
     }
     Ok(migrated)
 }
@@ -1645,7 +1622,17 @@ pub async fn load_client_credentials(pool: &PgPool) -> Result<ClientCredentials,
 
     let mut creds = ClientCredentials::default();
     creds.user_token_versions = user_token_versions;
-    for (id, api_key, secret_enc, secret_hash, tenant_id, status, rate_limit_per_min, token_version) in rows {
+    for (
+        id,
+        api_key,
+        secret_enc,
+        secret_hash,
+        tenant_id,
+        status,
+        rate_limit_per_min,
+        token_version,
+    ) in rows
+    {
         let allowed_route_ids = allowlists.get(&id).cloned().unwrap_or_default();
         if status != "active" {
             if let Some(k) = api_key.filter(|s| !s.is_empty()) {
@@ -1707,15 +1694,18 @@ pub async fn load_client_credentials(pool: &PgPool) -> Result<ClientCredentials,
 pub async fn load_user_token_versions(
     pool: &PgPool,
 ) -> Result<std::collections::HashMap<i64, i32>, sqlx::Error> {
-    let rows: Vec<(i64, i32)> = sqlx::query_as(
-        "SELECT id, COALESCE(token_version, 0) FROM dashboard_users",
-    )
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<(i64, i32)> =
+        sqlx::query_as("SELECT id, COALESCE(token_version, 0) FROM dashboard_users")
+            .fetch_all(pool)
+            .await?;
     Ok(rows.into_iter().collect())
 }
 
-pub async fn bump_client_token_version(pool: &PgPool, client_key_id: i64, tenant_id: i64) -> Result<i32, sqlx::Error> {
+pub async fn bump_client_token_version(
+    pool: &PgPool,
+    client_key_id: i64,
+    tenant_id: i64,
+) -> Result<i32, sqlx::Error> {
     let row: Option<i32> = sqlx::query_scalar(
         "UPDATE gateway_client_keys SET token_version = COALESCE(token_version, 0) + 1
          WHERE id = $1 AND tenant_id = $2
@@ -1753,6 +1743,30 @@ async fn load_all_client_key_route_allowlists(
         map.entry(cid).or_default().push(rid);
     }
     Ok(map)
+}
+
+/// Resolve route ids → paths (tenant-scoped), preserving request order when possible.
+pub async fn fetch_route_paths_for_ids(
+    pool: &PgPool,
+    tenant_id: i64,
+    route_ids: &[i64],
+) -> Result<Vec<String>, sqlx::Error> {
+    if route_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id, path FROM gateway_routes WHERE tenant_id = $1 AND id = ANY($2)",
+    )
+    .bind(tenant_id)
+    .bind(route_ids)
+    .fetch_all(pool)
+    .await?;
+    let mut by_id: std::collections::HashMap<i64, String> =
+        rows.into_iter().collect();
+    Ok(route_ids
+        .iter()
+        .filter_map(|id| by_id.remove(id))
+        .collect())
 }
 
 pub async fn fetch_client_key_routes(
@@ -1800,15 +1814,14 @@ pub async fn set_client_key_routes(
         .bind(client_key_id)
         .execute(&mut *tx)
         .await?;
-    let valid_route_ids: std::collections::HashSet<i64> = sqlx::query_scalar(
-        "SELECT id FROM gateway_routes WHERE tenant_id = $1 AND id = ANY($2)",
-    )
-    .bind(tenant_id)
-    .bind(route_ids)
-    .fetch_all(&mut *tx)
-    .await?
-    .into_iter()
-    .collect();
+    let valid_route_ids: std::collections::HashSet<i64> =
+        sqlx::query_scalar("SELECT id FROM gateway_routes WHERE tenant_id = $1 AND id = ANY($2)")
+            .bind(tenant_id)
+            .bind(route_ids)
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .collect();
     for rid in route_ids {
         if valid_route_ids.contains(rid) {
             sqlx::query(
@@ -1831,9 +1844,8 @@ pub async fn rotate_client_key_secret(
     tenant_id: i64,
     new_secret: &str,
 ) -> Result<Option<String>, sqlx::Error> {
-    let hash = hash_client_secret(new_secret).map_err(|e| {
-        sqlx::Error::Configuration(format!("hash client secret: {e}").into())
-    })?;
+    let hash = hash_client_secret(new_secret)
+        .map_err(|e| sqlx::Error::Configuration(format!("hash client secret: {e}").into()))?;
     sqlx::query_scalar(
         "UPDATE gateway_client_keys SET secret_hash = $3, secret_encrypted = NULL
          WHERE id = $1 AND tenant_id = $2
@@ -2007,9 +2019,9 @@ pub async fn insert_route(
 }
 
 pub async fn fetch_route_by_id(pool: &PgPool, id: i64) -> Result<Option<RouteRow>, sqlx::Error> {
-    sqlx::query_as::<_, RouteRow>(
-        &format!("SELECT {ROUTE_SELECT} FROM gateway_routes WHERE id = $1"),
-    )
+    sqlx::query_as::<_, RouteRow>(&format!(
+        "SELECT {ROUTE_SELECT} FROM gateway_routes WHERE id = $1"
+    ))
     .bind(id)
     .fetch_optional(pool)
     .await
@@ -2254,9 +2266,8 @@ pub async fn insert_oauth_client(
     owner_user_id: i64,
     rate_limit_per_min: i32,
 ) -> Result<i64, sqlx::Error> {
-    let hash = hash_client_secret(secret_key).map_err(|e| {
-        sqlx::Error::Configuration(format!("hash client secret: {e}").into())
-    })?;
+    let hash = hash_client_secret(secret_key)
+        .map_err(|e| sqlx::Error::Configuration(format!("hash client secret: {e}").into()))?;
     let unique_row = format!("argon2id:{}", sha256_hex(api_key));
     sqlx::query_scalar(
         "INSERT INTO gateway_client_keys (name, api_key, secret_encrypted, secret_hash, secret_sha256_hex, tenant_id, integration_type, owner_user_id, status, rate_limit_per_min)
@@ -2885,7 +2896,10 @@ pub async fn traffic_denial_reasons(
     .await
 }
 
-pub async fn count_client_keys_for_tenant(pool: &PgPool, tenant_id: i64) -> Result<i64, sqlx::Error> {
+pub async fn count_client_keys_for_tenant(
+    pool: &PgPool,
+    tenant_id: i64,
+) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT COUNT(*) FROM gateway_client_keys WHERE tenant_id = $1")
         .bind(tenant_id)
         .fetch_one(pool)
@@ -2945,11 +2959,7 @@ pub async fn list_integration_snapshots_recent(
     .await
 }
 
-pub async fn delete_client_key(
-    pool: &PgPool,
-    id: i64,
-    tenant_id: i64,
-) -> Result<u64, sqlx::Error> {
+pub async fn delete_client_key(pool: &PgPool, id: i64, tenant_id: i64) -> Result<u64, sqlx::Error> {
     let r = sqlx::query("DELETE FROM gateway_client_keys WHERE id = $1 AND tenant_id = $2")
         .bind(id)
         .bind(tenant_id)
@@ -3234,7 +3244,11 @@ pub async fn list_sync_logs(
     .await
 }
 
-pub async fn prune_sync_logs(pool: &PgPool, tenant_id: i64, retain: i64) -> Result<(), sqlx::Error> {
+pub async fn prune_sync_logs(
+    pool: &PgPool,
+    tenant_id: i64,
+    retain: i64,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         "DELETE FROM sync_logs
          WHERE tenant_id = $1

@@ -2,10 +2,10 @@
 //! OAuth2 client_secret uses Argon2id one-way hash in `db::hash_client_secret`.
 
 use aes_gcm::{
-    aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
 };
-use base64::{engine::general_purpose::STANDARD as B64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
@@ -13,14 +13,12 @@ const NONCE_LEN: usize = 12;
 
 /// AES key for OAuth tokens (`INTEGRATION_MASTER_KEY`, else `CLIENT_KEY_MASTER_KEY`).
 pub fn integration_master_key_32() -> [u8; 32] {
-    let raw = std::env::var("INTEGRATION_MASTER_KEY").or_else(|_| {
-        std::env::var("CLIENT_KEY_MASTER_KEY")
-    }).unwrap_or_else(|_| {
-        tracing::warn!(
-            "INTEGRATION_MASTER_KEY unset — using dev default; set in production"
-        );
-        "dev-only-integration-master-change-me".into()
-    });
+    let raw = std::env::var("INTEGRATION_MASTER_KEY")
+        .or_else(|_| std::env::var("CLIENT_KEY_MASTER_KEY"))
+        .unwrap_or_else(|_| {
+            tracing::warn!("INTEGRATION_MASTER_KEY unset — using dev default; set in production");
+            "dev-only-integration-master-change-me".into()
+        });
     if raw.len() == 64 && raw.chars().all(|c| c.is_ascii_hexdigit()) {
         if let Ok(bytes) = hex::decode(&raw) {
             if bytes.len() == 32 {
@@ -68,9 +66,7 @@ pub fn decrypt_integration_config(blob_b64: &str) -> Result<String, String> {
 
 pub fn master_key_32() -> [u8; 32] {
     let raw = std::env::var("CLIENT_KEY_MASTER_KEY").unwrap_or_else(|_| {
-        tracing::warn!(
-            "CLIENT_KEY_MASTER_KEY unset — using dev default; set in production"
-        );
+        tracing::warn!("CLIENT_KEY_MASTER_KEY unset — using dev default; set in production");
         "dev-only-client-key-master-change-me".into()
     });
     if raw.len() == 64 && raw.chars().all(|c| c.is_ascii_hexdigit()) {

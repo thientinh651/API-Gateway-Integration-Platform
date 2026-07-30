@@ -1,8 +1,9 @@
 //! Admin session context, RBAC, tenant isolation, and audit helpers.
+#![allow(dead_code)]
 
 use axum::http::{HeaderMap, Method, StatusCode};
-use std::net::SocketAddr;
 use sqlx::PgPool;
+use std::net::SocketAddr;
 
 use crate::db::{self, AdminUserRow};
 use crate::json_error;
@@ -111,6 +112,7 @@ pub fn viewer_registration_enabled() -> bool {
 /// dashboard/metrics. Không users/settings/integrations/audit/queue/crypto và
 /// không mutate gì (trừ workspace/switch cho SaaS).
 pub fn rbac_allow(method: &Method, path: &str, role: &str) -> bool {
+    // Kiểm tra RBAC theo role
     let role = normalize_role(role);
     let p = api_path(path);
     let get = is_get(method);
@@ -197,7 +199,10 @@ pub fn rbac_allow(method: &Method, path: &str, role: &str) -> bool {
         if p.starts_with("/client-keys/") && get && p != "/client-keys/encrypted" {
             return true;
         }
-        if p.ends_with("/routes") && p.starts_with("/client-keys/") && (*method == Method::PUT || get) {
+        if p.ends_with("/routes")
+            && p.starts_with("/client-keys/")
+            && (*method == Method::PUT || get)
+        {
             return true;
         }
         if p.ends_with("/rotate") && p.starts_with("/client-keys/") && *method == Method::POST {
@@ -206,7 +211,10 @@ pub fn rbac_allow(method: &Method, path: &str, role: &str) -> bool {
         if p.ends_with("/traffic") && p.starts_with("/client-keys/") && get {
             return true;
         }
-        if p.ends_with("/revoke-tokens") && p.starts_with("/client-keys/") && *method == Method::POST {
+        if p.ends_with("/revoke-tokens")
+            && p.starts_with("/client-keys/")
+            && *method == Method::POST
+        {
             return true;
         }
         if p == "/oauth/tokens" && get {
@@ -276,7 +284,10 @@ pub fn client_ip_from_proxy_headers(headers: &HeaderMap) -> Option<String> {
             return Some(ip);
         }
     }
-    if let Some(v) = headers.get("cf-connecting-ip").and_then(|v| v.to_str().ok()) {
+    if let Some(v) = headers
+        .get("cf-connecting-ip")
+        .and_then(|v| v.to_str().ok())
+    {
         let ip = v.trim().to_string();
         if !ip.is_empty() {
             return Some(ip);
@@ -330,15 +341,7 @@ pub async fn write_audit_event(
     details: Option<&str>,
 ) {
     if let Err(e) = db::insert_audit_log(
-        pool,
-        tenant_id,
-        actor,
-        role,
-        action,
-        resource,
-        result,
-        source_ip,
-        details,
+        pool, tenant_id, actor, role, action, resource, result, source_ip, details,
     )
     .await
     {
@@ -386,15 +389,19 @@ pub async fn resolve_session_ctx(
     pool: &PgPool,
     sid: &str,
 ) -> Result<Option<AdminCtx>, SessionError> {
+    // Tra cứu session
     let Some(mut rec) = store.get(sid).await? else {
         return Ok(None);
     };
+    // Session (user, tenant, role)
 
     let now = session::now_unix_ts();
     let recheck = session::db_recheck_secs();
     if now.saturating_sub(rec.last_db_check) >= recheck {
+        // Kiểm tra user active
         match db::fetch_admin_user_by_id_any(pool, rec.user_id).await {
             Ok(Some(user)) if user.is_active != 0 => {
+                // User active, role, tenant
                 rec.normalize_legacy();
                 let home = user.tenant_id.unwrap_or(1);
                 rec.home_tenant_id = home;
@@ -420,7 +427,9 @@ pub async fn resolve_session_ctx(
                     .unwrap_or_else(|_| user.role.clone());
                 }
                 rec.last_db_check = now;
+                // Cập nhật session đã đối chiếu
                 store.save(sid, &rec).await?;
+                // Đã lưu
             }
             _ => {
                 let _ = store.destroy(sid, rec.user_id).await;
@@ -452,11 +461,8 @@ pub fn session_unavailable_response() -> axum::response::Response {
 }
 
 pub fn forbidden_response() -> axum::response::Response {
-    json_error(
-        StatusCode::FORBIDDEN,
-        "forbidden",
-        "Không đủ quyền (RBAC)",
-    )
+    // 403 Forbidden
+    json_error(StatusCode::FORBIDDEN, "forbidden", "Không đủ quyền (RBAC)")
 }
 
 #[cfg(test)]
@@ -487,15 +493,27 @@ mod tests {
         // API Client + transaction log: read-only cho viewer.
         assert!(allow(Method::GET, "/api/client-keys", "viewer"));
         assert!(allow(Method::GET, "/api/client-keys/5", "viewer"));
-        assert!(allow(Method::GET, "/api/client-keys/traffic-summary", "viewer"));
+        assert!(allow(
+            Method::GET,
+            "/api/client-keys/traffic-summary",
+            "viewer"
+        ));
         assert!(allow(Method::GET, "/api/transaction-logs", "viewer"));
-        assert!(allow(Method::GET, "/api/transaction-logs/9/detail", "viewer"));
+        assert!(allow(
+            Method::GET,
+            "/api/transaction-logs/9/detail",
+            "viewer"
+        ));
         // Nhưng không mutate client, không secret, không audit/queue.
         assert!(!allow(Method::POST, "/api/client-keys", "viewer"));
         assert!(!allow(Method::DELETE, "/api/client-keys/5", "viewer"));
         assert!(!allow(Method::PATCH, "/api/client-keys/5", "viewer"));
         assert!(!allow(Method::POST, "/api/client-keys/5/rotate", "viewer"));
-        assert!(!allow(Method::POST, "/api/client-keys/5/revoke-tokens", "viewer"));
+        assert!(!allow(
+            Method::POST,
+            "/api/client-keys/5/revoke-tokens",
+            "viewer"
+        ));
         assert!(!allow(Method::POST, "/api/client-keys/encrypted", "viewer"));
         assert!(!allow(Method::GET, "/api/audit-logs", "viewer"));
         assert!(!allow(Method::GET, "/api/proxy-queue", "viewer"));
@@ -509,8 +527,16 @@ mod tests {
         assert!(!allow(Method::GET, "/api/users", "operator"));
         assert!(!allow(Method::PUT, "/api/settings", "operator"));
         assert!(!allow(Method::GET, "/api/integrations", "operator"));
-        assert!(!allow(Method::GET, "/api/integrations/salesforce/test", "operator"));
-        assert!(!allow(Method::POST, "/api/integrations/salesforce/sync", "operator"));
+        assert!(!allow(
+            Method::GET,
+            "/api/integrations/salesforce/test",
+            "operator"
+        ));
+        assert!(!allow(
+            Method::POST,
+            "/api/integrations/salesforce/sync",
+            "operator"
+        ));
     }
 
     #[test]
@@ -534,7 +560,10 @@ mod tests {
     fn client_ip_from_forwarded() {
         let mut h = HeaderMap::new();
         h.insert("x-forwarded-for", "203.0.113.1, 10.0.0.1".parse().unwrap());
-        assert_eq!(client_ip_from_proxy_headers(&h).as_deref(), Some("203.0.113.1"));
+        assert_eq!(
+            client_ip_from_proxy_headers(&h).as_deref(),
+            Some("203.0.113.1")
+        );
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! OAuth 2.0 token endpoint + JWT access tokens (RFC 6749 / RFC 7519).
+#![allow(dead_code)]
 
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
@@ -195,6 +196,7 @@ pub fn issue_client_token(client: &OAuthClientKey) -> Result<TokenResponse, Stri
     Ok(issue_client_token_with_version(client)?.response)
 }
 
+/// Tạo JWT access token
 pub fn issue_client_token_with_version(client: &OAuthClientKey) -> Result<IssuedToken, String> {
     issue_client_token_with_expires_secs(client, jwt_expires_secs())
 }
@@ -205,6 +207,7 @@ pub fn issue_client_token_with_expires_secs(
 ) -> Result<IssuedToken, String> {
     let now = now_unix();
     let exp = now + expires_secs as usize;
+    // Tạo JWT access token
     let claims = GatewayClaims {
         sub: format!("client:{}", client.client_id),
         iss: jwt_issuer(),
@@ -256,6 +259,7 @@ pub fn validate_access_token(token: &str) -> Result<GatewayClaims, TokenValidati
     Ok(data.claims)
 }
 
+/// Đổi grant lấy access token
 pub async fn exchange_token(
     pool: &PgPool,
     creds: &db::ClientCredentials,
@@ -266,6 +270,8 @@ pub async fn exchange_token(
         "password" => password_grant(pool, form).await,
         "client_credentials" => client_credentials_grant(creds, form),
         "authorization_code" => authorization_code_grant(pool, form).await,
+        // grant_type không hỗ trợ
+        // 400 unsupported_grant_type
         _ => Err(OAuthTokenError::UnsupportedGrant),
     }
 }
@@ -298,7 +304,9 @@ async fn authorization_code_grant(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or(OAuthTokenError::InvalidRequest("code_verifier required (PKCE)"))?;
+        .ok_or(OAuthTokenError::InvalidRequest(
+            "code_verifier required (PKCE)",
+        ))?;
     if !crate::pkce::valid_verifier(code_verifier) {
         return Err(OAuthTokenError::InvalidRequest("invalid code_verifier"));
     }
@@ -311,7 +319,7 @@ async fn authorization_code_grant(
         redirect_uri,
         code_verifier,
     )
-            .await?;
+    .await?;
     Ok(IssuedToken {
         response,
         claims,
@@ -319,7 +327,10 @@ async fn authorization_code_grant(
     })
 }
 
-async fn password_grant(pool: &PgPool, form: OAuthTokenForm) -> Result<IssuedToken, OAuthTokenError> {
+async fn password_grant(
+    pool: &PgPool,
+    form: OAuthTokenForm,
+) -> Result<IssuedToken, OAuthTokenError> {
     let username = form
         .username
         .as_deref()
@@ -340,9 +351,11 @@ async fn password_grant(pool: &PgPool, form: OAuthTokenForm) -> Result<IssuedTok
         return Err(OAuthTokenError::InvalidGrant);
     }
 
-    issue_user_token_with_version(&user, user.token_version, "proxy:invoke").map_err(OAuthTokenError::Internal)
+    issue_user_token_with_version(&user, user.token_version, "proxy:invoke")
+        .map_err(OAuthTokenError::Internal)
 }
 
+/// Cấp token theo client_credentials
 fn client_credentials_grant(
     creds: &db::ClientCredentials,
     form: OAuthTokenForm,
@@ -352,10 +365,14 @@ fn client_credentials_grant(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
+        // Thiếu client_id hoặc client_secret
+        // 400 invalid_request
         .ok_or(OAuthTokenError::InvalidRequest("client_id required"))?;
     let client_secret = form
         .client_secret
         .as_deref()
+        // Thiếu client_id hoặc client_secret
+        // 400 invalid_request
         .ok_or(OAuthTokenError::InvalidRequest("client_secret required"))?;
 
     if creds
@@ -363,15 +380,24 @@ fn client_credentials_grant(
         .iter()
         .any(|c| c.client_id == client_id)
     {
+        // Client bị khóa trong disabled_clients
+        // 400 invalid_grant
         return Err(OAuthTokenError::InvalidGrant);
     }
 
+    // Tìm client và so khớp secret_hash
     let client = creds
         .oauth_clients
         .iter()
-        .find(|c| c.client_id == client_id && db::verify_client_secret(client_secret, &c.secret_hash))
+        .find(|c| {
+            c.client_id == client_id && db::verify_client_secret(client_secret, &c.secret_hash)
+        })
+        // Không tìm thấy client hoặc secret sai
+        // 401 invalid_client
         .ok_or(OAuthTokenError::InvalidClient)?;
 
+    // Client hợp lệ và secret đúng
+    // Tạo JWT access token
     issue_client_token_with_version(client).map_err(OAuthTokenError::Internal)
 }
 

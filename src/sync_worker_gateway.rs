@@ -1,17 +1,15 @@
 //! Sync worker → gateway loopback (`/v1/api/sf/*`, `/v1/api/zoho/*`) for transaction log + rate limit.
+#![allow(dead_code)]
 
 use reqwest::StatusCode;
 use serde_json::Value;
 use std::time::Duration;
-use tokio::sync::RwLock;
 
+use crate::STATE;
 use crate::db::{self, OAuthClientKey};
 use crate::identity::{self, IssuedToken};
-use crate::STATE;
 
-pub use crate::db::{
-    SYNC_WORKER_API_KEY, SYNC_WORKER_API_KEY_LEGACY, is_sync_worker_client_id,
-};
+pub use crate::db::is_sync_worker_client_id;
 
 #[derive(Clone)]
 pub struct WorkerJwtState {
@@ -113,7 +111,11 @@ async fn refresh_worker_jwt_if_needed(state: &crate::AppState) -> Result<String,
     Ok(guard.access_token.clone())
 }
 
-fn integration_loopback_url(provider: &str, path: &str, query: Option<&str>) -> Result<String, String> {
+fn integration_loopback_url(
+    provider: &str,
+    path: &str,
+    query: Option<&str>,
+) -> Result<String, String> {
     let prefix = data_plane_prefix();
     if prefix.is_empty() {
         return Err("DATA_PLANE_PREFIX rỗng — không thể loopback integration proxy".into());
@@ -156,7 +158,9 @@ pub async fn integration_request_via_gateway(
     body: Option<&[u8]>,
     content_type: Option<&str>,
 ) -> Result<(StatusCode, Vec<u8>), String> {
-    let st = STATE.get().ok_or_else(|| "state not initialized".to_string())?;
+    let st = STATE
+        .get()
+        .ok_or_else(|| "state not initialized".to_string())?;
     let url = integration_loopback_url(provider, path, query)?;
     let max_attempts = 3u32;
     let mut last_err = String::new();
@@ -221,7 +225,8 @@ pub async fn integration_request_via_gateway(
 }
 
 pub async fn sf_get_via_gateway(path: &str) -> Result<Value, String> {
-    let (status, bytes) = integration_request_via_gateway("GET", "sf", path, None, None, None).await?;
+    let (status, bytes) =
+        integration_request_via_gateway("GET", "sf", path, None, None, None).await?;
     let text = String::from_utf8_lossy(&bytes).to_string();
     if !status.is_success() {
         return Err(format!("SF via gateway HTTP {}: {}", status.as_u16(), text));
@@ -234,7 +239,11 @@ pub async fn zoho_get_via_gateway(path: &str, query: Option<&str>) -> Result<Val
         integration_request_via_gateway("GET", "zoho", path, query, None, None).await?;
     let text = String::from_utf8_lossy(&bytes).to_string();
     if !status.is_success() {
-        return Err(format!("Zoho via gateway HTTP {}: {}", status.as_u16(), text));
+        return Err(format!(
+            "Zoho via gateway HTTP {}: {}",
+            status.as_u16(),
+            text
+        ));
     }
     serde_json::from_str(&text).map_err(|e| format!("Zoho via gateway json: {e} — body: {text}"))
 }

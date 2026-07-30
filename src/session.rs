@@ -5,8 +5,8 @@
 //! - Revalidate user từ PostgreSQL định kỳ (role/disable/password revoke)
 //! - Index theo user_id để revoke all sessions
 
-use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -128,13 +128,10 @@ impl SessionStore {
             return Err(SessionError::NotFound);
         }
         let mut conn = self.redis.clone();
-        let raw: Option<String> = conn
-            .get(Self::session_key(sid))
-            .await
-            .map_err(|e| {
-                error!(error = %e, "redis session get failed");
-                SessionError::Unavailable
-            })?;
+        let raw: Option<String> = conn.get(Self::session_key(sid)).await.map_err(|e| {
+            error!(error = %e, "redis session get failed");
+            SessionError::Unavailable
+        })?;
         let Some(json) = raw else {
             return Ok(None);
         };

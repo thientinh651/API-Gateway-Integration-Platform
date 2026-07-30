@@ -1,7 +1,8 @@
 //! JWT lifecycle: Redis revoke blacklist, PostgreSQL audit log.
+#![allow(dead_code)]
 
-use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::{error, warn};
@@ -75,6 +76,8 @@ pub struct TokenAuditInsert {
     pub user_agent: Option<String>,
 }
 
+/// Lưu oauth_access_tokens
+/// Đã lưu token
 pub async fn insert_token_audit(pool: &PgPool, row: &TokenAuditInsert) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO oauth_access_tokens
@@ -99,14 +102,19 @@ pub async fn insert_token_audit(pool: &PgPool, row: &TokenAuditInsert) -> Result
 }
 
 pub async fn mark_jti_revoked_db(pool: &PgPool, jti: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE oauth_access_tokens SET revoked_at = NOW() WHERE jti = $1 AND revoked_at IS NULL")
-        .bind(jti)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE oauth_access_tokens SET revoked_at = NOW() WHERE jti = $1 AND revoked_at IS NULL",
+    )
+    .bind(jti)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
-pub async fn mark_subject_tokens_revoked_db(pool: &PgPool, subject: &str) -> Result<u64, sqlx::Error> {
+pub async fn mark_subject_tokens_revoked_db(
+    pool: &PgPool,
+    subject: &str,
+) -> Result<u64, sqlx::Error> {
     let r = sqlx::query(
         "UPDATE oauth_access_tokens SET revoked_at = NOW() WHERE subject = $1 AND revoked_at IS NULL",
     )

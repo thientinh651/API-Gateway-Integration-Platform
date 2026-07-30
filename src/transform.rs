@@ -1,5 +1,6 @@
 //! Canonical schema transformation — Integration Platform core.
 //! Maps provider-specific payloads (Salesforce, Zoho) to a unified canonical model.
+#![allow(dead_code)]
 
 use serde_json::{Map, Value};
 
@@ -117,7 +118,8 @@ pub fn zoho_projects_to_canonical_contact(record: &Value) -> Value {
         .unwrap_or("")
         .trim()
         .to_string();
-    let (email, phone) = parse_embedded_contact_meta(record.get("description").and_then(|v| v.as_str()));
+    let (email, phone) =
+        parse_embedded_contact_meta(record.get("description").and_then(|v| v.as_str()));
     serde_json::json!({
         "id": record.get("id_string")
             .or_else(|| record.get("id"))
@@ -151,10 +153,7 @@ fn split_display_name(name: &str) -> (String, String) {
     match parts.len() {
         0 => (String::new(), String::new()),
         1 => (parts[0].to_string(), String::new()),
-        _ => (
-            parts[0].to_string(),
-            parts[1..].join(" "),
-        ),
+        _ => (parts[0].to_string(), parts[1..].join(" ")),
     }
 }
 
@@ -177,8 +176,7 @@ fn parse_embedded_contact_meta(desc: Option<&str>) -> (String, String) {
 
 /// Transform SF SOQL/query JSON (`records` array) → canonical list response.
 pub fn salesforce_query_to_canonical_contacts(body: &[u8]) -> Result<Vec<u8>, String> {
-    let parsed: Value =
-        serde_json::from_slice(body).map_err(|e| format!("invalid json: {e}"))?;
+    let parsed: Value = serde_json::from_slice(body).map_err(|e| format!("invalid json: {e}"))?;
     let records = parsed
         .get("records")
         .and_then(|v| v.as_array())
@@ -199,8 +197,7 @@ pub fn salesforce_query_to_canonical_contacts(body: &[u8]) -> Result<Vec<u8>, St
 
 /// Transform single SF Contact object → canonical.
 pub fn salesforce_record_to_canonical_contact_bytes(body: &[u8]) -> Result<Vec<u8>, String> {
-    let parsed: Value =
-        serde_json::from_slice(body).map_err(|e| format!("invalid json: {e}"))?;
+    let parsed: Value = serde_json::from_slice(body).map_err(|e| format!("invalid json: {e}"))?;
     let contact = salesforce_to_canonical_contact(&parsed);
     serde_json::to_vec(&serde_json::json!({
         "entity": "contact",

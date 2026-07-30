@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use serde::de::{self, Deserializer, Error as DeError};
 use serde::Deserialize;
+use serde::de::{Deserializer, Error as DeError};
 
 use crate::RouteRow;
 
@@ -54,9 +54,7 @@ pub fn parse_allowed_methods_str(raw: &str) -> Vec<String> {
     if raw.is_empty() || raw == "*" {
         return default_allowed_methods_list();
     }
-    const OK: &[&str] = &[
-        "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS",
-    ];
+    const OK: &[&str] = &["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];
     let mut seen = HashMap::new();
     let mut out = Vec::new();
     for part in raw.split(',') {
@@ -204,11 +202,7 @@ pub fn append_query_to_upstream_url(base: &str, query: &str) -> String {
     }
 }
 
-pub fn build_upstream_url(
-    target: &str,
-    params: &HashMap<String, String>,
-    suffix: &str,
-) -> String {
+pub fn build_upstream_url(target: &str, params: &HashMap<String, String>, suffix: &str) -> String {
     let mut url = target.to_string();
     for (k, v) in params {
         url = url.replace(&format!("{{{k}}}"), v);
@@ -227,9 +221,7 @@ pub fn validate_allowed_methods_list(methods: &[String]) -> bool {
     if methods.is_empty() || methods.iter().any(|a| a == "*") {
         return true;
     }
-    const OK: &[&str] = &[
-        "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS",
-    ];
+    const OK: &[&str] = &["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];
     methods.iter().all(|m| OK.contains(&m.as_str()))
 }
 
@@ -256,13 +248,19 @@ where
                     serde_json::Value::String(s) => s
                         .parse::<i32>()
                         .map_err(|_| DeError::custom("retry_on_status phải là số nguyên"))?,
-                    _ => return Err(DeError::custom("retry_on_status phải là string hoặc mảng số")),
+                    _ => {
+                        return Err(DeError::custom(
+                            "retry_on_status phải là string hoặc mảng số",
+                        ));
+                    }
                 };
                 out.push(n);
             }
             Ok(normalize_retry_status_codes(out))
         }
-        _ => Err(DeError::custom("retry_on_status phải là string hoặc mảng số")),
+        _ => Err(DeError::custom(
+            "retry_on_status phải là string hoặc mảng số",
+        )),
     }
 }
 
@@ -279,13 +277,19 @@ where
             for item in items {
                 let s = match item {
                     serde_json::Value::String(s) => s,
-                    _ => return Err(DeError::custom("allowed_methods phải là string hoặc mảng chuỗi")),
+                    _ => {
+                        return Err(DeError::custom(
+                            "allowed_methods phải là string hoặc mảng chuỗi",
+                        ));
+                    }
                 };
                 out.push(s);
             }
             Ok(normalize_allowed_methods_list(out))
         }
-        _ => Err(DeError::custom("allowed_methods phải là string hoặc mảng chuỗi")),
+        _ => Err(DeError::custom(
+            "allowed_methods phải là string hoặc mảng chuỗi",
+        )),
     }
 }
 
@@ -314,7 +318,11 @@ mod tests {
 
     #[test]
     fn prefix_route_backward_compat() {
-        let routes = vec![row("/v1/api/orders", "http://up/orders", default_allowed_methods_list())];
+        let routes = vec![row(
+            "/v1/api/orders",
+            "http://up/orders",
+            default_allowed_methods_list(),
+        )];
         let m = find_route(&routes, "GET", "/v1/api/orders/42").unwrap();
         assert_eq!(m.suffix, "/42");
         assert_eq!(
@@ -371,7 +379,11 @@ mod tests {
     fn longest_prefix_wins() {
         let routes = vec![
             row("/v1/api", "http://a", default_allowed_methods_list()),
-            row("/v1/api/special", "http://b", default_allowed_methods_list()),
+            row(
+                "/v1/api/special",
+                "http://b",
+                default_allowed_methods_list(),
+            ),
         ];
         let m = find_route(&routes, "GET", "/v1/api/special/x").unwrap();
         assert_eq!(m.route.target, "http://b");

@@ -1,6 +1,7 @@
 //! PKCE helpers (RFC 7636) — shared by third-party OAuth and CRM connectors.
+#![allow(dead_code)]
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
 pub const METHOD_S256: &str = "S256";
@@ -48,6 +49,9 @@ mod tests {
         let challenge = challenge_s256(&verifier);
         assert!(valid_challenge(&challenge));
         assert!(verify_s256(&verifier, &challenge));
-        assert!(!verify_s256("wrong-verifier-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", &challenge));
+        assert!(!verify_s256(
+            "wrong-verifier-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            &challenge
+        ));
     }
 }

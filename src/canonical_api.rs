@@ -3,10 +3,10 @@
 use axum::http::StatusCode;
 use axum::response::Response;
 
+use crate::STATE;
 use crate::integrations::{self, IntegrationProxyProvider, sf_request_raw_with_refresh};
 use crate::json_error;
 use crate::transform;
-use crate::STATE;
 
 #[derive(Debug, Clone)]
 pub struct CanonicalTarget {
@@ -67,15 +67,11 @@ pub async fn canonical_data_plane_proxy(
     path: &str,
     query: Option<&str>,
     body: &[u8],
-    content_type: Option<&str>,
+    _content_type: Option<&str>,
     data_plane_prefix: &str,
 ) -> Response {
     let Some(target) = parse_canonical_path(data_plane_prefix, path) else {
-        return json_error(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "Unknown canonical path",
-        );
+        return json_error(StatusCode::NOT_FOUND, "not_found", "Unknown canonical path");
     };
     if target.entity != "contacts" {
         return json_error(
@@ -100,11 +96,13 @@ pub async fn canonical_data_plane_proxy(
         );
     };
 
-    match (method.to_uppercase().as_str(), provider, target.id.as_deref()) {
+    match (
+        method.to_uppercase().as_str(),
+        provider,
+        target.id.as_deref(),
+    ) {
         ("GET", IntegrationProxyProvider::Salesforce, None) => {
-            let soql = format!(
-                "SELECT+{SF_CONTACT_FIELDS}+FROM+Contact+LIMIT+50"
-            );
+            let soql = format!("SELECT+{SF_CONTACT_FIELDS}+FROM+Contact+LIMIT+50");
             match sf_request_raw_with_refresh(
                 &st.pool,
                 tenant_id,
@@ -116,53 +114,31 @@ pub async fn canonical_data_plane_proxy(
             )
             .await
             {
-                Ok((status, bytes, ct)) if status.is_success() => {
+                Ok((status, bytes, _ct)) if status.is_success() => {
                     match transform::salesforce_query_to_canonical_contacts(&bytes) {
                         Ok(out) => integration_proxy_http_json(out),
-                        Err(e) => json_error(
-                            StatusCode::BAD_GATEWAY,
-                            "transform_failed",
-                            &e,
-                        ),
+                        Err(e) => json_error(StatusCode::BAD_GATEWAY, "transform_failed", &e),
                     }
                 }
                 Ok((status, bytes, _)) => integration_proxy_http_response(status, bytes, None),
-                Err(e) => json_error(
-                    StatusCode::BAD_GATEWAY,
-                    "integration_proxy_failed",
-                    &e,
-                ),
+                Err(e) => json_error(StatusCode::BAD_GATEWAY, "integration_proxy_failed", &e),
             }
         }
         ("GET", IntegrationProxyProvider::Salesforce, Some(id)) => {
             let sf_path = format!("/sobjects/Contact/{id}");
             match sf_request_raw_with_refresh(
-                &st.pool,
-                tenant_id,
-                "GET",
-                &sf_path,
-                None,
-                None,
-                None,
+                &st.pool, tenant_id, "GET", &sf_path, None, None, None,
             )
             .await
             {
                 Ok((status, bytes, _)) if status.is_success() => {
                     match transform::salesforce_record_to_canonical_contact_bytes(&bytes) {
                         Ok(out) => integration_proxy_http_json(out),
-                        Err(e) => json_error(
-                            StatusCode::BAD_GATEWAY,
-                            "transform_failed",
-                            &e,
-                        ),
+                        Err(e) => json_error(StatusCode::BAD_GATEWAY, "transform_failed", &e),
                     }
                 }
                 Ok((status, bytes, _)) => integration_proxy_http_response(status, bytes, None),
-                Err(e) => json_error(
-                    StatusCode::BAD_GATEWAY,
-                    "integration_proxy_failed",
-                    &e,
-                ),
+                Err(e) => json_error(StatusCode::BAD_GATEWAY, "integration_proxy_failed", &e),
             }
         }
         ("POST", IntegrationProxyProvider::Salesforce, None) => {
@@ -194,13 +170,7 @@ pub async fn canonical_data_plane_proxy(
                         if let Some(new_id) = created.get("id").and_then(|v| v.as_str()) {
                             let sf_path = format!("/sobjects/Contact/{new_id}");
                             if let Ok((_, rec, _)) = sf_request_raw_with_refresh(
-                                &st.pool,
-                                tenant_id,
-                                "GET",
-                                &sf_path,
-                                None,
-                                None,
-                                None,
+                                &st.pool, tenant_id, "GET", &sf_path, None, None, None,
                             )
                             .await
                             {
@@ -215,22 +185,14 @@ pub async fn canonical_data_plane_proxy(
                     integration_proxy_http_response(status, bytes, ct)
                 }
                 Ok((status, bytes, ct)) => integration_proxy_http_response(status, bytes, ct),
-                Err(e) => json_error(
-                    StatusCode::BAD_GATEWAY,
-                    "integration_proxy_failed",
-                    &e,
-                ),
+                Err(e) => json_error(StatusCode::BAD_GATEWAY, "integration_proxy_failed", &e),
             }
         }
         ("GET", IntegrationProxyProvider::Zoho, None) => {
             // List tasks from first project as contact-like entities (transform out).
             match integrations::list_zoho_tasks_as_canonical_contacts(&st.pool, tenant_id).await {
                 Ok(out) => integration_proxy_http_json(out),
-                Err(e) => json_error(
-                    StatusCode::BAD_GATEWAY,
-                    "integration_proxy_failed",
-                    &e,
-                ),
+                Err(e) => json_error(StatusCode::BAD_GATEWAY, "integration_proxy_failed", &e),
             }
         }
         ("POST", IntegrationProxyProvider::Zoho, None) => {
@@ -245,18 +207,12 @@ pub async fn canonical_data_plane_proxy(
                 }
             };
             match integrations::create_zoho_task_from_canonical_contact(
-                &st.pool,
-                tenant_id,
-                &canonical,
+                &st.pool, tenant_id, &canonical,
             )
             .await
             {
                 Ok(out) => integration_proxy_http_json(out),
-                Err(e) => json_error(
-                    StatusCode::BAD_GATEWAY,
-                    "integration_proxy_failed",
-                    &e,
-                ),
+                Err(e) => json_error(StatusCode::BAD_GATEWAY, "integration_proxy_failed", &e),
             }
         }
         _ => json_error(
@@ -280,8 +236,7 @@ fn integration_proxy_http_response(
     body: Vec<u8>,
     content_type: Option<String>,
 ) -> Response {
-    let axum_status =
-        StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let axum_status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let mut builder = axum::http::Response::builder().status(axum_status);
     if let Some(ct) = content_type {
         builder = builder.header(axum::http::header::CONTENT_TYPE, ct);

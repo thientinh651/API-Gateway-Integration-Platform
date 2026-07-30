@@ -1,15 +1,16 @@
 //! WSO2-style asymmetric encryption: client encrypts with gateway **public** key,
 //! only gateway **private** key can decrypt (hybrid RSA-OAEP-256 + AES-256-GCM).
+#![allow(dead_code)]
 
 use aes_gcm::{
-    aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
 };
-use base64::{engine::general_purpose::STANDARD as B64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use rand::RngCore;
 use rsa::{
-    pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, LineEnding},
     Oaep, RsaPrivateKey, RsaPublicKey,
+    pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, LineEnding},
 };
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -79,8 +80,7 @@ pub fn decrypt_envelope(envelope: &CryptoEnvelope) -> Result<Vec<u8>, String> {
         return Err(format!("aes key must be 32 bytes, got {}", aes_key.len()));
     }
 
-    let cipher =
-        Aes256Gcm::new_from_slice(&aes_key).map_err(|e| format!("aes init: {e}"))?;
+    let cipher = Aes256Gcm::new_from_slice(&aes_key).map_err(|e| format!("aes init: {e}"))?;
     let pt = cipher
         .decrypt(Nonce::from_slice(&nonce_bytes), ciphertext.as_ref())
         .map_err(|e| format!("aes decrypt: {e}"))?;
@@ -98,8 +98,7 @@ pub fn encrypt_for_gateway_public(plaintext: &[u8]) -> Result<CryptoEnvelope, St
     let mut nonce = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut nonce);
 
-    let cipher =
-        Aes256Gcm::new_from_slice(&aes_key).map_err(|e| format!("aes init: {e}"))?;
+    let cipher = Aes256Gcm::new_from_slice(&aes_key).map_err(|e| format!("aes init: {e}"))?;
     let ciphertext = cipher
         .encrypt(Nonce::from_slice(&nonce), plaintext)
         .map_err(|e| format!("aes encrypt: {e}"))?;
@@ -131,7 +130,9 @@ pub async fn ensure_gateway_rsa_keys(pool: &PgPool) -> Result<(), sqlx::Error> {
         let pem = pem.trim();
         if !pem.is_empty() {
             let private = RsaPrivateKey::from_pkcs8_pem(pem).map_err(|e| {
-                sqlx::Error::Configuration(format!("invalid GATEWAY_RSA_PRIVATE_KEY_PEM: {e}").into())
+                sqlx::Error::Configuration(
+                    format!("invalid GATEWAY_RSA_PRIVATE_KEY_PEM: {e}").into(),
+                )
             })?;
             let public = RsaPublicKey::from(&private);
             store_keypair(pool, &private, &public).await?;
@@ -140,9 +141,8 @@ pub async fn ensure_gateway_rsa_keys(pool: &PgPool) -> Result<(), sqlx::Error> {
     }
 
     let mut rng = rand::thread_rng();
-    let private = RsaPrivateKey::new(&mut rng, 2048).map_err(|e| {
-        sqlx::Error::Configuration(format!("rsa generate: {e}").into())
-    })?;
+    let private = RsaPrivateKey::new(&mut rng, 2048)
+        .map_err(|e| sqlx::Error::Configuration(format!("rsa generate: {e}").into()))?;
     let public = RsaPublicKey::from(&private);
     store_keypair(pool, &private, &public).await?;
     tracing::info!("generated gateway RSA-2048 keypair (WSO2-style decrypt at rest on wire)");
@@ -185,9 +185,8 @@ pub async fn init_rsa_from_db(pool: &PgPool) -> Result<(), sqlx::Error> {
         .bind(SETTING_PRIVATE)
         .fetch_one(pool)
         .await?;
-    let private = RsaPrivateKey::from_pkcs8_pem(&pem).map_err(|e| {
-        sqlx::Error::Configuration(format!("load rsa private: {e}").into())
-    })?;
+    let private = RsaPrivateKey::from_pkcs8_pem(&pem)
+        .map_err(|e| sqlx::Error::Configuration(format!("load rsa private: {e}").into()))?;
     let _ = RSA_PRIVATE.set(private);
     Ok(())
 }

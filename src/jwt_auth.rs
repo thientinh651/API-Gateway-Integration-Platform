@@ -1,4 +1,5 @@
 //! Data-plane Bearer JWT validation.
+#![allow(dead_code)]
 
 use axum::http::{HeaderMap, StatusCode};
 
@@ -44,7 +45,8 @@ pub fn bearer_from_headers(headers: &HeaderMap) -> Option<String> {
     }
     None
 }
-
+/** Kiểm tra jti đã thu hồi chưa.
+Nếu đã thu hồi thì trả về lỗi TokenAuthFail::RevokedToken*/
 pub async fn verify_bearer(
     creds: &ClientCredentials,
     store: &TokenRevocationStore,
@@ -80,7 +82,11 @@ fn verify_user_claims(
         .strip_prefix("user:")
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or(0);
-    let current = creds.user_token_versions.get(&user_id).copied().unwrap_or(0);
+    let current = creds
+        .user_token_versions
+        .get(&user_id)
+        .copied()
+        .unwrap_or(0);
     if claims.tv != current {
         return Err(TokenAuthFail::StaleTokenVersion);
     }
@@ -142,7 +148,11 @@ pub fn identity_for_log(creds: &ClientCredentials, subject: &str) -> (Option<i64
         return (None, None);
     }
     if let Some(client_id) = subject.strip_prefix("client:") {
-        if let Some(c) = creds.oauth_clients.iter().find(|c| c.client_id == client_id) {
+        if let Some(c) = creds
+            .oauth_clients
+            .iter()
+            .find(|c| c.client_id == client_id)
+        {
             return (Some(c.id), Some(c.tenant_id));
         }
         if let Some(c) = creds
@@ -250,7 +260,9 @@ mod tests {
         };
         let issued = identity::issue_client_token(&client).unwrap();
         let store = TokenRevocationStore::noop();
-        let v = verify_bearer(&creds, &store, &issued.access_token).await.unwrap();
+        let v = verify_bearer(&creds, &store, &issued.access_token)
+            .await
+            .unwrap();
         assert_eq!(v.key_id, 3);
         assert_eq!(v.allowed_route_ids, vec![9]);
     }

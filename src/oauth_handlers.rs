@@ -1,15 +1,14 @@
 //! HTTP handlers: token audit, revoke, authorization code, third-party apps.
 
 use axum::{
-    extract::{Extension, Form, Path, Query},
+    Json,
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
-    Json,
 };
 use serde::Deserialize;
 use sqlx::PgPool;
 
-use crate::admin_auth::{self, write_audit, AdminCtx};
+use crate::admin_auth::{self, AdminCtx, write_audit};
 use crate::db;
 use crate::identity;
 use crate::oauth_authorize::{self, ThirdPartyApp};
@@ -23,7 +22,12 @@ pub struct OAuthHandlerState {
     pub session_store: Arc<SessionStore>,
 }
 
-pub async fn record_issued_token(pool: &PgPool, headers: &HeaderMap, issued: &identity::IssuedToken) {
+/// Lưu oauth_access_tokens
+pub async fn record_issued_token(
+    pool: &PgPool,
+    headers: &HeaderMap,
+    issued: &identity::IssuedToken,
+) {
     let claims = &issued.claims;
     let user_id = claims
         .sub
@@ -49,6 +53,8 @@ pub async fn record_issued_token(pool: &PgPool, headers: &HeaderMap, issued: &id
             .and_then(|v| v.to_str().ok())
             .map(str::to_string),
     };
+    // Lưu oauth_access_tokens
+    // Đã lưu token
     if let Err(e) = oauth_tokens::insert_token_audit(pool, &row).await {
         tracing::warn!(error = %e, "oauth token audit insert failed");
     }
@@ -84,7 +90,11 @@ pub struct OAuthRevokeForm {
 pub async fn api_oauth_revoke(st: &OAuthHandlerState, body: OAuthRevokeForm) -> Response {
     let store = revocation_store(&st.session_store);
     match revoke_bearer_token(&st.pool, &store, body.token.trim()).await {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "revoked" }))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "revoked" })),
+        )
+            .into_response(),
         Err(code) => json_err(StatusCode::BAD_REQUEST, code, "Token revoke failed"),
     }
 }
@@ -100,7 +110,11 @@ pub async fn api_oauth_logout_bearer(st: &OAuthHandlerState, headers: HeaderMap)
     }
     let store = revocation_store(&st.session_store);
     match revoke_bearer_token(&st.pool, &store, &token).await {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "revoked" }))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "revoked" })),
+        )
+            .into_response(),
         Err(code) => json_err(StatusCode::BAD_REQUEST, code, "Logout failed"),
     }
 }
@@ -136,16 +150,28 @@ pub async fn api_revoke_client_tokens(st: &OAuthHandlerState, ctx: &AdminCtx, id
         Ok(Some(r)) => r,
         Ok(None) => return json_err(StatusCode::NOT_FOUND, "not_found", "Client not found"),
         Err(e) => {
-            return json_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &format!("{e}"));
+            return json_err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("{e}"),
+            );
         }
     };
     let client_id = row.api_key.unwrap_or_default();
     if client_id.is_empty() {
-        return json_err(StatusCode::BAD_REQUEST, "invalid_client", "Missing client_id");
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "invalid_client",
+            "Missing client_id",
+        );
     }
     let subject = format!("client:{client_id}");
     if let Err(e) = db::bump_client_token_version(&st.pool, id, ctx.tenant_id).await {
-        return json_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &format!("{e}"));
+        return json_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            &format!("{e}"),
+        );
     }
     let _ = oauth_tokens::mark_subject_tokens_revoked_db(&st.pool, &subject).await;
     write_audit(
@@ -182,9 +208,16 @@ pub async fn api_revoke_token_jti(
     if jti.is_empty() {
         return json_err(StatusCode::BAD_REQUEST, "validation_failed", "jti required");
     }
-    let expires = match oauth_tokens::fetch_token_expiry_by_jti(&st.pool, jti, ctx.tenant_id).await {
+    let expires = match oauth_tokens::fetch_token_expiry_by_jti(&st.pool, jti, ctx.tenant_id).await
+    {
         Ok(v) => v,
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &format!("{e}")),
+        Err(e) => {
+            return json_err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("{e}"),
+            );
+        }
     };
     let Some(expires) = expires else {
         return json_err(StatusCode::NOT_FOUND, "not_found", "Token not found");
@@ -214,7 +247,11 @@ pub struct CreateOAuthAppBody {
     pub with_secret: Option<bool>,
 }
 
-pub async fn api_create_oauth_app(st: &OAuthHandlerState, ctx: &AdminCtx, body: CreateOAuthAppBody) -> Response {
+pub async fn api_create_oauth_app(
+    st: &OAuthHandlerState,
+    ctx: &AdminCtx,
+    body: CreateOAuthAppBody,
+) -> Response {
     if !ctx.is_admin() {
         return admin_auth::forbidden_response();
     }
@@ -227,7 +264,10 @@ pub async fn api_create_oauth_app(st: &OAuthHandlerState, ctx: &AdminCtx, body: 
             "name and redirect_uris required",
         );
     }
-    if redirect_uris.iter().any(|u| !oauth_authorize::valid_redirect_uri(u)) {
+    if redirect_uris
+        .iter()
+        .any(|u| !oauth_authorize::valid_redirect_uri(u))
+    {
         return json_err(
             StatusCode::BAD_REQUEST,
             "validation_failed",
@@ -267,7 +307,11 @@ pub async fn api_create_oauth_app(st: &OAuthHandlerState, ctx: &AdminCtx, body: 
             }))
             .into_response()
         }
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &format!("{e}")),
+        Err(e) => json_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            &format!("{e}"),
+        ),
     }
 }
 
@@ -277,7 +321,11 @@ pub async fn api_list_oauth_apps(st: &OAuthHandlerState, ctx: &AdminCtx) -> Resp
     }
     match oauth_authorize::list_third_party_apps(&st.pool, ctx.tenant_id).await {
         Ok(rows) => Json(serde_json::json!({ "apps": rows })).into_response(),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &format!("{e}")),
+        Err(e) => json_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            &format!("{e}"),
+        ),
     }
 }
 
@@ -306,30 +354,72 @@ pub async fn api_update_oauth_app(
             "name and redirect_uris required",
         );
     }
-    if redirect_uris.iter().any(|u| !oauth_authorize::valid_redirect_uri(u)) {
+    if redirect_uris
+        .iter()
+        .any(|u| !oauth_authorize::valid_redirect_uri(u))
+    {
         return json_err(
             StatusCode::BAD_REQUEST,
             "validation_failed",
             "redirect_uris phải là https:// hoặc http://localhost",
         );
     }
-    let client_id = match oauth_authorize::fetch_third_party_app_meta(&st.pool, id, ctx.tenant_id).await {
-        Ok(Some(m)) => m.client_id,
-        Ok(None) => return json_err(StatusCode::NOT_FOUND, "oauth_app_not_found", "App OAuth không tồn tại"),
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &format!("{e}")),
-    };
-    match oauth_authorize::update_third_party_app(&st.pool, id, ctx.tenant_id, name, &redirect_uris).await {
+    let client_id =
+        match oauth_authorize::fetch_third_party_app_meta(&st.pool, id, ctx.tenant_id).await {
+            Ok(Some(m)) => m.client_id,
+            Ok(None) => {
+                return json_err(
+                    StatusCode::NOT_FOUND,
+                    "oauth_app_not_found",
+                    "App OAuth không tồn tại",
+                );
+            }
+            Err(e) => {
+                return json_err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal_error",
+                    &format!("{e}"),
+                );
+            }
+        };
+    match oauth_authorize::update_third_party_app(&st.pool, id, ctx.tenant_id, name, &redirect_uris)
+        .await
+    {
         Ok(true) => {}
-        Ok(false) => return json_err(StatusCode::NOT_FOUND, "oauth_app_not_found", "App OAuth không tồn tại"),
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &format!("{e}")),
+        Ok(false) => {
+            return json_err(
+                StatusCode::NOT_FOUND,
+                "oauth_app_not_found",
+                "App OAuth không tồn tại",
+            );
+        }
+        Err(e) => {
+            return json_err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("{e}"),
+            );
+        }
     }
     let mut new_secret: Option<String> = None;
     let rotate = body.rotate_secret.unwrap_or(false);
     if rotate {
         match oauth_authorize::rotate_third_party_app_secret(&st.pool, id, ctx.tenant_id).await {
             Ok(Some(s)) => new_secret = Some(s),
-            Ok(None) => return json_err(StatusCode::NOT_FOUND, "oauth_app_not_found", "App OAuth không tồn tại"),
-            Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &format!("{e}")),
+            Ok(None) => {
+                return json_err(
+                    StatusCode::NOT_FOUND,
+                    "oauth_app_not_found",
+                    "App OAuth không tồn tại",
+                );
+            }
+            Err(e) => {
+                return json_err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal_error",
+                    &format!("{e}"),
+                );
+            }
         }
     }
     let meta = oauth_authorize::ThirdPartyAppMeta {
@@ -388,8 +478,16 @@ pub async fn api_delete_oauth_app(st: &OAuthHandlerState, ctx: &AdminCtx, id: i6
             }))
             .into_response()
         }
-        Ok(None) => json_err(StatusCode::NOT_FOUND, "oauth_app_not_found", "App OAuth không tồn tại"),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &format!("{e}")),
+        Ok(None) => json_err(
+            StatusCode::NOT_FOUND,
+            "oauth_app_not_found",
+            "App OAuth không tồn tại",
+        ),
+        Err(e) => json_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            &format!("{e}"),
+        ),
     }
 }
 
@@ -472,14 +570,15 @@ fn build_authorize_return_path(q: &AuthorizeQuery) -> String {
 /// SPA `/login` + `return_to` (relative path only) — Google-like continue after auth.
 fn redirect_to_login_with_return(q: &AuthorizeQuery) -> Response {
     let return_to = build_authorize_return_path(q);
-    let loc = format!(
-        "/login?return_to={}",
-        urlencoding::encode(&return_to)
-    );
+    let loc = format!("/login?return_to={}", urlencoding::encode(&return_to));
     Redirect::to(&loc).into_response()
 }
 
-pub async fn oauth_authorize_get(st: &OAuthHandlerState, headers: HeaderMap, q: AuthorizeQuery) -> Response {
+pub async fn oauth_authorize_get(
+    st: &OAuthHandlerState,
+    headers: HeaderMap,
+    q: AuthorizeQuery,
+) -> Response {
     if q.response_type != "code" {
         return oauth_browser_err(
             StatusCode::BAD_REQUEST,
@@ -561,9 +660,10 @@ pub async fn oauth_authorize_get(st: &OAuthHandlerState, headers: HeaderMap, q: 
         .as_deref()
         .filter(|s| !s.is_empty())
         .unwrap_or(app.scopes.as_str());
-    let has_consent = oauth_authorize::has_user_consent(&st.pool, ctx.user_id, &app.client_id, scope)
-        .await
-        .unwrap_or(false);
+    let has_consent =
+        oauth_authorize::has_user_consent(&st.pool, ctx.user_id, &app.client_id, scope)
+            .await
+            .unwrap_or(false);
     if has_consent {
         return issue_code_redirect(&st.pool, &app, ctx.user_id, ctx.tenant_id, &q).await;
     }
@@ -581,7 +681,11 @@ pub struct ConsentForm {
     pub action: String,
 }
 
-pub async fn oauth_consent_post(st: &OAuthHandlerState, form: ConsentForm, headers: HeaderMap) -> Response {
+pub async fn oauth_consent_post(
+    st: &OAuthHandlerState,
+    form: ConsentForm,
+    headers: HeaderMap,
+) -> Response {
     let Some(sid) = session::sid_from_cookie(&headers) else {
         return oauth_browser_err(
             StatusCode::UNAUTHORIZED,
@@ -646,13 +750,8 @@ pub async fn oauth_consent_post(st: &OAuthHandlerState, form: ConsentForm, heade
     if let Err(resp) = validate_pkce_authorize(&q) {
         return resp;
     }
-    let _ = oauth_authorize::save_user_consent(
-        &st.pool,
-        ctx.user_id,
-        &app.client_id,
-        scope.trim(),
-    )
-    .await;
+    let _ = oauth_authorize::save_user_consent(&st.pool, ctx.user_id, &app.client_id, scope.trim())
+        .await;
     issue_code_redirect(&st.pool, &app, ctx.user_id, ctx.tenant_id, &q).await
 }
 

@@ -1,9 +1,9 @@
 //! Dashboard aggregation: integrations, snapshots, audit.
 
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -11,7 +11,7 @@ use sqlx::PgPool;
 use crate::admin_auth::AdminCtx;
 use crate::db;
 use crate::integrations;
-use crate::{json_error, STATE};
+use crate::{STATE, json_error};
 
 #[derive(Debug, Deserialize)]
 pub struct DashboardStatsQuery {
@@ -122,7 +122,11 @@ fn count_by_field(rows: &[serde_json::Value], field: &str) -> Vec<LabelCount> {
             .unwrap_or("(trống)")
             .trim()
             .to_string();
-        let k = if key.is_empty() { "(trống)".into() } else { key };
+        let k = if key.is_empty() {
+            "(trống)".into()
+        } else {
+            key
+        };
         *map.entry(k).or_insert(0) += 1;
     }
     map.into_iter()
@@ -249,8 +253,7 @@ pub async fn build_dashboard_stats(
             db::fetch_latest_integration_snapshot(pool, tenant_id, "salesforce", "opportunity")
                 .await
         {
-            salesforce_stages =
-                count_by_field(&parse_snapshot_array(&opp.payload_json), "stage");
+            salesforce_stages = count_by_field(&parse_snapshot_array(&opp.payload_json), "stage");
         }
         if let Ok(Some(proj)) =
             db::fetch_latest_integration_snapshot(pool, tenant_id, "zoho_projects", "project").await

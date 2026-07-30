@@ -109,7 +109,10 @@ pub struct ResetTicket {
     pub username: String,
 }
 
-async fn redis_incr_rate(conn: &mut ConnectionManager, username: &str) -> Result<bool, redis::RedisError> {
+async fn redis_incr_rate(
+    conn: &mut ConnectionManager,
+    username: &str,
+) -> Result<bool, redis::RedisError> {
     let key = rate_key(username);
     let n: i64 = redis::cmd("INCR").arg(&key).query_async(conn).await?;
     if n == 1 {
@@ -239,12 +242,10 @@ pub async fn issue_password_reset_otp(
     user_id: i64,
     email: &str,
 ) -> Result<(), PasswordResetError> {
-    let allowed = redis_incr_rate(conn, username)
-        .await
-        .map_err(|e| {
-            warn!(error = %e, "redis rate limit failed");
-            PasswordResetError::MailUnavailable
-        })?;
+    let allowed = redis_incr_rate(conn, username).await.map_err(|e| {
+        warn!(error = %e, "redis rate limit failed");
+        PasswordResetError::MailUnavailable
+    })?;
     if !allowed {
         return Err(PasswordResetError::RateLimited);
     }
@@ -296,7 +297,11 @@ fn otp_email_body(username: &str, otp: &str) -> String {
     )
 }
 
-pub async fn send_otp_via_brevo(to: &str, username: &str, otp: &str) -> Result<(), PasswordResetError> {
+pub async fn send_otp_via_brevo(
+    to: &str,
+    username: &str,
+    otp: &str,
+) -> Result<(), PasswordResetError> {
     let api_key = std::env::var("BREVO_API_KEY").unwrap_or_default();
 
     let client = reqwest::Client::builder()
@@ -346,14 +351,16 @@ pub async fn send_otp_via_brevo(to: &str, username: &str, otp: &str) -> Result<(
     }
     let status = resp.status();
     let detail = resp.text().await.unwrap_or_default();
-    Err(PasswordResetError::MailSend(format!("Brevo {status}: {detail}")))
+    Err(PasswordResetError::MailSend(format!(
+        "Brevo {status}: {detail}"
+    )))
 }
 
 pub async fn send_otp_email(to: &str, username: &str, otp: &str) -> Result<(), PasswordResetError> {
-    use lettre::message::header::ContentType;
     use lettre::message::Mailbox;
-    use lettre::transport::smtp::authentication::Credentials;
+    use lettre::message::header::ContentType;
     use lettre::transport::smtp::Error as SmtpError;
+    use lettre::transport::smtp::authentication::Credentials;
     use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
     let host = std::env::var("SMTP_HOST").unwrap_or_default();
@@ -363,11 +370,15 @@ pub async fn send_otp_email(to: &str, username: &str, otp: &str) -> Result<(), P
         .unwrap_or(587);
     let user = std::env::var("SMTP_USER").unwrap_or_default();
     let pass = std::env::var("SMTP_PASS").unwrap_or_default();
-    let from_addr = std::env::var("SMTP_FROM")
-        .unwrap_or_else(|_| "noreply@avaso-gateway.local".into());
+    let from_addr =
+        std::env::var("SMTP_FROM").unwrap_or_else(|_| "noreply@avaso-gateway.local".into());
 
-    let from: Mailbox = from_addr.parse().map_err(|e| PasswordResetError::MailSend(format!("{e}")))?;
-    let to_mb: Mailbox = to.parse().map_err(|e| PasswordResetError::MailSend(format!("{e}")))?;
+    let from: Mailbox = from_addr
+        .parse()
+        .map_err(|e| PasswordResetError::MailSend(format!("{e}")))?;
+    let to_mb: Mailbox = to
+        .parse()
+        .map_err(|e| PasswordResetError::MailSend(format!("{e}")))?;
 
     let body = otp_email_body(username, otp);
 

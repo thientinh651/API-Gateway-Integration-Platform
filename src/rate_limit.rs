@@ -1,8 +1,9 @@
 //! Token-bucket rate limiting — local DashMap + Redis (distributed when available).
+#![allow(dead_code)]
 
 use dashmap::DashMap;
-use redis::aio::ConnectionManager;
 use redis::Script;
+use redis::aio::ConnectionManager;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tracing::warn;
@@ -123,11 +124,7 @@ fn reset_unix_when_full(now: f64, tokens: f64, rps: f64, burst: u32) -> u64 {
     (now + secs.ceil()).max(now + 1.0) as u64
 }
 
-fn info_from_bucket(
-    limit_header: u32,
-    remaining_floor: u32,
-    reset_unix: u64,
-) -> RateLimitInfo {
+fn info_from_bucket(limit_header: u32, remaining_floor: u32, reset_unix: u64) -> RateLimitInfo {
     RateLimitInfo {
         limit: limit_header,
         remaining: remaining_floor,
@@ -282,11 +279,7 @@ impl RateLimiter {
         self.try_consume_local(key, rps, burst, limit_header)
     }
 
-    pub async fn try_consume_per_min(
-        &self,
-        key: &str,
-        per_min: u32,
-    ) -> ConsumeOutcome {
+    pub async fn try_consume_per_min(&self, key: &str, per_min: u32) -> ConsumeOutcome {
         let (rps, burst) = per_min_to_bucket(per_min as i32);
         self.try_consume(key, rps, burst, per_min).await
     }
@@ -300,8 +293,11 @@ impl RateLimiter {
         if let Some(ip) = ip.map(str::trim).filter(|s| !s.is_empty()) {
             let key = format!("oauth:token:ip:{}", db::sha256_hex(ip));
             let (rps, burst) = oauth_token_bucket(OAUTH_TOKEN_IP_PER_MIN as i32);
-            if let ConsumeOutcome::Denied { retry_after_secs, .. } =
-                self.try_consume(&key, rps, burst, OAUTH_TOKEN_IP_PER_MIN).await
+            if let ConsumeOutcome::Denied {
+                retry_after_secs, ..
+            } = self
+                .try_consume(&key, rps, burst, OAUTH_TOKEN_IP_PER_MIN)
+                .await
             {
                 return Err(retry_after_secs);
             }
@@ -309,8 +305,11 @@ impl RateLimiter {
         if let Some(cid) = client_id.map(str::trim).filter(|s| !s.is_empty()) {
             let key = format!("oauth:token:client:{}", db::sha256_hex(cid));
             let (rps, burst) = oauth_token_bucket(OAUTH_TOKEN_CLIENT_PER_MIN as i32);
-            if let ConsumeOutcome::Denied { retry_after_secs, .. } =
-                self.try_consume(&key, rps, burst, OAUTH_TOKEN_CLIENT_PER_MIN).await
+            if let ConsumeOutcome::Denied {
+                retry_after_secs, ..
+            } = self
+                .try_consume(&key, rps, burst, OAUTH_TOKEN_CLIENT_PER_MIN)
+                .await
             {
                 return Err(retry_after_secs);
             }

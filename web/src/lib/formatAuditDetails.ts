@@ -61,5 +61,12 @@ export function formatAuditDetails(
     return isDiscard ? 'Đã xóa 1 bản ghi DLQ' : trimmed.slice(0, 40);
   }
 
+  // Legacy: backend từng ghi `routes:{count}` — 0 = ACL rỗng, không phải route id 0
+  const routesCount = /^routes:(\d+)$/.exec(trimmed);
+  if (routesCount && action === 'update_client_key_routes') {
+    const n = Number(routesCount[1]);
+    return n === 0 ? 'ACL rỗng — mọi route' : `ACL: ${n} route`;
+  }
+
   return trimmed;
 }

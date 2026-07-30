@@ -1,18 +1,19 @@
 mod admin_auth;
 mod canonical_api;
 mod crypto;
-mod db;
 mod dashboard;
+mod db;
 mod gateway_rsa;
 mod identity;
 mod integrations;
 mod jwt_auth;
 mod metrics;
+mod mock_api;
 mod oauth_authorize;
-mod pkce;
 mod oauth_handlers;
 mod oauth_tokens;
 mod password_reset;
+mod pkce;
 mod proxy_ext;
 mod rate_limit;
 mod route_match;
@@ -20,26 +21,28 @@ mod session;
 mod sync_worker_gateway;
 mod transform;
 
-use admin_auth::{session_unavailable_response, write_audit, write_audit_event, write_audit_failure, AdminCtx};
-use jwt_auth::VerifiedClient;
-use integrations::OAuthPending;
-use session::{SessionRecord, SessionStore, SessionStoreStatus};
+use admin_auth::{
+    AdminCtx, session_unavailable_response, write_audit, write_audit_event, write_audit_failure,
+};
 use axum::{
+    Router,
     body::Body,
-    extract::{Extension, Form, Json, Path, Query},
     extract::connect_info::ConnectInfo,
+    extract::{Extension, Form, Json, Path, Query},
     http::{
-        header::{AUTHORIZATION, COOKIE, CONTENT_TYPE, RETRY_AFTER, SET_COOKIE},
         HeaderMap, HeaderValue, Method, Request, StatusCode, Uri,
+        header::{AUTHORIZATION, CONTENT_TYPE, COOKIE, RETRY_AFTER, SET_COOKIE},
     },
     middleware::{self, Next},
     response::IntoResponse,
     response::Response,
-    routing::{delete, get, patch, post, put},
-    Router,
+    routing::{delete, get, post, put},
 };
 use dashmap::DashMap;
+use integrations::OAuthPending;
+use jwt_auth::VerifiedClient;
 use serde::{Deserialize, Serialize};
+use session::{SessionRecord, SessionStore, SessionStoreStatus};
 use sqlx::PgPool;
 use std::{
     io::ErrorKind,
@@ -65,7 +68,9 @@ fn cors_allowed_origins() -> Vec<HeaderValue> {
         for part in raw.split(',').map(str::trim).filter(|p| !p.is_empty()) {
             match part.parse::<HeaderValue>() {
                 Ok(h) => out.push(h),
-                Err(_) => eprintln!("⚠️ CORS_ALLOWED_ORIGINS: bỏ qua giá trị không hợp lệ: {part:?}"),
+                Err(_) => {
+                    eprintln!("⚠️ CORS_ALLOWED_ORIGINS: bỏ qua giá trị không hợp lệ: {part:?}")
+                }
             }
         }
     }
@@ -298,12 +303,10 @@ static STATE: OnceLock<AppState> = OnceLock::new();
 static DATA_PLANE_PREFIX: OnceLock<&'static str> = OnceLock::new();
 
 fn data_plane_prefix() -> &'static str {
-    *DATA_PLANE_PREFIX.get_or_init(|| {
-        match std::env::var("DATA_PLANE_PREFIX") {
-            Ok(s) if !s.is_empty() => Box::leak(s.into_boxed_str()),
-            Ok(_) => "",
-            Err(_) => "/v1/api",
-        }
+    *DATA_PLANE_PREFIX.get_or_init(|| match std::env::var("DATA_PLANE_PREFIX") {
+        Ok(s) if !s.is_empty() => Box::leak(s.into_boxed_str()),
+        Ok(_) => "",
+        Err(_) => "/v1/api",
     })
 }
 
@@ -346,9 +349,7 @@ fn reject_non_api_path(path: &str) -> Response {
         return json_error(
             StatusCode::NOT_FOUND,
             "not_found",
-            &format!(
-                "Invalid path; use {p} or {p}/<segment> (typo: missing '/' after prefix?)"
-            ),
+            &format!("Invalid path; use {p} or {p}/<segment> (typo: missing '/' after prefix?)"),
         );
     }
     json_error(
@@ -437,23 +438,23 @@ fn resolve_rate_limit(
     }
 }
 
-fn rate_limit_header_triple(info: &rate_limit::RateLimitInfo) -> [(HeaderValue, HeaderValue, HeaderValue); 1] {
-    let limit = HeaderValue::from_str(&info.limit.to_string()).unwrap_or(HeaderValue::from_static("0"));
+fn rate_limit_header_triple(
+    info: &rate_limit::RateLimitInfo,
+) -> [(HeaderValue, HeaderValue, HeaderValue); 1] {
+    let limit =
+        HeaderValue::from_str(&info.limit.to_string()).unwrap_or(HeaderValue::from_static("0"));
     let remaining =
         HeaderValue::from_str(&info.remaining.to_string()).unwrap_or(HeaderValue::from_static("0"));
-    let reset =
-        HeaderValue::from_str(&info.reset_unix.to_string()).unwrap_or(HeaderValue::from_static("0"));
+    let reset = HeaderValue::from_str(&info.reset_unix.to_string())
+        .unwrap_or(HeaderValue::from_static("0"));
     [(limit, remaining, reset)]
 }
 
 fn apply_rate_limit_headers(res: &mut Response, info: &rate_limit::RateLimitInfo) {
     let [(limit, remaining, reset)] = rate_limit_header_triple(info);
-    res.headers_mut()
-        .insert("X-RateLimit-Limit", limit);
-    res.headers_mut()
-        .insert("X-RateLimit-Remaining", remaining);
-    res.headers_mut()
-        .insert("X-RateLimit-Reset", reset);
+    res.headers_mut().insert("X-RateLimit-Limit", limit);
+    res.headers_mut().insert("X-RateLimit-Remaining", remaining);
+    res.headers_mut().insert("X-RateLimit-Reset", reset);
 }
 
 fn rate_limit_response(info: &rate_limit::RateLimitInfo, retry_after_secs: u64) -> Response {
@@ -503,7 +504,12 @@ fn append_rate_limit_to_builder(
     builder
 }
 
-fn validate_route_write(path: &str, target: &str, timeout_secs: i32, rate_limit_per_min: i32) -> Option<Response> {
+fn validate_route_write(
+    path: &str,
+    target: &str,
+    timeout_secs: i32,
+    rate_limit_per_min: i32,
+) -> Option<Response> {
     let mut fields = serde_json::Map::new();
     let dp = data_plane_prefix();
     if path.is_empty() {
@@ -552,7 +558,9 @@ fn validate_route_write(path: &str, target: &str, timeout_secs: i32, rate_limit_
     if rate_limit_per_min < 0 || rate_limit_per_min > 1_000_000 {
         fields.insert(
             "rate_limit_per_min".into(),
-            serde_json::Value::String("Rate limit phải từ 0 (không giới hạn theo route) đến 1.000.000 req/min".into()),
+            serde_json::Value::String(
+                "Rate limit phải từ 0 (không giới hạn theo route) đến 1.000.000 req/min".into(),
+            ),
         );
     }
     if fields.is_empty() {
@@ -584,7 +592,8 @@ async fn verify_data_plane_auth(
     cfg: &AppConfig,
     headers: &HeaderMap,
 ) -> Result<VerifiedClient, jwt_auth::TokenAuthFail> {
-    let token = jwt_auth::bearer_from_headers(headers).ok_or(jwt_auth::TokenAuthFail::MissingToken)?;
+    let token =
+        jwt_auth::bearer_from_headers(headers).ok_or(jwt_auth::TokenAuthFail::MissingToken)?;
     let store = oauth_tokens::TokenRevocationStore::from_session(&state.session_store);
     jwt_auth::verify_bearer(&cfg.client_credentials, &store, &token).await
 }
@@ -603,6 +612,7 @@ fn sanitize_upstream_headers(headers: &HeaderMap) -> HeaderMap {
     out
 }
 
+#[allow(dead_code)]
 fn canonical_request_path(uri: &Uri) -> String {
     let path = uri.path();
     match uri.query() {
@@ -664,7 +674,11 @@ fn capture_body(bytes: &[u8]) -> (Option<String>, i64, bool) {
     }
     let truncated = bytes.len() > MAX_TX_DETAIL_BODY;
     let slice = &bytes[..bytes.len().min(MAX_TX_DETAIL_BODY)];
-    (Some(String::from_utf8_lossy(slice).into_owned()), total, truncated)
+    (
+        Some(String::from_utf8_lossy(slice).into_owned()),
+        total,
+        truncated,
+    )
 }
 
 /// FR-D1: structured JSON transaction log + persist to PostgreSQL for admin UI.
@@ -825,7 +839,8 @@ fn parse_bool_setting(raw: Option<String>, default: bool) -> bool {
 }
 
 fn parse_u32_setting(raw: Option<String>, default: u32) -> u32 {
-    raw.and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(default)
+    raw.and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(default)
 }
 
 async fn load_runtime_settings(
@@ -848,8 +863,10 @@ async fn load_runtime_settings(
         db::load_setting(pool, "runtime_rate_limit_burst_enabled").await?,
         yaml.rate_limit.burst_enabled,
     );
-    let enable_metrics =
-        parse_bool_setting(db::load_setting(pool, "runtime_metrics_enabled").await?, true);
+    let enable_metrics = parse_bool_setting(
+        db::load_setting(pool, "runtime_metrics_enabled").await?,
+        true,
+    );
     let enable_health_check = parse_bool_setting(
         db::load_setting(pool, "runtime_health_enabled").await?,
         true,
@@ -914,7 +931,11 @@ async fn persist_runtime_settings(
     db::upsert_setting(
         pool,
         "runtime_rate_limit_burst_enabled",
-        if body.rate_limit_burst_enabled { "1" } else { "0" },
+        if body.rate_limit_burst_enabled {
+            "1"
+        } else {
+            "0"
+        },
     )
     .await?;
     db::upsert_setting(
@@ -1030,10 +1051,12 @@ fn validate_settings_write(body: &UpdateSettingsBody) -> Option<Response> {
 
 async fn build_app_config(pool: &PgPool) -> Result<AppConfig, sqlx::Error> {
     let yaml = read_yaml_bootstrap("config.yaml");
+    // Đọc lại routes + client keys
     let routes = db::load_route_rows(pool).await?;
     let client_credentials = db::load_client_credentials(pool).await?;
     let admin_api_key_sha256 = db::load_admin_hash(pool).await?;
     let settings = load_runtime_settings(pool, &yaml).await?;
+    // Cấu hình runtime
     Ok(AppConfig {
         routes,
         client_credentials,
@@ -1045,7 +1068,9 @@ async fn build_app_config(pool: &PgPool) -> Result<AppConfig, sqlx::Error> {
 async fn reload_runtime_config() -> Result<(), sqlx::Error> {
     let st = STATE.get().expect("STATE not initialized");
     let cfg = build_app_config(&st.pool).await?;
+    // Cập nhật AppConfig
     *st.config.write().await = cfg;
+    // Đã nạp
     Ok(())
 }
 
@@ -1094,21 +1119,15 @@ async fn ensure_client_key_manage_access(
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_target(false)
-        .json()
-        .init();
+    tracing_subscriber::fmt().with_target(false).json().init();
 
-    let database_url =
-        std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://avaso:avaso@127.0.0.1:5432/avaso_gateway".into());
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://avaso:avaso@127.0.0.1:5432/avaso_gateway".into());
 
     let pool = db::connect(&database_url)
         .await
         .expect("open postgres database");
-    db::migrate(&pool)
-        .await
-        .expect("run migrations");
+    db::migrate(&pool).await.expect("run migrations");
 
     let yaml = read_yaml_bootstrap("config.yaml");
     db::bootstrap_from_yaml_if_empty(&pool, &yaml)
@@ -1151,10 +1170,6 @@ async fn main() {
         .await
         .expect("load gateway RSA private key");
 
-    let initial = build_app_config(&pool)
-        .await
-        .expect("load config from database");
-
     let worker_jwt_state = sync_worker_gateway::init_worker_jwt_state(&pool, 1)
         .await
         .expect("init sync worker JWT for gateway loopback");
@@ -1194,20 +1209,37 @@ async fn main() {
         .route("/routes", get(api_routes).post(api_create_route))
         .route("/routes/acl-summary", get(api_routes_acl_summary))
         .route("/routes/:id/clients", get(api_route_clients))
-        .route("/routes/:id", put(api_update_route).delete(api_delete_route))
-        .route("/client-keys", get(api_list_client_keys).post(api_create_client_key))
+        .route(
+            "/routes/:id",
+            put(api_update_route).delete(api_delete_route),
+        )
+        .route(
+            "/client-keys",
+            get(api_list_client_keys).post(api_create_client_key),
+        )
         .route("/client-keys/bulk-status", post(api_bulk_client_key_status))
-        .route("/client-keys/traffic-summary", get(api_client_keys_traffic_summary))
+        .route(
+            "/client-keys/traffic-summary",
+            get(api_client_keys_traffic_summary),
+        )
         .route(
             "/client-keys/encrypted",
             post(api_create_client_key_encrypted),
         )
-        .route("/client-keys/:id", get(api_get_client_key).patch(api_patch_client_key).delete(api_delete_client_key))
+        .route(
+            "/client-keys/:id",
+            get(api_get_client_key)
+                .patch(api_patch_client_key)
+                .delete(api_delete_client_key),
+        )
         .route(
             "/client-keys/:id/routes",
             get(api_get_client_key_routes).put(api_put_client_key_routes),
         )
-        .route("/client-keys/:id/revoke-tokens", post(api_client_key_revoke_tokens))
+        .route(
+            "/client-keys/:id/revoke-tokens",
+            post(api_client_key_revoke_tokens),
+        )
         .route("/client-keys/:id/rotate", post(api_rotate_client_key))
         .route("/client-keys/:id/traffic", get(api_get_client_key_traffic))
         .route("/users", get(api_list_users).post(api_create_user))
@@ -1218,28 +1250,34 @@ async fn main() {
             "/workspace/members",
             get(api_list_workspace_members).post(api_invite_workspace_member),
         )
-        .route("/workspace/members/:user_id", delete(api_remove_workspace_member))
+        .route(
+            "/workspace/members/:user_id",
+            delete(api_remove_workspace_member),
+        )
         .route("/audit-logs", get(api_list_audit_logs))
         .route("/transaction-logs", get(api_list_transaction_logs))
-        .route("/transaction-logs/:id/detail", get(api_get_transaction_detail))
+        .route(
+            "/transaction-logs/:id/detail",
+            get(api_get_transaction_detail),
+        )
         .route("/proxy-queue", get(api_list_proxy_queue))
-        .route("/proxy-queue/bulk-delete", post(api_bulk_delete_proxy_queue))
+        .route(
+            "/proxy-queue/bulk-delete",
+            post(api_bulk_delete_proxy_queue),
+        )
         .route("/proxy-queue/:id/retry", post(api_retry_proxy_queue))
         .route("/proxy-queue/:id", delete(api_delete_proxy_queue))
         .route("/integrations", get(api_list_integrations))
-        .route("/integrations/setup-hints", get(api_integrations_setup_hints))
+        .route(
+            "/integrations/setup-hints",
+            get(api_integrations_setup_hints),
+        )
         .route(
             "/integrations/salesforce/connect",
             get(api_salesforce_connect),
         )
-        .route(
-            "/integrations/salesforce/test",
-            get(api_salesforce_test),
-        )
-        .route(
-            "/integrations/salesforce/sync",
-            post(api_salesforce_sync),
-        )
+        .route("/integrations/salesforce/test", get(api_salesforce_test))
+        .route("/integrations/salesforce/sync", post(api_salesforce_sync))
         .route(
             "/integrations/salesforce/disconnect",
             post(api_salesforce_disconnect),
@@ -1256,18 +1294,12 @@ async fn main() {
         .route("/integrations/zoho/test", get(api_zoho_test))
         .route("/integrations/zoho/projects", get(api_zoho_projects))
         .route("/integrations/zoho/tasks", get(api_zoho_tasks))
-        .route(
-            "/integrations/zoho/sync",
-            post(api_zoho_sync),
-        )
+        .route("/integrations/zoho/sync", post(api_zoho_sync))
         .route(
             "/integrations/snapshots",
             get(api_list_integration_snapshots),
         )
-        .route(
-            "/integrations/zoho/disconnect",
-            post(api_zoho_disconnect),
-        )
+        .route("/integrations/zoho/disconnect", post(api_zoho_disconnect))
         .route("/integrations/sync-now", post(api_sync_now))
         .route(
             "/integrations/sync-schedule",
@@ -1287,7 +1319,10 @@ async fn main() {
         .route("/reload-config", post(api_reload_config))
         .route("/oauth/tokens", get(api_oauth_tokens_list))
         .route("/oauth/tokens/revoke", post(api_oauth_revoke_jti_handler))
-        .route("/oauth/apps", get(api_oauth_apps_list).post(api_oauth_apps_create))
+        .route(
+            "/oauth/apps",
+            get(api_oauth_apps_list).post(api_oauth_apps_create),
+        )
         .route(
             "/oauth/apps/:id",
             put(api_oauth_apps_update).delete(api_oauth_apps_delete),
@@ -1312,7 +1347,8 @@ async fn main() {
             get(api_salesforce_callback),
         )
         .route("/integrations/zoho/callback", get(api_zoho_callback))
-        .route("/crypto/public-key", get(api_gateway_public_key));
+        .route("/crypto/public-key", get(api_gateway_public_key))
+        .merge(mock_api::router());
 
     let api = Router::new().merge(api_public).merge(api_protected);
 
@@ -1340,6 +1376,8 @@ async fn main() {
         .route("/oauth/authorize", get(oauth_authorize_handler))
         .route("/oauth/consent", post(oauth_consent_handler))
         .nest("/api", api)
+        // Public mock demo: /testAPI/* và /mock/report/* (không cần JWT/route DB)
+        .merge(mock_api::router())
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         .fallback(proxy_or_static)
@@ -1374,16 +1412,29 @@ async fn main() {
     println!("🚀 Gateway đang lắng nghe: http://{addr}/");
     println!("📊 Dashboard: http://{addr}/");
     println!("💾 Database: {}", database_url);
-    println!("🗄️  Session store: Redis ({})", session::redis_url_from_env().split('@').last().unwrap_or("redis"));
+    println!(
+        "🗄️  Session store: Redis ({})",
+        session::redis_url_from_env()
+            .split('@')
+            .last()
+            .unwrap_or("redis")
+    );
     println!("🔐 Admin: GET /api/ping (kiểm tra triển khai) | POST /api/login …");
     println!("   GET /api/me | POST /api/logout");
-    println!("   CORS: thêm domain UI production → CORS_ALLOWED_ORIGINS (vd https://thientinh.io.vn)");
+    println!(
+        "   CORS: thêm domain UI production → CORS_ALLOWED_ORIGINS (vd https://thientinh.io.vn)"
+    );
     println!("   GET/POST /api/routes | PUT/DELETE /api/routes/:id");
     println!("   GET/POST /api/client-keys | DELETE /api/client-keys/:id");
     println!("   GET /api/integrations | SF OAuth connect/callback/test");
     println!("   GET /api/crypto/public-key | POST /api/client-keys/encrypted (RSA envelope)");
     println!("   POST /oauth/token (grant_type=password|client_credentials)");
-    println!("   Data plane prefix (Bearer JWT bắt buộc): {}", data_plane_prefix());
+    println!(
+        "   Data plane prefix (Bearer JWT bắt buộc): {}",
+        data_plane_prefix()
+    );
+    println!("🧪 Public mock (no auth): GET /testAPI/get|/empty|/invalid|/unauthorized|/not-found|/server-error|/delay");
+    println!("   Alias: GET /api/testAPI/* và GET /api/mock/report/*");
     let shutdown = async {
         let ctrl_c = async {
             tokio::signal::ctrl_c()
@@ -1406,10 +1457,13 @@ async fn main() {
         info!("Shutting down gracefully…");
     };
 
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(shutdown)
-        .await
-        .unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
+    .unwrap();
 }
 
 fn cookie_secure_flag() -> bool {
@@ -1526,6 +1580,7 @@ async fn instance_label_middleware(req: Request<Body>, next: Next) -> Result<Res
 async fn admin_auth_middleware(mut req: Request<Body>, next: Next) -> Result<Response, Response> {
     let path = req.uri().path().to_string();
     let ip = admin_auth::client_ip_from_extensions(req.headers(), req.extensions());
+    // Admin API + session cookie
     match resolve_admin_ctx(req.headers()).await {
         Ok(mut ctx) => {
             if ctx.client_ip.is_none() {
@@ -1555,22 +1610,20 @@ async fn admin_auth_middleware(mut req: Request<Body>, next: Next) -> Result<Res
 }
 
 async fn rbac_middleware(req: Request<Body>, next: Next) -> Result<Response, Response> {
-    let ctx = req
-        .extensions()
-        .get::<AdminCtx>()
-        .cloned()
-        .ok_or_else(|| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
-                "admin context missing",
-            )
-        })?;
+    let ctx = req.extensions().get::<AdminCtx>().cloned().ok_or_else(|| {
+        json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "admin context missing",
+        )
+    })?;
     let method = req.method().clone();
     let path = req.uri().path().to_string();
+    // Kiểm tra RBAC theo role
     if !admin_auth::rbac_allow(&method, &path, &ctx.role) {
         if let Some(st) = STATE.get() {
             let resource = format!("{} {path}", method.as_str());
+            // Ghi audit (rbac_denied)
             write_audit_failure(
                 &st.pool,
                 &ctx,
@@ -1580,6 +1633,7 @@ async fn rbac_middleware(req: Request<Body>, next: Next) -> Result<Response, Res
                 Some("insufficient_permissions"),
             )
             .await;
+            // Đã ghi
         }
         return Err(admin_auth::forbidden_response());
     }
@@ -1696,6 +1750,7 @@ async fn oauth_token_handler(
     headers: HeaderMap,
     Form(form): Form<identity::OAuthTokenForm>,
 ) -> impl IntoResponse {
+    // POST oauth token kèm grant_type client_credentials
     let st = match STATE.get() {
         Some(s) => s.clone(),
         None => {
@@ -1712,11 +1767,14 @@ async fn oauth_token_handler(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    // Kiểm tra hạn mức token endpoint
     if let Err(retry_after) = st
         .rate_limiter
         .check_oauth_token_endpoint(client_id, ip.as_deref())
         .await
     {
+        // Vượt hạn mức token endpoint
+        // 429 rate_limit_exceeded
         st.gateway_metrics.record_rate_limit_hit();
         log_gateway_transaction(
             None,
@@ -1746,9 +1804,12 @@ async fn oauth_token_handler(
         );
     }
     let cfg = st.config.read().await.clone();
+    // Đổi grant lấy access token
     match identity::exchange_token(&st.pool, &cfg.client_credentials, form).await {
         Ok(issued) => {
+            // Lưu oauth_access_tokens
             oauth_handlers::record_issued_token(&st.pool, &headers, &issued).await;
+            // 200 access_token, token_type, expires_in
             Json(issued.response).into_response()
         }
         Err(err) => {
@@ -1758,7 +1819,9 @@ async fn oauth_token_handler(
     }
 }
 
-async fn api_oauth_revoke_handler(Form(body): Form<oauth_handlers::OAuthRevokeForm>) -> impl IntoResponse {
+async fn api_oauth_revoke_handler(
+    Form(body): Form<oauth_handlers::OAuthRevokeForm>,
+) -> impl IntoResponse {
     let Some(st) = STATE.get() else {
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "state");
     };
@@ -2026,13 +2089,11 @@ async fn api_register_viewer(
     if email.is_none() && !email_raw.is_empty() || email_raw.is_empty() {
         fields.insert(
             "email".into(),
-            serde_json::Value::String(
-                if email_raw.is_empty() {
-                    "Nhập email".into()
-                } else {
-                    "Email không hợp lệ".into()
-                },
-            ),
+            serde_json::Value::String(if email_raw.is_empty() {
+                "Nhập email".into()
+            } else {
+                "Email không hợp lệ".into()
+            }),
         );
     }
     if !fields.is_empty() {
@@ -2136,7 +2197,8 @@ async fn api_register_viewer(
             .await;
             match db::fetch_admin_user_by_id(&st.pool, id, tenant_id).await {
                 Ok(Some(row)) => {
-                    let mut res = establish_admin_session(&headers, ip.clone(), &row, "register").await;
+                    let mut res =
+                        establish_admin_session(&headers, ip.clone(), &row, "register").await;
                     if res.status() == StatusCode::OK {
                         *res.status_mut() = StatusCode::CREATED;
                     }
@@ -2221,11 +2283,7 @@ struct ResetPasswordBody {
 
 async fn api_update_me(headers: HeaderMap, Json(body): Json<UpdateMeBody>) -> impl IntoResponse {
     let Some(sid) = gw_sid_from_headers(&headers) else {
-        return json_error(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "Not logged in",
-        );
+        return json_error(StatusCode::UNAUTHORIZED, "unauthorized", "Not logged in");
     };
     let Some(st) = STATE.get() else {
         return json_error(
@@ -2446,9 +2504,7 @@ async fn api_update_me(headers: HeaderMap, Json(body): Json<UpdateMeBody>) -> im
         None
     };
 
-    let email_db: Option<Option<&str>> = email_patch
-        .as_ref()
-        .map(|o| o.as_deref());
+    let email_db: Option<Option<&str>> = email_patch.as_ref().map(|o| o.as_deref());
 
     match db::update_own_profile(
         &st.pool,
@@ -2492,9 +2548,7 @@ async fn api_update_me(headers: HeaderMap, Json(body): Json<UpdateMeBody>) -> im
             )
             .await;
 
-            let out_email = email_patch
-                .map(|o| o)
-                .unwrap_or_else(|| row.email.clone());
+            let out_email = email_patch.map(|o| o).unwrap_or_else(|| row.email.clone());
             Json(serde_json::json!({
                 "status": "ok",
                 "username": final_username,
@@ -2768,7 +2822,9 @@ async fn api_reset_password(
     if token.is_empty() {
         fields.insert(
             "reset_token".into(),
-            serde_json::Value::String("Phiên đặt lại mật khẩu không hợp lệ — xác minh OTP lại".into()),
+            serde_json::Value::String(
+                "Phiên đặt lại mật khẩu không hợp lệ — xác minh OTP lại".into(),
+            ),
         );
     }
     if pass.len() < 6 {
@@ -2870,11 +2926,7 @@ async fn api_reset_password(
 
 async fn admin_me(headers: HeaderMap) -> impl IntoResponse {
     let Some(sid) = gw_sid_from_headers(&headers) else {
-        return json_error(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "Not logged in",
-        );
+        return json_error(StatusCode::UNAUTHORIZED, "unauthorized", "Not logged in");
     };
     let Some(st) = STATE.get() else {
         return json_error(
@@ -2890,9 +2942,10 @@ async fn admin_me(headers: HeaderMap) -> impl IntoResponse {
                 .ok()
                 .flatten()
                 .and_then(|r| r.email);
-            let mut workspaces = db::list_accessible_workspaces(&st.pool, ctx.user_id, ctx.home_tenant_id)
-                .await
-                .unwrap_or_default();
+            let mut workspaces =
+                db::list_accessible_workspaces(&st.pool, ctx.user_id, ctx.home_tenant_id)
+                    .await
+                    .unwrap_or_default();
             if admin_auth::on_prem_single_org() {
                 workspaces.retain(|w| w.is_home);
             }
@@ -2945,15 +2998,15 @@ async fn api_switch_workspace(
         );
     };
     if body.tenant_id <= 0 {
-        return json_error(StatusCode::BAD_REQUEST, "invalid_tenant", "tenant_id không hợp lệ");
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_tenant",
+            "tenant_id không hợp lệ",
+        );
     }
-    let Ok(can) = db::user_can_access_workspace(
-        &st.pool,
-        ctx.user_id,
-        ctx.home_tenant_id,
-        body.tenant_id,
-    )
-    .await
+    let Ok(can) =
+        db::user_can_access_workspace(&st.pool, ctx.user_id, ctx.home_tenant_id, body.tenant_id)
+            .await
     else {
         return json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -3091,7 +3144,11 @@ async fn api_invite_workspace_member(
     };
     let username = body.username.trim();
     if username.is_empty() {
-        return json_error(StatusCode::BAD_REQUEST, "validation_failed", "Nhập username");
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            "Nhập username",
+        );
     }
     let Some(role) = normalize_user_role(&body.role) else {
         return json_error(StatusCode::BAD_REQUEST, "invalid_role", "Role không hợp lệ");
@@ -3103,7 +3160,10 @@ async fn api_invite_workspace_member(
             "Chỉ chủ workspace mới mời admin",
         );
     }
-    let Some(user) = db::fetch_admin_user_by_username(&st.pool, username).await.ok().flatten()
+    let Some(user) = db::fetch_admin_user_by_username(&st.pool, username)
+        .await
+        .ok()
+        .flatten()
     else {
         return json_error(
             StatusCode::NOT_FOUND,
@@ -3112,7 +3172,11 @@ async fn api_invite_workspace_member(
         );
     };
     if user.id == ctx.user_id {
-        return json_error(StatusCode::BAD_REQUEST, "invalid_target", "Không mời chính mình");
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_target",
+            "Không mời chính mình",
+        );
     }
     if user.tenant_id.unwrap_or(1) == ctx.tenant_id {
         return json_error(
@@ -3173,14 +3237,22 @@ async fn api_remove_workspace_member(
         );
     };
     if user_id == ctx.user_id {
-        return json_error(StatusCode::BAD_REQUEST, "invalid_target", "Không xóa chính mình");
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_target",
+            "Không xóa chính mình",
+        );
     }
     let Some(target) = db::fetch_admin_user_by_id_any(&st.pool, user_id)
         .await
         .ok()
         .flatten()
     else {
-        return json_error(StatusCode::NOT_FOUND, "user_not_found", "User không tồn tại");
+        return json_error(
+            StatusCode::NOT_FOUND,
+            "user_not_found",
+            "User không tồn tại",
+        );
     };
     if target.tenant_id.unwrap_or(1) == ctx.tenant_id {
         return json_error(
@@ -3229,15 +3301,10 @@ async fn admin_logout(headers: HeaderMap) -> impl IntoResponse {
             "invalid cookie clear header",
         );
     };
-    let mut res = (
-        StatusCode::OK,
-        Json(serde_json::json!({ "status": "ok" })),
-    )
-        .into_response();
+    let mut res = (StatusCode::OK, Json(serde_json::json!({ "status": "ok" }))).into_response();
     res.headers_mut().append(SET_COOKIE, hv);
     res
 }
-
 
 async fn health_handler() -> Response {
     let enabled = if let Some(st) = STATE.get() {
@@ -3246,7 +3313,11 @@ async fn health_handler() -> Response {
         true
     };
     if !enabled {
-        return json_error(StatusCode::NOT_FOUND, "disabled", "health endpoint disabled");
+        return json_error(
+            StatusCode::NOT_FOUND,
+            "disabled",
+            "health endpoint disabled",
+        );
     }
 
     let (db_ok, db_ms, redis_status, redis_ms) = if let Some(st) = STATE.get() {
@@ -3258,11 +3329,7 @@ async fn health_handler() -> Response {
     };
     let redis_ok = redis_status == SessionStoreStatus::Up;
 
-    let overall = if db_ok && redis_ok {
-        "ok"
-    } else {
-        "degraded"
-    };
+    let overall = if db_ok && redis_ok { "ok" } else { "degraded" };
 
     let mut body = serde_json::json!({
         "status": overall,
@@ -3320,17 +3387,18 @@ struct MetricsQuery {
     format: Option<String>,
 }
 
-async fn metrics_handler(
-    headers: HeaderMap,
-    Query(q): Query<MetricsQuery>,
-) -> Response {
+async fn metrics_handler(headers: HeaderMap, Query(q): Query<MetricsQuery>) -> Response {
     let enabled = if let Some(st) = STATE.get() {
         st.config.read().await.settings.enable_metrics
     } else {
         true
     };
     if !enabled {
-        return json_error(StatusCode::NOT_FOUND, "disabled", "metrics endpoint disabled");
+        return json_error(
+            StatusCode::NOT_FOUND,
+            "disabled",
+            "metrics endpoint disabled",
+        );
     }
     let wants_prometheus = q.format.as_deref() == Some("prometheus")
         || headers
@@ -3623,8 +3691,10 @@ fn route_policy_from_body(body: &RouteWriteBody) -> (String, String, i32, i32, i
 
 fn validate_route_proxy_policy(body: &RouteWriteBody) -> Option<Response> {
     let mut fields = serde_json::Map::new();
-    if serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&body.transform_add_headers)
-        .is_err()
+    if serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
+        &body.transform_add_headers,
+    )
+    .is_err()
     {
         fields.insert(
             "transform_add_headers".into(),
@@ -3679,12 +3749,10 @@ async fn api_create_route(
     };
     let path = body.path.trim().to_string();
     let target = body.target.trim().to_string();
-    if let Some(resp) = validate_route_write(
-        &path,
-        &target,
-        body.timeout_secs,
-        body.rate_limit_per_min,
-    ) {
+    // Validate route / sinh key-secret (tùy thao tác)
+    if let Some(resp) =
+        validate_route_write(&path, &target, body.timeout_secs, body.rate_limit_per_min)
+    {
         return resp;
     }
     if let Some(resp) = validate_route_proxy_policy(&body) {
@@ -3717,6 +3785,7 @@ async fn api_create_route(
         );
     }
     let (t_add, t_rm, retry_max, retry_timeout, queue_fail) = route_policy_from_body(&body);
+    // Ghi PG — routes CRUD hoặc client key tạo/rotate (+ACL)
     match db::insert_route(
         &st.pool,
         &path,
@@ -3736,6 +3805,7 @@ async fn api_create_route(
     {
         Ok(row) => {
             let _ = reload_runtime_config().await;
+            // Audit create/update/delete_route hoặc create/rotate_client_key
             write_audit(
                 &st.pool,
                 &ctx,
@@ -3746,6 +3816,8 @@ async fn api_create_route(
                 Some(&target),
             )
             .await;
+            // Đã ghi
+            // 201/200/204 (secret chỉ trả một lần nếu ACL)
             (StatusCode::CREATED, Json(row)).into_response()
         }
         Err(e) => route_db_error_response(e),
@@ -3769,12 +3841,9 @@ async fn api_update_route(
     };
     let path = body.path.trim().to_string();
     let target = body.target.trim().to_string();
-    if let Some(resp) = validate_route_write(
-        &path,
-        &target,
-        body.timeout_secs,
-        body.rate_limit_per_min,
-    ) {
+    if let Some(resp) =
+        validate_route_write(&path, &target, body.timeout_secs, body.rate_limit_per_min)
+    {
         return resp;
     }
     if let Some(resp) = validate_route_proxy_policy(&body) {
@@ -3904,6 +3973,7 @@ async fn api_delete_route(
         )
             .into_response(),
         Ok(_) => {
+            // Kết quả ghi (CASCADE ACL nếu xóa route)
             let _ = reload_runtime_config().await;
             write_audit(
                 &st.pool,
@@ -3915,6 +3985,7 @@ async fn api_delete_route(
                 None,
             )
             .await;
+            // 201/200/204 (secret chỉ trả một lần nếu ACL)
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => (
@@ -3968,7 +4039,8 @@ async fn api_list_client_keys(
     };
     // Viewer quan sát toàn tenant (không sở hữu key nào); operator chỉ key của mình.
     let admin_scope = ctx.is_admin() || ctx.is_viewer();
-    match db::list_client_keys_scoped(&st.pool, ctx.tenant_id, Some(ctx.user_id), admin_scope).await {
+    match db::list_client_keys_scoped(&st.pool, ctx.tenant_id, Some(ctx.user_id), admin_scope).await
+    {
         Ok(rows) => {
             let offset = pq.offset.unwrap_or(0);
             let limit = pq.limit.unwrap_or(500).min(1000);
@@ -4057,6 +4129,7 @@ async fn api_create_client_key(
             fields,
         );
     }
+    // Validate route / sinh key-secret (tùy thao tác)
     let api_key = db::random_api_key_id();
     let secret_key = db::random_secret_key();
     let integration_type = normalize_integration_type(&body.integration_type);
@@ -4065,7 +4138,9 @@ async fn api_create_client_key(
         let mut fields = serde_json::Map::new();
         fields.insert(
             "rate_limit_per_min".into(),
-            serde_json::Value::String("Rate limit phải từ 0 (mặc định route/global) đến 1.000.000 req/min".into()),
+            serde_json::Value::String(
+                "Rate limit phải từ 0 (mặc định route/global) đến 1.000.000 req/min".into(),
+            ),
         );
         return json_error_fields(
             StatusCode::BAD_REQUEST,
@@ -4087,10 +4162,13 @@ async fn api_create_client_key(
     .await
     {
         Ok(id) => {
+            // Ghi PG — routes CRUD hoặc client key tạo/rotate (+ACL)
             if !body.route_ids.is_empty() {
-                let _ = db::set_client_key_routes(&st.pool, id, ctx.tenant_id, &body.route_ids).await;
+                let _ =
+                    db::set_client_key_routes(&st.pool, id, ctx.tenant_id, &body.route_ids).await;
             }
             spawn_reload_runtime_config();
+            // Audit create/update/delete_route hoặc create/rotate_client_key
             write_audit(
                 &st.pool,
                 &ctx,
@@ -4102,6 +4180,7 @@ async fn api_create_client_key(
             )
             .await;
             let purpose = integration_purpose_label(&integration_type).to_string();
+            // 201/200/204 (secret chỉ trả một lần nếu ACL)
             (
                 StatusCode::CREATED,
                 Json(CreateClientKeyResponse {
@@ -4252,7 +4331,8 @@ async fn api_create_client_key_encrypted(
     {
         Ok(id) => {
             if !parsed.route_ids.is_empty() {
-                let _ = db::set_client_key_routes(&st.pool, id, ctx.tenant_id, &parsed.route_ids).await;
+                let _ =
+                    db::set_client_key_routes(&st.pool, id, ctx.tenant_id, &parsed.route_ids).await;
             }
             spawn_reload_runtime_config();
             write_audit(
@@ -4494,14 +4574,22 @@ async fn api_patch_client_key(
         }
     }
     let mut fields = serde_json::Map::new();
-    let name = body.name.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let name = body
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     if body.name.is_some() && name.is_none() {
         fields.insert(
             "name".into(),
             serde_json::Value::String("Nhập tên client".into()),
         );
     }
-    let status = body.status.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let status = body
+        .status
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     if let Some(s) = status {
         if s != "active" && s != "disabled" {
             fields.insert(
@@ -4627,6 +4715,22 @@ async fn api_put_client_key_routes(
             .into_response(),
         Ok(true) => {
             spawn_reload_runtime_config();
+            let detail = if body.route_ids.is_empty() {
+                "ACL rỗng — mọi route".to_string()
+            } else {
+                match db::fetch_route_paths_for_ids(&st.pool, ctx.tenant_id, &body.route_ids).await
+                {
+                    Ok(paths) if !paths.is_empty() => format!("ACL: {}", paths.join(", ")),
+                    _ => format!(
+                        "ACL ids: {}",
+                        body.route_ids
+                            .iter()
+                            .map(|i| i.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                }
+            };
             write_audit(
                 &st.pool,
                 &ctx,
@@ -4634,7 +4738,7 @@ async fn api_put_client_key_routes(
                 &format!("key:{id}"),
                 "success",
                 None,
-                Some(&format!("routes:{}", body.route_ids.len())),
+                Some(&detail),
             )
             .await;
             Json(serde_json::json!({ "route_ids": body.route_ids })).into_response()
@@ -4712,8 +4816,13 @@ async fn api_bulk_client_key_status(
             )]),
         );
     }
-    let owner_only = if ctx.is_admin() { None } else { Some(ctx.user_id) };
-    match db::bulk_update_client_key_status(&st.pool, ctx.tenant_id, &ids, &status, owner_only).await
+    let owner_only = if ctx.is_admin() {
+        None
+    } else {
+        Some(ctx.user_id)
+    };
+    match db::bulk_update_client_key_status(&st.pool, ctx.tenant_id, &ids, &status, owner_only)
+        .await
     {
         Ok(updated) => {
             if updated > 0 {
@@ -4760,10 +4869,12 @@ async fn api_rotate_client_key(
         return res;
     }
     let secret_key = db::random_secret_key();
+    // Ghi PG — routes CRUD hoặc client key tạo/rotate (+ACL)
     match db::rotate_client_key_secret(&st.pool, id, ctx.tenant_id, &secret_key).await {
         Ok(Some(api_key)) => {
             let _ = db::bump_client_token_version(&st.pool, id, ctx.tenant_id).await;
             spawn_reload_runtime_config();
+            // Audit create/update/delete_route hoặc create/rotate_client_key
             write_audit(
                 &st.pool,
                 &ctx,
@@ -4774,6 +4885,7 @@ async fn api_rotate_client_key(
                 None,
             )
             .await;
+            // 201/200/204 (secret chỉ trả một lần nếu ACL)
             (
                 StatusCode::OK,
                 Json(RotateClientKeyResponse {
@@ -4893,7 +5005,9 @@ struct UpdateUserBody {
     email: Option<String>,
 }
 
-fn parse_optional_email_field(raw: &Option<String>) -> Result<Option<Option<String>>, serde_json::Map<String, serde_json::Value>> {
+fn parse_optional_email_field(
+    raw: &Option<String>,
+) -> Result<Option<Option<String>>, serde_json::Map<String, serde_json::Value>> {
     let Some(s) = raw else {
         return Ok(None);
     };
@@ -5050,7 +5164,16 @@ async fn api_create_user(
         );
     }
     let email_ins = email_patch.as_ref().and_then(|o| o.as_deref());
-    match db::insert_admin_user(&st.pool, username, &password_hash, &role, tenant_id, email_ins).await {
+    match db::insert_admin_user(
+        &st.pool,
+        username,
+        &password_hash,
+        &role,
+        tenant_id,
+        email_ins,
+    )
+    .await
+    {
         Ok(id) => {
             if role == "admin" {
                 let _ = integrations::ensure_integration_rows(&st.pool, tenant_id).await;
@@ -5198,9 +5321,7 @@ async fn api_update_user(
                     "Không thể hạ/vô hiệu hóa admin cuối cùng",
                     serde_json::Map::from_iter([(
                         "role".into(),
-                        serde_json::Value::String(
-                            "Cần ít nhất một admin đang hoạt động".into(),
-                        ),
+                        serde_json::Value::String("Cần ít nhất một admin đang hoạt động".into()),
                     )]),
                 );
             }
@@ -5237,9 +5358,7 @@ async fn api_update_user(
                 if current.is_empty() {
                     fields.insert(
                         "current_password".into(),
-                        serde_json::Value::String(
-                            "Nhập mật khẩu hiện tại để xác nhận".into(),
-                        ),
+                        serde_json::Value::String("Nhập mật khẩu hiện tại để xác nhận".into()),
                     );
                     return json_error_fields(
                         StatusCode::BAD_REQUEST,
@@ -5352,7 +5471,11 @@ async fn api_update_user(
             match db::fetch_dashboard_user_public(&st.pool, id, target_tenant).await {
                 Ok(Some(u)) => return (StatusCode::OK, Json(u)).into_response(),
                 Ok(None) => {
-                    tracing::error!(user_id = id, tenant_id = target_tenant, "update_user: row missing after update");
+                    tracing::error!(
+                        user_id = id,
+                        tenant_id = target_tenant,
+                        "update_user: row missing after update"
+                    );
                     return json_error(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "internal_error",
@@ -5473,6 +5596,7 @@ async fn api_retry_proxy_queue(
     Extension(ctx): Extension<AdminCtx>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    // POST /api/proxy-queue/{id}/retry
     let Some(st) = STATE.get() else {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -5506,11 +5630,16 @@ async fn api_retry_proxy_queue(
                 &ctx,
                 "proxy_queue_retry",
                 &item.path,
-                if status.is_success() { "success" } else { "failure" },
+                if status.is_success() {
+                    "success"
+                } else {
+                    "failure"
+                },
                 None,
                 Some(&format!("status={}", status.as_u16())),
             )
             .await;
+            // 200 retried
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -5536,6 +5665,7 @@ async fn api_retry_proxy_queue(
                 Some(&format!("status={}", status.as_u16())),
             )
             .await;
+            // 502 retry_failed
             (
                 StatusCode::BAD_GATEWAY,
                 Json(serde_json::json!({
@@ -5551,6 +5681,7 @@ async fn api_retry_proxy_queue(
             st.proxy_queue
                 .record_retry_failure(ctx.tenant_id, &id, next)
                 .await;
+            // 502 retry_failed
             (
                 StatusCode::BAD_GATEWAY,
                 Json(serde_json::json!({ "error": "retry_failed", "message": e })),
@@ -5652,7 +5783,11 @@ async fn api_delete_proxy_queue(
     if st.proxy_queue.remove(ctx.tenant_id, &id).await {
         let details = match summary {
             Some((method, path, reason)) => {
-                let r = if reason.is_empty() { "—" } else { reason.as_str() };
+                let r = if reason.is_empty() {
+                    "—"
+                } else {
+                    reason.as_str()
+                };
                 format!("Đã xóa 1 bản ghi Proxy Queue (DLQ)\n{method} {path} · {r}")
             }
             None => "Đã xóa 1 bản ghi Proxy Queue (DLQ)".to_string(),
@@ -6004,9 +6139,7 @@ async fn api_update_integration_sync_schedule(
     integrations::api_update_integration_sync_schedule(&ctx, body).await
 }
 
-async fn api_integration_pipeline_status(
-    Extension(ctx): Extension<AdminCtx>,
-) -> impl IntoResponse {
+async fn api_integration_pipeline_status(Extension(ctx): Extension<AdminCtx>) -> impl IntoResponse {
     if !ctx.is_admin() {
         return audit_admin_denied(&ctx, "integrations/pipeline-status").await;
     }
@@ -6181,7 +6314,8 @@ async fn handle_data_plane_request(
         Ok(v) => v,
         Err(err) => {
             let (status, reason, msg) = jwt_auth::token_auth_to_response(err);
-            let (log_key_id, log_tenant) = jwt_auth::identity_for_log(&cfg.client_credentials, &bearer);
+            let (log_key_id, log_tenant) =
+                jwt_auth::identity_for_log(&cfg.client_credentials, &bearer);
             log_gateway_transaction(
                 log_tenant,
                 client_ip.as_deref(),
@@ -6340,8 +6474,17 @@ async fn handle_data_plane_request(
             );
         }
         let req = Request::from_parts(parts, Body::from(body_bytes));
-        return match do_proxy(state, req, uri, path, route, matched.params, matched.suffix, verified)
-            .await
+        return match do_proxy(
+            state,
+            req,
+            uri,
+            path,
+            route,
+            matched.params,
+            matched.suffix,
+            verified,
+        )
+        .await
         {
             Ok(resp) => resp,
             Err(e) => e,
@@ -6382,9 +6525,9 @@ async fn handle_proxied_route(
     let verified = verify_data_plane_auth(&state, &cfg, &parts.headers)
         .await
         .map_err(|err| {
-        let (status, _, _) = jwt_auth::token_auth_to_response(err);
-        status_to_json_error(status)
-    })?;
+            let (status, _, _) = jwt_auth::token_auth_to_response(err);
+            status_to_json_error(status)
+        })?;
     if !jwt_auth::client_allows_route(&verified, &route) {
         return Err(status_to_json_error(StatusCode::FORBIDDEN));
     }
@@ -6474,6 +6617,7 @@ async fn do_proxy(
     route_suffix: String,
     verified: VerifiedClient,
 ) -> Result<Response, Response> {
+    // Gọi data plane (sau auth)
     let started = Instant::now();
     let (parts, body) = req.into_parts();
 
@@ -6546,6 +6690,9 @@ async fn do_proxy(
     .await;
 
     let status = upstream.status;
+    // Log forwarded hoặc forwarded_after_retry
+    // Log queued / queued_after_failure
+    // Log upstream_error
     let log_reason: &'static str = if upstream.queued_id.is_some() {
         "queued_after_failure"
     } else if upstream.attempts > 1 {
@@ -6592,6 +6739,7 @@ async fn do_proxy(
     );
 
     if let Some(qid) = upstream.queued_id.clone() {
+        // 502 + queue_id
         let body_json = serde_json::json!({
             "error": "upstream_failed",
             "message": "Request đã vào hàng đợi (DLQ) sau retry",
@@ -6609,6 +6757,8 @@ async fn do_proxy(
         .map_err(|_| status_to_json_error(StatusCode::BAD_GATEWAY))?);
     }
 
+    // Upstream status (+ X-Retry-Attempts nếu >1)
+    // 502/504 upstream lỗi
     let mut builder = Response::builder().status(status);
     if upstream.attempts > 1 {
         builder = builder.header("X-Retry-Attempts", upstream.attempts.to_string());
@@ -6665,7 +6815,10 @@ mod path_tests {
 
         let sanitized = sanitize_upstream_headers(&headers);
         assert!(sanitized.get(AUTHORIZATION).is_none());
-        assert_eq!(sanitized.get("x-demo"), Some(&HeaderValue::from_static("ok")));
+        assert_eq!(
+            sanitized.get("x-demo"),
+            Some(&HeaderValue::from_static("ok"))
+        );
     }
 
     #[test]
@@ -6732,7 +6885,10 @@ mod path_tests {
         };
         assert!(jwt_auth::client_allows_route(&full, &route));
         assert!(jwt_auth::client_allows_route(&restricted, &route));
-        assert!(!jwt_auth::client_allows_route(&restricted, &test_route(6, 10)));
+        assert!(!jwt_auth::client_allows_route(
+            &restricted,
+            &test_route(6, 10)
+        ));
         assert!(!jwt_auth::client_allows_route(&full, &other_tenant));
     }
 

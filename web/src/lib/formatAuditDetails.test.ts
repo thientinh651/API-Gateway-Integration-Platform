@@ -27,4 +27,17 @@ describe('formatAuditDetails', () => {
     expect(f).toContain('app="Test"');
     expect(f).toContain('client_id=');
   });
+
+  it('maps legacy routes:count for update_client_key_routes', () => {
+    expect(formatAuditDetails('routes:0', 'update_client_key_routes')).toBe(
+      'ACL rỗng — mọi route',
+    );
+    expect(formatAuditDetails('routes:3', 'update_client_key_routes')).toBe('ACL: 3 route');
+  });
+
+  it('passes through new ACL path details', () => {
+    expect(
+      formatAuditDetails('ACL: /sf/accounts, /zoho/leads', 'update_client_key_routes'),
+    ).toBe('ACL: /sf/accounts, /zoho/leads');
+  });
 });
