@@ -196,10 +196,12 @@ pub async fn bootstrap_from_yaml_if_empty(
         .await?;
 
     if n_routes == 0 {
+        // Unique là (tenant_id, path) — migration tenant_isolation; không còn UNIQUE(path).
         for r in yaml.routes.iter() {
             sqlx::query(
-                "INSERT INTO gateway_routes (path, target, timeout_secs, rate_limit_per_min) VALUES ($1, $2, 30, 100)
-                 ON CONFLICT(path) DO UPDATE SET target = excluded.target",
+                "INSERT INTO gateway_routes (path, target, timeout_secs, rate_limit_per_min, tenant_id)
+                 VALUES ($1, $2, 30, 100, 1)
+                 ON CONFLICT (tenant_id, path) DO UPDATE SET target = excluded.target",
             )
             .bind(&r.path)
             .bind(&r.target)
