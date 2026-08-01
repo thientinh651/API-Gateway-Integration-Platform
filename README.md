@@ -105,9 +105,11 @@ Migration SQL tự chạy khi gateway khởi động (`migrations/`).
 
 
 ```bash
-# Docker all-in-one (không cần copy .env)
+# Docker DEMO tách biệt production (Postgres+Redis+Gateway riêng)
 docker compose up --build -d
-# Dashboard: http://127.0.0.1:13000  — login xem ADMIN_USERNAME/PASSWORD trong .env.example
+# Dashboard: http://127.0.0.1:13000  — login: ADMIN_* trong .env.example
+# Tắt + xóa DB demo: docker compose down -v
+# Production VPS (thientinh.io.vn) KHÔNG dùng lệnh này — dùng systemd.
 ```
 
 Chi tiết: [`docs/TRIEN_KHAI.md`](docs/TRIEN_KHAI.md), [`docs/TRIEN_KHAI_DOCKER.md`](docs/TRIEN_KHAI_DOCKER.md).

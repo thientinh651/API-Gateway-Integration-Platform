@@ -1130,18 +1130,20 @@ async fn main() {
     db::migrate(&pool).await.expect("run migrations");
 
     let yaml = read_yaml_bootstrap("config.yaml");
-    db::bootstrap_from_yaml_if_empty(&pool, &yaml)
-        .await
-        .expect("bootstrap yaml into db");
-    db::bootstrap_admin_user_if_empty(&pool)
-        .await
-        .expect("bootstrap admin user");
-    db::ensure_admin_setting(&pool)
-        .await
-        .expect("ensure admin api key hash in db");
+    // Thứ tự an toàn cho DB trống (Docker lần đầu) và no-op trên production đã có data:
+    // tenant → admin → seed yaml (FK owner/tenant hợp lệ).
     db::ensure_default_tenant(&pool)
         .await
         .expect("ensure default tenant");
+    db::bootstrap_admin_user_if_empty(&pool)
+        .await
+        .expect("bootstrap admin user");
+    db::bootstrap_from_yaml_if_empty(&pool, &yaml)
+        .await
+        .expect("bootstrap yaml into db");
+    db::ensure_admin_setting(&pool)
+        .await
+        .expect("ensure admin api key hash in db");
     db::backfill_admin_tenants(&pool)
         .await
         .expect("backfill admin tenant_id");
@@ -4156,7 +4158,7 @@ async fn api_create_client_key(
         &secret_key,
         ctx.tenant_id,
         &integration_type,
-        ctx.user_id,
+        Some(ctx.user_id),
         rate_limit,
     )
     .await
@@ -4324,7 +4326,7 @@ async fn api_create_client_key_encrypted(
         &secret_key,
         ctx.tenant_id,
         &integration_type,
-        ctx.user_id,
+        Some(ctx.user_id),
         parsed.rate_limit_per_min,
     )
     .await

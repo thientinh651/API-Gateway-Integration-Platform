@@ -100,18 +100,19 @@ Thời gian build lần đầu khoảng 5–15 phút tùy CPU — Rust compile t
 
 ---
 
-## 3. Dev local — `docker-compose.yml`
+## 3. Dev / Demo — `docker-compose.yml` (tách production)
+
+Project Compose: **`avaso-demo`**. Container / volume / network riêng (`avaso-demo-*`).  
+**Không** kết nối Postgres/Redis VPS. `DATABASE_URL` / `REDIS_URL` trong compose **ghi đè** `.env`.
 
 ### 3.1 Chuẩn bị
 
-Không bắt buộc copy `.env`. Compose đọc `.env.example`; nếu có file `.env` thì ghi đè thêm.
+Không bắt buộc copy `.env`. Compose đọc `.env.example`; file `.env` (nếu có) chỉ bổ sung secret — URL DB vẫn bị ghi đè sang service Docker.
 
 ```bash
 cd /path/to/avaso-gateway
-# (tuỳ chọn) copy .env.example .env rồi sửa mật khẩu
+# (tuỳ chọn) copy .env.example .env rồi sửa mật khẩu demo
 ```
-
-`DATABASE_URL` và `REDIS_URL` trong compose **ghi đè** sang hostname service Docker `postgres` / `redis`, không dùng `127.0.0.1`.
 
 ### 3.2 Chạy
 
@@ -123,13 +124,15 @@ curl -sS http://127.0.0.1:13000/health | python3 -m json.tool
 
 ### 3.3 Service và port
 
-| Service | Image / build | Port host | RAM limit |
-|---------|---------------|-----------|-----------|
-| postgres | postgres:16-alpine | 127.0.0.1:15432 | 512M |
-| redis | redis:7-alpine | 127.0.0.1:16379 | 192M |
-| gateway | build `.` | 127.0.0.1:13000 | 384M |
+| Service | Container | Port host | Volume / network |
+|---------|-----------|-----------|------------------|
+| postgres | `avaso-demo-postgres` | 127.0.0.1:15432 | `avaso_demo_pgdata` |
+| redis | `avaso-demo-redis` | 127.0.0.1:16379 | — |
+| gateway | `avaso-demo-gateway` | 127.0.0.1:13000 | net `avaso-demo-net` |
 
-Port host lệch `:5432` / `:6379` / `:3000` mặc định — tránh trùng service local (Windows). Chỉ bind localhost.
+Port host lệch `:5432` / `:6379` / `:3000` — tránh trùng service local. Chỉ bind localhost.
+
+Production: systemd trên VPS — xem [`TRIEN_KHAI.md`](TRIEN_KHAI.md). `docker compose down -v` chỉ xóa DB **demo**, không đụng VPS.
 
 ### 3.4 Volume
 
@@ -150,6 +153,8 @@ Mở trình duyệt: `http://127.0.0.1:13000`
 Đăng nhập bằng `ADMIN_USERNAME` / `ADMIN_PASSWORD` trong `.env.example` (hoặc `.env` nếu có).
 
 `COOKIE_SECURE=false` trong Docker — cookie hoạt động trên HTTP.
+
+Tách production: site `https://thientinh.io.vn` vẫn chạy systemd; stack `avaso-demo` chỉ trên máy local/thầy.
 
 ---
 

@@ -1,19 +1,38 @@
-# Dev / nộp thầy: PostgreSQL + Redis + gateway
-# Host ports lệch mặc định — tránh trùng Postgres/Redis/app local trên Windows.
-# Chạy: docker compose up --build -d
-# Dashboard: http://127.0.0.1:13000  (admin / xem ADMIN_PASSWORD trong .env.example)
+# =============================================================================
+# AVASO DEMO / Nộp thầy — stack ĐỘC LẬP, không đụng production
+# =============================================================================
+# Production thật: systemd + Postgres/Redis trên VPS (thientinh.io.vn) — KHÔNG
+# dùng file này.
+#
+# Stack này tự có: Postgres + Redis + Gateway riêng (volume + network riêng).
+# DATABASE_URL / REDIS_URL bên dưới GHI ĐÈ mọi giá trị trong .env — kể cả khi
+# .env trỏ nhầm production, container demo vẫn chỉ nói chuyện trong Docker.
+#
+# Chạy:
+#   docker compose up --build -d
+# Dashboard:
+#   http://127.0.0.1:13000
+# Login mặc định (.env.example):
+#   admin / admin
+# Tắt + xóa DB demo:
+#   docker compose down -v
+# =============================================================================
+
+name: avaso-demo
+
 services:
   postgres:
     image: postgres:16-alpine
+    container_name: avaso-demo-postgres
     environment:
       POSTGRES_USER: avaso
       POSTGRES_PASSWORD: avaso
-      POSTGRES_DB: avaso_gateway
+      POSTGRES_DB: avaso_gateway_demo
     ports:
-      # Host 15432 — tránh trùng Postgres local :5432
+      # Host 15432 — không đụng Postgres production / local :5432
       - "127.0.0.1:15432:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - avaso_demo_pgdata:/var/lib/postgresql/data
     command:
       - postgres
       - -c
@@ -27,11 +46,13 @@ services:
       - -c
       - max_connections=40
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U avaso -d avaso_gateway"]
+      test: ["CMD-SHELL", "pg_isready -U avaso -d avaso_gateway_demo"]
       interval: 5s
       timeout: 3s
       retries: 10
     restart: unless-stopped
+    networks:
+      - avaso-demo-net
     deploy:
       resources:
         limits:
@@ -39,8 +60,9 @@ services:
 
   redis:
     image: redis:7-alpine
+    container_name: avaso-demo-redis
     ports:
-      # Host 16379 — tránh trùng Redis local :6379
+      # Host 16379 — không đụng Redis production / local :6379
       - "127.0.0.1:16379:6379"
     command:
       - redis-server
@@ -58,6 +80,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - avaso-demo-net
     deploy:
       resources:
         limits:
@@ -65,32 +89,41 @@ services:
 
   gateway:
     build: .
+    container_name: avaso-demo-gateway
     ports:
-      # Host 13000 — tránh trùng app/local :3000
+      # Host 13000 — không đụng gateway production :3000
       - "127.0.0.1:13000:3000"
     env_file:
-      # Mặc định dùng .env.example — không cần copy .env
       - .env.example
       - path: .env
         required: false
     environment:
       BIND_HOST: "0.0.0.0"
-      # Trong mạng Docker — hostname service, không dùng 127.0.0.1
-      DATABASE_URL: "postgres://avaso:avaso@postgres:5432/avaso_gateway"
+      # Bắt buộc hostname service trong mạng demo — KHÔNG dùng IP VPS / 127.0.0.1 host
+      DATABASE_URL: "postgres://avaso:avaso@postgres:5432/avaso_gateway_demo"
       REDIS_URL: "redis://redis:6379"
       PG_POOL_MAX: "5"
       PORT: "3000"
       COOKIE_SECURE: "false"
+      INSTANCE_NAME: "avaso-demo"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
+    networks:
+      - avaso-demo-net
     deploy:
       resources:
         limits:
           memory: 384M
 
+networks:
+  avaso-demo-net:
+    name: avaso-demo-net
+    driver: bridge
+
 volumes:
-  postgres-data:
+  avaso_demo_pgdata:
+    name: avaso_demo_pgdata

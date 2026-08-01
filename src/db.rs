@@ -186,28 +186,48 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
     sqlx::migrate!("./migrations").run(pool).await
 }
 
-/// If DB has no routes / no client keys, seed from `config.yaml` (one-time style import).
+/// If DB has no routes / no client keys, seed from `config.yaml` (empty DB only).
+/// Production DB đã có data → hàm no-op, không ghi đè.
 pub async fn bootstrap_from_yaml_if_empty(
     pool: &PgPool,
     yaml: &YamlBootstrap,
 ) -> Result<(), sqlx::Error> {
+    let default_tenant_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM tenants WHERE name = 'default' ORDER BY id LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or(1);
+
+    let admin_owner_id: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM dashboard_users WHERE role = 'admin' AND is_active = 1 ORDER BY id LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+
     let n_routes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gateway_routes")
         .fetch_one(pool)
         .await?;
 
     if n_routes == 0 {
-        // Unique là (tenant_id, path) — migration tenant_isolation; không còn UNIQUE(path).
+        // Unique index: (tenant_id, path) — migration tenant_isolation
         for r in yaml.routes.iter() {
             sqlx::query(
                 "INSERT INTO gateway_routes (path, target, timeout_secs, rate_limit_per_min, tenant_id)
-                 VALUES ($1, $2, 30, 100, 1)
-                 ON CONFLICT (tenant_id, path) DO UPDATE SET target = excluded.target",
+                 VALUES ($1, $2, 30, 100, $3)
+                 ON CONFLICT (tenant_id, path) DO UPDATE SET target = EXCLUDED.target",
             )
             .bind(&r.path)
             .bind(&r.target)
+            .bind(default_tenant_id)
             .execute(pool)
             .await?;
         }
+        tracing::info!(
+            count = yaml.routes.len(),
+            tenant_id = default_tenant_id,
+            "bootstrapped gateway_routes from config.yaml"
+        );
     }
 
     let n_keys: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gateway_client_keys")
@@ -223,10 +243,21 @@ pub async fn bootstrap_from_yaml_if_empty(
             };
             let client_id = random_api_key_id();
             let secret = random_secret_key();
-            let _ = insert_oauth_client(pool, &name, &client_id, &secret, 1, "app", 0, 0).await?;
+            let _ = insert_oauth_client(
+                pool,
+                &name,
+                &client_id,
+                &secret,
+                default_tenant_id,
+                "app",
+                admin_owner_id,
+                0,
+            )
+            .await?;
             tracing::info!(
                 client_id = %client_id,
                 name = %name,
+                owner_user_id = ?admin_owner_id,
                 "Bootstrap OAuth client from config.yaml — save client_secret from dashboard"
             );
         }
@@ -2221,8 +2252,7 @@ pub async fn ensure_sync_worker_client_key(
         "SELECT id FROM dashboard_users WHERE is_active = 1 ORDER BY id LIMIT 1",
     )
     .fetch_optional(pool)
-    .await?
-    .unwrap_or(1);
+    .await?;
 
     let secret = random_oauth_client_secret();
     let id = insert_oauth_client(
@@ -2265,12 +2295,14 @@ pub async fn insert_oauth_client(
     secret_key: &str,
     tenant_id: i64,
     integration_type: &str,
-    owner_user_id: i64,
+    owner_user_id: Option<i64>,
     rate_limit_per_min: i32,
 ) -> Result<i64, sqlx::Error> {
     let hash = hash_client_secret(secret_key)
         .map_err(|e| sqlx::Error::Configuration(format!("hash client secret: {e}").into()))?;
     let unique_row = format!("argon2id:{}", sha256_hex(api_key));
+    // owner_user_id NULL hợp lệ (FK ON DELETE SET NULL); không insert 0 giả.
+    let owner = owner_user_id.filter(|&id| id > 0);
     sqlx::query_scalar(
         "INSERT INTO gateway_client_keys (name, api_key, secret_encrypted, secret_hash, secret_sha256_hex, tenant_id, integration_type, owner_user_id, status, rate_limit_per_min)
          VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, 'active', $8) RETURNING id",
@@ -2281,7 +2313,7 @@ pub async fn insert_oauth_client(
     .bind(&unique_row)
     .bind(tenant_id)
     .bind(integration_type)
-    .bind(owner_user_id)
+    .bind(owner)
     .bind(rate_limit_per_min)
     .fetch_one(pool)
     .await
