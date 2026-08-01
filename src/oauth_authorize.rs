@@ -293,6 +293,7 @@ pub async fn create_authorization_code(
 ) -> Result<String, sqlx::Error> {
     let code = format!("ac_{}", uuid::Uuid::new_v4());
     let expires = Utc::now() + Duration::minutes(10);
+    //code_challenge_method: S256
     sqlx::query(
         "INSERT INTO oauth_authorization_codes (code, app_client_id, user_id, tenant_id, redirect_uri, scope, expires_at, code_challenge, code_challenge_method)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",

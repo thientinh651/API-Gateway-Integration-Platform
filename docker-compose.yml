@@ -7,7 +7,8 @@ services:
       POSTGRES_PASSWORD: avaso
       POSTGRES_DB: avaso_gateway
     ports:
-      - "127.0.0.1:5432:5432"
+      # Host 15432 — tránh trùng Postgres local :5432
+      - "127.0.0.1:15432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     command:
@@ -36,7 +37,8 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "127.0.0.1:6379:6379"
+      # Host 16379 — tránh trùng Redis local :6379
+      - "127.0.0.1:16379:6379"
     command:
       - redis-server
       - --maxmemory
