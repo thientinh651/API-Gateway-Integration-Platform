@@ -18,18 +18,18 @@ Production hiện tại trên VPS dùng **systemd + binary release** — xem [`d
 ### Sơ đồ dev local
 
 ```text
-Host :3000
+Host :13000
     │
     ▼
 ┌─────────────┐
 │  gateway    │  avaso-gateway binary + web/dist
-│  :3000      │
+│  :3000      │  (publish host 13000 → container 3000)
 └──────┬──────┘
        │
    ┌───┴───┐
    ▼       ▼
 postgres  redis
- :5432    :6379
+ (host 15432 / 16379 — trong mạng Docker vẫn :5432 / :6379)
 ```
 
 ### Sơ đồ Compose 2 instance *(thử nghiệm — không gọi HA trong báo cáo)*
@@ -104,31 +104,32 @@ Thời gian build lần đầu khoảng 5–15 phút tùy CPU — Rust compile t
 
 ### 3.1 Chuẩn bị
 
+Không bắt buộc copy `.env`. Compose đọc `.env.example`; nếu có file `.env` thì ghi đè thêm.
+
 ```bash
-cd /root/avaso-gateway
-cp .env.example .env
-# Chỉnh ADMIN_PASSWORD, CLIENT_KEY_MASTER_KEY, INTEGRATION_MASTER_KEY trong .env
+cd /path/to/avaso-gateway
+# (tuỳ chọn) copy .env.example .env rồi sửa mật khẩu
 ```
 
-File `.env` được mount vào service `gateway` qua `env_file`. `DATABASE_URL` và `REDIS_URL` trong compose **ghi đè** để trỏ hostname service Docker `postgres` và `redis`, không dùng `127.0.0.1`.
+`DATABASE_URL` và `REDIS_URL` trong compose **ghi đè** sang hostname service Docker `postgres` / `redis`, không dùng `127.0.0.1`.
 
 ### 3.2 Chạy
 
 ```bash
 docker compose up --build -d
 docker compose ps
-curl -sS http://127.0.0.1:3000/health | python3 -m json.tool
+curl -sS http://127.0.0.1:13000/health | python3 -m json.tool
 ```
 
 ### 3.3 Service và port
 
 | Service | Image / build | Port host | RAM limit |
 |---------|---------------|-----------|-----------|
-| postgres | postgres:16-alpine | 127.0.0.1:5432 | 512M |
-| redis | redis:7-alpine | 127.0.0.1:6379 | 192M |
-| gateway | build `.` | 127.0.0.1:3000 | 384M |
+| postgres | postgres:16-alpine | 127.0.0.1:15432 | 512M |
+| redis | redis:7-alpine | 127.0.0.1:16379 | 192M |
+| gateway | build `.` | 127.0.0.1:13000 | 384M |
 
-PostgreSQL và Redis chỉ bind localhost — an toàn trên máy dev.
+Port host lệch `:5432` / `:6379` / `:3000` mặc định — tránh trùng service local (Windows). Chỉ bind localhost.
 
 ### 3.4 Volume
 
@@ -145,10 +146,10 @@ docker compose down -v       # xóa volume DB — reset sạch
 
 ### 3.6 Truy cập Dashboard
 
-Mở trình duyệt: `http://127.0.0.1:3000`  
-Đăng nhập bằng `ADMIN_USERNAME` / `ADMIN_PASSWORD` trong `.env`.
+Mở trình duyệt: `http://127.0.0.1:13000`  
+Đăng nhập bằng `ADMIN_USERNAME` / `ADMIN_PASSWORD` trong `.env.example` (hoặc `.env` nếu có).
 
-`COOKIE_SECURE=false` trong Docker dev — cookie hoạt động trên HTTP.
+`COOKIE_SECURE=false` trong Docker — cookie hoạt động trên HTTP.
 
 ---
 
@@ -266,10 +267,10 @@ Cả hai dùng **cùng Dockerfile logic** — binary và SPA giống nhau.
 
 ```bash
 # Health
-curl -sS http://127.0.0.1:3000/health
+curl -sS http://127.0.0.1:13000/health
 
 # Smoke test — chỉnh GATEWAY_BASE nếu dùng HA :8080
-GATEWAY_BASE_URL=http://127.0.0.1:3000 ./scripts/smoke-test.sh
+GATEWAY_BASE_URL=http://127.0.0.1:13000 ./scripts/smoke-test.sh
 
 # Trạng thái container
 docker compose ps
@@ -286,7 +287,7 @@ docker stats --no-stream
 | Build Rust lâu / hết RAM | VPS 2GB | Tăng swap hoặc build trên máy mạnh hơn rồi push image |
 | Login admin fail trên HA | Cookie domain | Dùng đúng `http://127.0.0.1:8080`, không trộn localhost:3000 |
 | OAuth redirect lỗi | Callback URL | Cấu hình `GATEWAY_PUBLIC_URL` trỏ URL public thật, không dùng Docker local cho OAuth production |
-| Port 3000 busy | Gateway host đang chạy | `systemctl stop avaso-gateway` hoặc đổi port compose |
+| Port host busy | App khác chiếm 13000/15432/16379 | Đổi `ports:` trong `docker-compose.yml` |
 
 ---
 

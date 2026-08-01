@@ -105,8 +105,9 @@ Migration SQL tự chạy khi gateway khởi động (`migrations/`).
 
 
 ```bash
-# Docker all-in-one
-docker compose up --build
+# Docker all-in-one (không cần copy .env)
+docker compose up --build -d
+# Dashboard: http://127.0.0.1:13000  — login xem ADMIN_USERNAME/PASSWORD trong .env.example
 ```
 
 Chi tiết: [`docs/TRIEN_KHAI.md`](docs/TRIEN_KHAI.md), [`docs/TRIEN_KHAI_DOCKER.md`](docs/TRIEN_KHAI_DOCKER.md).

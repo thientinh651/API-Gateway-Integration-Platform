@@ -1,4 +1,7 @@
-# Dev local: PostgreSQL + Redis + gateway (tuned VPS 2GB)
+# Dev / nộp thầy: PostgreSQL + Redis + gateway
+# Host ports lệch mặc định — tránh trùng Postgres/Redis/app local trên Windows.
+# Chạy: docker compose up --build -d
+# Dashboard: http://127.0.0.1:13000  (admin / xem ADMIN_PASSWORD trong .env.example)
 services:
   postgres:
     image: postgres:16-alpine
@@ -63,14 +66,21 @@ services:
   gateway:
     build: .
     ports:
-      - "127.0.0.1:3000:3000"
+      # Host 13000 — tránh trùng app/local :3000
+      - "127.0.0.1:13000:3000"
     env_file:
-      - .env
+      # Mặc định dùng .env.example — không cần copy .env
+      - .env.example
+      - path: .env
+        required: false
     environment:
       BIND_HOST: "0.0.0.0"
+      # Trong mạng Docker — hostname service, không dùng 127.0.0.1
       DATABASE_URL: "postgres://avaso:avaso@postgres:5432/avaso_gateway"
       REDIS_URL: "redis://redis:6379"
       PG_POOL_MAX: "5"
+      PORT: "3000"
+      COOKIE_SECURE: "false"
     depends_on:
       postgres:
         condition: service_healthy
