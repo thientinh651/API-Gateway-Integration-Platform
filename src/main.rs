@@ -605,10 +605,16 @@ fn oauth_handler_state(st: &AppState) -> oauth_handlers::OAuthHandlerState {
     }
 }
 
-/// Header `Authorization` dùng để auth gateway, không nên forward thẳng sang upstream generic.
+/// Header client không forward sang upstream generic.
+/// Bỏ `Accept-Encoding` để reqwest tự thương lượng + giải nén (cần feature gzip/deflate/brotli).
 fn sanitize_upstream_headers(headers: &HeaderMap) -> HeaderMap {
     let mut out = headers.clone();
     out.remove(AUTHORIZATION);
+    out.remove(axum::http::header::ACCEPT_ENCODING);
+    out.remove(axum::http::header::HOST);
+    out.remove(axum::http::header::CONNECTION);
+    out.remove(axum::http::header::CONTENT_LENGTH);
+    out.remove(axum::http::header::TRANSFER_ENCODING);
     out
 }
 
@@ -6874,10 +6880,15 @@ mod path_tests {
     fn strips_gateway_bearer_before_upstream() {
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer test-token"));
+        headers.insert(
+            axum::http::header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip, deflate, br"),
+        );
         headers.insert("x-demo", HeaderValue::from_static("ok"));
 
         let sanitized = sanitize_upstream_headers(&headers);
         assert!(sanitized.get(AUTHORIZATION).is_none());
+        assert!(sanitized.get(axum::http::header::ACCEPT_ENCODING).is_none());
         assert_eq!(
             sanitized.get("x-demo"),
             Some(&HeaderValue::from_static("ok"))

@@ -11,7 +11,7 @@ tower-http = { version = "0.5", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
-reqwest = { version = "0.12", features = ["json", "multipart"] }
+reqwest = { version = "0.12", features = ["json", "multipart", "gzip", "deflate", "brotli"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json"] }
 dashmap = "6"

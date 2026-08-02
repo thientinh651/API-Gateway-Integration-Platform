@@ -127,7 +127,13 @@ async fn send_upstream_once(
 ) -> Result<(StatusCode, HeaderMap, Bytes), UpstreamFailure> {
     let mut req = http.request(method.clone(), url);
     for (k, v) in headers.iter() {
-        if k == axum::http::header::HOST || k == axum::http::header::CONTENT_LENGTH {
+        // Không gắn Accept-Encoding tay — để reqwest tự nén/giải nén.
+        if k == axum::http::header::HOST
+            || k == axum::http::header::CONTENT_LENGTH
+            || k == axum::http::header::ACCEPT_ENCODING
+            || k == axum::http::header::CONNECTION
+            || k == axum::http::header::TRANSFER_ENCODING
+        {
             continue;
         }
         req = req.header(k, v);
