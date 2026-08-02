@@ -116,11 +116,6 @@ export function RouteFormDialog({
                     aria-invalid={Boolean(fieldErrors.path)}
                     className={`bg-input border-border text-foreground mt-1 ${fieldErrors.path ? 'border-destructive' : ''}`}
                   />
-                  <p className="mt-1 text-[11px] text-muted-foreground leading-snug">
-                    Path đầy đủ trên data plane — client gọi{' '}
-                    <code className="font-mono text-[10px]">/v1/api/…</code> (không phải{' '}
-                    <code className="font-mono text-[10px]">/phuluc</code> thuần).
-                  </p>
                   <FieldError message={fieldErrors.path} />
                 </div>
                 <div>

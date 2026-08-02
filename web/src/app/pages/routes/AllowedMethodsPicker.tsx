@@ -29,7 +29,7 @@ export function AllowedMethodsPicker({ value, onChange, disabled }: Props) {
         <div>
           <Label className="text-foreground">HTTP methods</Label>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Giới hạn method được proxy qua route này. Method khác → 405.
+            Giới hạn method được proxy qua route này.
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">

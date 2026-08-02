@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { Copy, ExternalLink, Pencil, RefreshCw } from 'lucide-react';
+import { Copy, Edit, ExternalLink, RefreshCw } from 'lucide-react';
 import { Card } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
@@ -188,7 +188,7 @@ export function OAuthThirdPartyAppsPanel({ canManage }: Props) {
                             className="border-border text-xs h-8"
                             onClick={() => openEdit(app)}
                           >
-                            <Pencil className="w-3.5 h-3.5 mr-1" />
+                            <Edit className="w-3.5 h-3.5 mr-1" />
                             Sửa
                           </Button>
                           <ConfirmDangerButton

@@ -1,4 +1,4 @@
-import { Copy, Download, Settings2, Trash2, UserCheck, UserX } from 'lucide-react';
+import { Copy, Download, Edit, Trash2, UserCheck, UserX } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
@@ -395,9 +395,9 @@ export function ClientRegistryTable({
                         size="icon"
                         title="Cấu hình"
                         onClick={() => onConfigure(client)}
-                        className="h-7 w-7 text-primary hover:bg-primary/10 shrink-0"
+                        className="h-7 w-7 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 shrink-0"
                       >
-                        <Settings2 className="w-3.5 h-3.5" />
+                        <Edit className="w-4 h-4" />
                       </Button>
                     ) : null}
                     {canCopyKey(client.apiKey) ? (

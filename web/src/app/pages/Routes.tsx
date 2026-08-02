@@ -112,12 +112,15 @@ function RoutesAdmin() {
     routeNumericDefaults(emptyForm()),
   );
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [attempted, setAttempted] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const resetForm = () => {
     const empty = emptyForm();
     setFormData(empty);
     setFormNumericDefaults(routeNumericDefaults(empty));
+    setFieldErrors({});
+    setAttempted(false);
   };
 
   const handleDialogChange = (open: boolean) => {
@@ -127,47 +130,109 @@ function RoutesAdmin() {
     } else {
       setEditingRoute(null);
       resetForm();
-      setFieldErrors({});
     }
   };
 
   const handleFormChange = (next: RouteFormState) => {
     setFormData(next);
-    setFieldErrors({});
+    if (Object.keys(fieldErrors).length > 0) setFieldErrors({});
   };
 
   const handleApiFailure = (e: unknown) => {
     handleFormApiError(e, setFieldErrors);
   };
 
-  const validateRouteForm = (form: RouteFormState): Record<string, string> | null => {
-    const path = form.path.trim();
-    const target = form.upstream.trim();
-    const errors: Record<string, string> = {};
-    if (!path) {
-      errors.path = `Nhập path data plane (vd: ${DATA_PLANE_PREFIX}/phuluc)`;
-    } else if (!path.startsWith('/')) {
-      errors.path = 'Path phải bắt đầu bằng /';
-    } else if (path.includes(' ')) {
-      errors.path = 'Path không được chứa khoảng trắng';
-    } else if (
-      DATA_PLANE_PREFIX &&
-      path !== DATA_PLANE_PREFIX &&
-      !path.startsWith(`${DATA_PLANE_PREFIX}/`)
-    ) {
-      errors.path = `Path phải nằm dưới ${DATA_PLANE_PREFIX}/… (vd: ${DATA_PLANE_PREFIX}/phuluc)`;
-    }
-    if (!target) {
-      errors.target = 'Nhập upstream URL (vd: https://httpbin.org)';
-    } else if (!/^https?:\/\//i.test(target)) {
-      errors.target = 'Upstream phải là URL http:// hoặc https://';
-    }
-    return Object.keys(errors).length ? errors : null;
-  };
+  const validateRouteForm = useCallback(
+    (form: RouteFormState, defaults: RouteNumericDefaults): Record<string, string> => {
+      const path = form.path.trim();
+      const target = form.upstream.trim();
+      const errors: Record<string, string> = {};
+      if (!path) {
+        errors.path = `Nhập path data plane (vd: ${DATA_PLANE_PREFIX}/phuluc)`;
+      } else if (!path.startsWith('/')) {
+        errors.path = 'Path phải bắt đầu bằng /';
+      } else if (path.includes(' ')) {
+        errors.path = 'Path không được chứa khoảng trắng';
+      } else if (
+        DATA_PLANE_PREFIX &&
+        path !== DATA_PLANE_PREFIX &&
+        !path.startsWith(`${DATA_PLANE_PREFIX}/`)
+      ) {
+        errors.path = `Path phải nằm dưới ${DATA_PLANE_PREFIX}/… (vd: ${DATA_PLANE_PREFIX}/phuluc)`;
+      }
+      if (!target) {
+        errors.target = 'Nhập upstream URL (vd: https://httpbin.org)';
+      } else if (!/^https?:\/\//i.test(target)) {
+        errors.target = 'Upstream phải là URL http:// hoặc https://';
+      }
+
+      const { timeout_secs, rate_limit_per_min } = parseRouteNumbers(form, defaults);
+      if (!Number.isFinite(timeout_secs) || timeout_secs < 1 || timeout_secs > 3600) {
+        errors.timeout_secs = 'Timeout phải từ 1 đến 3600 giây';
+      }
+      if (
+        !Number.isFinite(rate_limit_per_min) ||
+        rate_limit_per_min < 0 ||
+        rate_limit_per_min > 1_000_000
+      ) {
+        errors.rate_limit_per_min =
+          'Rate limit phải từ 0 (không giới hạn theo route) đến 1.000.000 req/min';
+      }
+
+      const addRaw = form.transformAddHeaders.trim() || '{}';
+      try {
+        const parsed: unknown = JSON.parse(addRaw);
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          throw new Error('not object');
+        }
+      } catch {
+        errors.transform_add_headers = 'JSON object, vd {"X-Proxy-Version":"1.0"}';
+      }
+
+      const removeRaw = form.transformRemoveHeaders.trim() || '[]';
+      try {
+        const parsed: unknown = JSON.parse(removeRaw);
+        if (!Array.isArray(parsed) || !parsed.every((x) => typeof x === 'string')) {
+          throw new Error('not string array');
+        }
+      } catch {
+        errors.transform_remove_headers = 'JSON array, vd ["Authorization"]';
+      }
+
+      const retryMax = Number.parseInt(parseDefaultNumber(form.retryMax, defaults.retryMax), 10);
+      if (!Number.isFinite(retryMax) || retryMax < 0 || retryMax > 10) {
+        errors.retry_max = 'retry_max từ 0 đến 10';
+      }
+
+      return errors;
+    },
+    [],
+  );
+
+  const clientErrors = useMemo(
+    () => validateRouteForm(formData, formNumericDefaults),
+    [validateRouteForm, formData, formNumericDefaults],
+  );
+
+  const showFieldHints =
+    attempted ||
+    formData.path.length > 0 ||
+    formData.upstream.length > 0 ||
+    formData.transformAddHeaders !== '{}' ||
+    formData.transformRemoveHeaders !== '[]' ||
+    formData.timeout !== formNumericDefaults.timeout ||
+    formData.rateLimit !== formNumericDefaults.rateLimit ||
+    formData.retryMax !== formNumericDefaults.retryMax;
+
+  const displayErrors = useMemo(() => {
+    if (!showFieldHints) return fieldErrors;
+    return { ...fieldErrors, ...clientErrors };
+  }, [showFieldHints, fieldErrors, clientErrors]);
 
   const handleCreate = async () => {
-    const clientErr = validateRouteForm(formData);
-    if (clientErr) {
+    setAttempted(true);
+    const clientErr = validateRouteForm(formData, formNumericDefaults);
+    if (Object.keys(clientErr).length > 0) {
       failClientValidation(setFieldErrors, clientErr);
       return;
     }
@@ -177,7 +242,6 @@ function RoutesAdmin() {
       await reload();
       setIsOpen(false);
       resetForm();
-      setFieldErrors({});
       toast.success('Đã tạo route');
     } catch (e) {
       handleApiFailure(e);
@@ -188,8 +252,9 @@ function RoutesAdmin() {
 
   const handleUpdate = async () => {
     if (!editingRoute) return;
-    const clientErr = validateRouteForm(formData);
-    if (clientErr) {
+    setAttempted(true);
+    const clientErr = validateRouteForm(formData, formNumericDefaults);
+    if (Object.keys(clientErr).length > 0) {
       failClientValidation(setFieldErrors, clientErr);
       return;
     }
@@ -200,7 +265,6 @@ function RoutesAdmin() {
       setIsOpen(false);
       setEditingRoute(null);
       resetForm();
-      setFieldErrors({});
       toast.success('Đã cập nhật route');
     } catch (e) {
       handleApiFailure(e);
@@ -240,6 +304,8 @@ function RoutesAdmin() {
     };
     setFormData(fd);
     setFormNumericDefaults(routeNumericDefaults(fd));
+    setFieldErrors({});
+    setAttempted(false);
     setIsOpen(true);
   };
 
@@ -272,7 +338,7 @@ function RoutesAdmin() {
             editingRoute={editingRoute}
             formData={formData}
             setFormData={handleFormChange}
-            fieldErrors={fieldErrors}
+            fieldErrors={displayErrors}
             onSubmit={handleSubmit}
             submitDisabled={saving}
             showCreateTrigger={allowCreate}
