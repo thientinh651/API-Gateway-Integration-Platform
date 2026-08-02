@@ -51,10 +51,10 @@ describe('looksLikeNginxGatewayError / looksLikeSpaShell', () => {
 });
 
 describe('describeProxyExpectation', () => {
-  it('labels nginx 502 HTML as gateway backend down, not path typo', () => {
+  it('labels nginx 502 HTML as proxy response failure, not path typo', () => {
     const msg = describeProxyExpectation(baseResult({ bodyText: nginx502Html }), 'with_token');
     expect(msg.toLowerCase()).toContain('nginx');
-    expect(msg.toLowerCase()).toContain('gateway');
+    expect(msg.toLowerCase()).toContain('header');
     expect(msg.toLowerCase()).not.toContain('dấu / sau api');
     expect(msg.toLowerCase()).not.toContain('html giao diện');
   });

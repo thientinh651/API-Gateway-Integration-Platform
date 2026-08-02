@@ -612,6 +612,52 @@ fn sanitize_upstream_headers(headers: &HeaderMap) -> HeaderMap {
     out
 }
 
+/// Hop-by-hop + framing headers — không được copy nguyên từ upstream về client (RFC 7230).
+/// Reqwest có thể đã giải nén body nên `Content-Length` / `Content-Encoding` cũ sẽ sai.
+fn is_hop_by_hop_or_framing_header(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "trailers"
+            | "transfer-encoding"
+            | "upgrade"
+            | "content-length"
+            | "content-encoding"
+    )
+}
+
+/// Chuẩn hóa header phản hồi trước khi trả client: bỏ hop-by-hop/framing,
+/// tôn trọng token trong `Connection`, giữ nhiều `Set-Cookie`.
+fn sanitize_proxied_response_headers(headers: &HeaderMap) -> HeaderMap {
+    let mut banned: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(conn) = headers.get(axum::http::header::CONNECTION) {
+        if let Ok(v) = conn.to_str() {
+            for token in v.split(',') {
+                let t = token.trim().to_ascii_lowercase();
+                if !t.is_empty() {
+                    banned.insert(t);
+                }
+            }
+        }
+    }
+
+    let mut out = HeaderMap::new();
+    for (k, v) in headers.iter() {
+        let name = k.as_str();
+        let lower = name.to_ascii_lowercase();
+        if is_hop_by_hop_or_framing_header(name) || banned.contains(&lower) {
+            continue;
+        }
+        out.append(k.clone(), v.clone());
+    }
+    out
+}
+
 #[allow(dead_code)]
 fn canonical_request_path(uri: &Uri) -> String {
     let path = uri.path();
@@ -667,6 +713,7 @@ fn capture_headers(headers: &axum::http::HeaderMap) -> String {
 }
 
 /// Truncate + lossily decode a body to UTF-8 text. Returns (text, total_bytes, truncated).
+/// Strip NUL — PostgreSQL `text`/`varchar` từ chối `\0`.
 fn capture_body(bytes: &[u8]) -> (Option<String>, i64, bool) {
     let total = bytes.len() as i64;
     if bytes.is_empty() {
@@ -674,11 +721,10 @@ fn capture_body(bytes: &[u8]) -> (Option<String>, i64, bool) {
     }
     let truncated = bytes.len() > MAX_TX_DETAIL_BODY;
     let slice = &bytes[..bytes.len().min(MAX_TX_DETAIL_BODY)];
-    (
-        Some(String::from_utf8_lossy(slice).into_owned()),
-        total,
-        truncated,
-    )
+    let text = String::from_utf8_lossy(slice)
+        .into_owned()
+        .replace('\0', "");
+    (Some(text), total, truncated)
 }
 
 /// FR-D1: structured JSON transaction log + persist to PostgreSQL for admin UI.
@@ -6779,7 +6825,8 @@ async fn do_proxy(
     if upstream.attempts > 1 {
         builder = builder.header("X-Retry-Attempts", upstream.attempts.to_string());
     }
-    for (k, v) in upstream.headers.iter() {
+    let safe_headers = sanitize_proxied_response_headers(&upstream.headers);
+    for (k, v) in safe_headers.iter() {
         builder = builder.header(k, v);
     }
     builder = append_rate_limit_to_builder(builder, rl_info.as_ref());
@@ -6835,6 +6882,69 @@ mod path_tests {
             sanitized.get("x-demo"),
             Some(&HeaderValue::from_static("ok"))
         );
+    }
+
+    #[test]
+    fn strips_hop_by_hop_and_framing_from_proxied_response() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        headers.insert(
+            axum::http::header::CONNECTION,
+            HeaderValue::from_static("close, x-custom-hop"),
+        );
+        headers.insert(
+            axum::http::header::CONTENT_LENGTH,
+            HeaderValue::from_static("99"),
+        );
+        headers.insert(
+            axum::http::header::CONTENT_ENCODING,
+            HeaderValue::from_static("gzip"),
+        );
+        headers.insert(
+            axum::http::header::TRANSFER_ENCODING,
+            HeaderValue::from_static("chunked"),
+        );
+        headers.insert("x-custom-hop", HeaderValue::from_static("drop-me"));
+        headers.insert("x-ratelimit-limit", HeaderValue::from_static("100"));
+        headers.append(
+            axum::http::header::SET_COOKIE,
+            HeaderValue::from_static("a=1"),
+        );
+        headers.append(
+            axum::http::header::SET_COOKIE,
+            HeaderValue::from_static("b=2"),
+        );
+
+        let sanitized = sanitize_proxied_response_headers(&headers);
+        assert!(sanitized.get(axum::http::header::CONNECTION).is_none());
+        assert!(sanitized.get(axum::http::header::CONTENT_LENGTH).is_none());
+        assert!(sanitized.get(axum::http::header::CONTENT_ENCODING).is_none());
+        assert!(sanitized.get(axum::http::header::TRANSFER_ENCODING).is_none());
+        assert!(sanitized.get("x-custom-hop").is_none());
+        assert_eq!(
+            sanitized.get(axum::http::header::CONTENT_TYPE),
+            Some(&HeaderValue::from_static("application/json"))
+        );
+        assert_eq!(
+            sanitized.get("x-ratelimit-limit"),
+            Some(&HeaderValue::from_static("100"))
+        );
+        let cookies: Vec<_> = sanitized
+            .get_all(axum::http::header::SET_COOKIE)
+            .iter()
+            .collect();
+        assert_eq!(cookies.len(), 2);
+    }
+
+    #[test]
+    fn capture_body_strips_nul_for_postgres() {
+        let (text, bytes, truncated) = capture_body(b"hello\0world");
+        assert_eq!(text.as_deref(), Some("helloworld"));
+        assert_eq!(bytes, 11);
+        assert!(!truncated);
     }
 
     #[test]

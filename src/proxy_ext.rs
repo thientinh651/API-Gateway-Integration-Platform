@@ -146,8 +146,9 @@ async fn send_upstream_once(
         })?;
     let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let mut out_headers = HeaderMap::new();
+    // append — giữ nhiều Set-Cookie (insert sẽ ghi đè).
     for (k, v) in resp.headers().iter() {
-        out_headers.insert(k.clone(), v.clone());
+        out_headers.append(k.clone(), v.clone());
     }
     let bytes = resp
         .bytes()

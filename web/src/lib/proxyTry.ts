@@ -135,7 +135,7 @@ export function describeProxyExpectation(result: ProxyTryResult, mode: 'no_token
   const errCode = gwErr?.error ?? '';
 
   if (looksLikeNginxGatewayError(result)) {
-    return `HTTP ${result.status} từ Nginx — gateway backend không phản hồi (process dừng hoặc sai port proxy_pass). Kiểm tra systemctl status avaso-gateway / curl 127.0.0.1:3000/health.`;
+    return `HTTP ${result.status} từ Nginx — gateway đóng kết nối khi trả phản hồi (thường do copy sai header upstream: Connection / Content-Length / Content-Encoding). Kiểm tra journalctl + nginx error.log.`;
   }
 
   if (looksLikeSpaShell(result)) {
