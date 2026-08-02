@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
-import { FlaskConical, Plus, RefreshCw, KeyRound, Zap, AppWindow } from 'lucide-react';
+import { FlaskConical, Plus, RefreshCw, KeyRound, Zap, AppWindow, Search } from 'lucide-react';
 import { AdminOnly } from '../components/auth/AdminOnly';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import { useUndoDelete } from '../../contexts/UndoDeleteContext';
@@ -307,11 +307,12 @@ function AuthAdmin() {
           <ClientRegistrySummary clients={clients} />
           <div className="mb-4 flex flex-wrap gap-3">
             <div className="relative flex-1 min-w-[200px] max-w-md">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
               <Input
                 placeholder="Tìm tên, Client ID, loại client…"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="bg-input border-border text-sm"
+                className="pl-10 bg-input border-border text-sm"
               />
             </div>
             <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>

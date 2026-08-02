@@ -31,6 +31,7 @@ import {
 import {
   DATA_PLANE_PREFIX,
   describeProxyExpectation,
+  looksLikeNginxGatewayError,
   looksLikeSpaShell,
   tryDataPlaneRequest,
   type ProxyTryResult,
@@ -39,12 +40,6 @@ import {
 const METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as const;
 
 const PROXY_TRY_CLIENT_KEY = 'proxy-try-client-id';
-
-const PATH_SUGGESTIONS = [
-  { label: 'Route mẫu', path: '/v1/api/get' },
-  { label: 'SF limits', path: '/v1/api/sf/services/data/v59.0/limits' },
-  { label: 'Zoho portals', path: '/v1/api/zoho/api/v3/portals' },
-] as const;
 
 function StatusBadge({ status }: { status: number }) {
   const tone =
@@ -117,7 +112,7 @@ function ResultPanel({
 
 export function ProxyTry() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [path, setPath] = useState('/v1/api/get');
+  const [path, setPath] = useState('/v1/api/fact');
   const [method, setMethod] = useState<string>('GET');
   const [apiKey, setApiKey] = useState('');
   const [secretKey, setSecretKey] = useState('');
@@ -189,7 +184,9 @@ export function ProxyTry() {
       });
       setResult(res);
       setLastMode(mode);
-      if (looksLikeSpaShell(res)) {
+      if (looksLikeNginxGatewayError(res)) {
+        toast.error(`HTTP ${res.status} Nginx — gateway backend không phản hồi`);
+      } else if (looksLikeSpaShell(res)) {
         toast.warning(`Path sai — cần ${DATA_PLANE_PREFIX}/...`);
       } else if (mode === 'with_token' && res.ok) {
         toast.success('Request qua middleware thành công');
@@ -247,7 +244,6 @@ export function ProxyTry() {
                   <PathAutocomplete
                     className="mt-1"
                     value={path}
-                    presets={PATH_SUGGESTIONS}
                     placeholder="/v1/api/..."
                     hasError={Boolean(fieldErrors.path)}
                     onChange={(next) => {

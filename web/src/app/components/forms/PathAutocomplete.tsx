@@ -3,76 +3,30 @@ import { ChevronDown } from 'lucide-react';
 import { cn } from '../ui/utils';
 import { fetchGatewayRoutes } from '../../../lib/api';
 
-export type PathSuggestion = {
-  path: string;
-  hint?: string;
-  group: 'route' | 'preset' | 'integration';
-};
-
-type Preset = { path: string; label: string };
-
 type Props = {
   value: string;
   onChange: (path: string) => void;
-  presets?: readonly Preset[];
   placeholder?: string;
   hasError?: boolean;
   className?: string;
 };
 
-/** Giữ đúng Path đã lưu trên Route — không tự ghép /v1/api. */
 function normalizeRoutePath(routePath: string): string {
   const p = routePath.trim();
   if (!p) return '';
   return p.startsWith('/') ? p : `/${p}`;
 }
 
-function buildSuggestions(presets: readonly Preset[], routePaths: string[]): PathSuggestion[] {
-  const seen = new Set<string>();
-  const out: PathSuggestion[] = [];
-
-  const add = (path: string, hint: string | undefined, group: PathSuggestion['group']) => {
-    const norm = path.startsWith('/') ? path : `/${path}`;
-    if (seen.has(norm)) return;
-    seen.add(norm);
-    out.push({ path: norm, hint, group });
-  };
-
-  for (const p of presets) add(p.path, p.label, 'preset');
-  for (const raw of routePaths) add(normalizeRoutePath(raw), 'Route dashboard', 'route');
-
-  const groupOrder: Record<PathSuggestion['group'], number> = {
-    preset: 0,
-    route: 1,
-    integration: 2,
-  };
-  return out.sort((a, b) => {
-    const byGroup = groupOrder[a.group] - groupOrder[b.group];
-    return byGroup !== 0 ? byGroup : a.path.localeCompare(b.path);
-  });
-}
-
-const GROUP_LABEL: Record<PathSuggestion['group'], string> = {
-  preset: 'Path',
-  route: 'Route dashboard',
-  integration: 'Tích hợp',
-};
-
-function filterSuggestions(all: PathSuggestion[], query: string, browseAll: boolean): PathSuggestion[] {
+function filterPaths(all: string[], query: string, browseAll: boolean): string[] {
   const q = query.trim().toLowerCase();
   const pool =
-    browseAll || !q
-      ? all
-      : all.filter(
-          (s) => s.path.toLowerCase().includes(q) || (s.hint?.toLowerCase().includes(q) ?? false),
-        );
+    browseAll || !q ? all : all.filter((p) => p.toLowerCase().includes(q));
   return pool.slice(0, browseAll ? 24 : 12);
 }
 
 export function PathAutocomplete({
   value,
   onChange,
-  presets = [],
   placeholder = '/v1/api/...',
   hasError,
   className,
@@ -86,18 +40,19 @@ export function PathAutocomplete({
 
   useEffect(() => {
     void fetchGatewayRoutes()
-      .then((rows) => setRoutePaths(rows.map((r) => r.path)))
+      .then((rows) => {
+        const paths = rows
+          .map((r) => normalizeRoutePath(r.path))
+          .filter(Boolean)
+          .sort((a, b) => a.localeCompare(b));
+        setRoutePaths([...new Set(paths)]);
+      })
       .catch(() => setRoutePaths([]));
   }, []);
 
-  const allSuggestions = useMemo(
-    () => buildSuggestions(presets, routePaths),
-    [presets, routePaths],
-  );
-
   const filtered = useMemo(
-    () => filterSuggestions(allSuggestions, value, browseAll),
-    [allSuggestions, value, browseAll],
+    () => filterPaths(routePaths, value, browseAll),
+    [routePaths, value, browseAll],
   );
 
   const close = useCallback(() => {
@@ -142,7 +97,7 @@ export function PathAutocomplete({
       setActiveIdx((i) => (i - 1 + filtered.length) % filtered.length);
     } else if (e.key === 'Enter' && filtered[activeIdx]) {
       e.preventDefault();
-      pick(filtered[activeIdx].path);
+      pick(filtered[activeIdx]);
     } else if (e.key === 'Escape') {
       close();
     }
@@ -193,58 +148,26 @@ export function PathAutocomplete({
           role="listbox"
           className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md border border-border bg-popover text-popover-foreground shadow-md py-1"
         >
-          {filtered.map((s, idx) => {
-            const prev = filtered[idx - 1];
-            const showGroup = !prev || prev.group !== s.group;
-            return (
-              <li key={s.path} role="presentation">
-                {showGroup ? (
-                  <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {GROUP_LABEL[s.group]}
-                  </div>
-                ) : null}
-                <button
-                  type="button"
-                  role="option"
-                  aria-selected={idx === activeIdx}
-                  onMouseEnter={() => setActiveIdx(idx)}
-                  onClick={() => pick(s.path)}
-                  className={cn(
-                    'flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left text-sm transition-colors',
-                    idx === activeIdx
-                      ? 'bg-primary/15 text-foreground'
-                      : 'text-foreground hover:bg-slate-800/70',
-                  )}
-                >
-                  <span
-                    className={cn(
-                      'font-mono text-xs',
-                      idx === activeIdx ? 'text-primary' : 'text-foreground',
-                    )}
-                  >
-                    {s.path}
-                  </span>
-                  {s.hint ? (
-                    <span
-                      className={cn(
-                        'text-[10px] truncate max-w-full',
-                        idx === activeIdx ? 'text-slate-300' : 'text-muted-foreground',
-                      )}
-                    >
-                      {s.hint}
-                    </span>
-                  ) : null}
-                </button>
-              </li>
-            );
-          })}
+          {filtered.map((path, idx) => (
+            <li key={path} role="presentation">
+              <button
+                type="button"
+                role="option"
+                aria-selected={idx === activeIdx}
+                onMouseEnter={() => setActiveIdx(idx)}
+                onClick={() => pick(path)}
+                className={cn(
+                  'flex w-full items-center px-3 py-2 text-left text-sm transition-colors',
+                  idx === activeIdx
+                    ? 'bg-primary/15 text-primary font-mono text-xs'
+                    : 'text-foreground font-mono text-xs hover:bg-slate-800/70',
+                )}
+              >
+                {path}
+              </button>
+            </li>
+          ))}
         </ul>
-      ) : null}
-
-      {open && value.trim() && filtered.length === 0 ? (
-        <p className="absolute z-50 mt-1 w-full rounded-md border border-border bg-popover px-3 py-2 text-xs text-muted-foreground shadow-lg">
-          Không có path trùng — vẫn gõ tự do hoặc thêm route tại Quản lý Route.
-        </p>
       ) : null}
     </div>
   );

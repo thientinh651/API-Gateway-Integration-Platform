@@ -1,5 +1,6 @@
 import { Link } from 'react-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { AdminOnly } from '../components/auth/AdminOnly';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
@@ -19,6 +20,7 @@ import { DATA_PLANE_PREFIX } from '../../lib/proxyTry';
 import { parseDefaultNumber } from '../../lib/zeroDefaultNumberInput';
 import { DEFAULT_ALLOWED_METHODS, allowedMethodsToApi } from '../../lib/allowedMethodsOptions';
 import { parseRetryOnStatus } from '../../lib/retryOnStatusOptions';
+import { Input } from '../components/ui/input';
 import { RouteFormDialog, type RouteFormState } from './routes/RouteFormDialog';
 import { RoutesTable } from './routes/RoutesTable';
 import { RouteClientsSheet } from './routes/RouteClientsSheet';
@@ -85,11 +87,20 @@ function RoutesAdmin() {
   const allowDelete = canDeleteRoute(user);
   const { routes, loading, error, reload } = useGatewayRoutes(!!user);
   const [aclSummary, setAclSummary] = useState<RouteAclSummaryRow[]>([]);
+  const [searchTerm, setSearchTerm] = useState('');
   const hiddenIds = pendingIdSet('route');
-  const visibleRoutes = useMemo(
-    () => routes.filter((r) => !hiddenIds.has(String(r.id))),
-    [routes, hiddenIds],
-  );
+  const visibleRoutes = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    return routes.filter((r) => {
+      if (hiddenIds.has(String(r.id))) return false;
+      if (!q) return true;
+      return (
+        r.path.toLowerCase().includes(q) ||
+        r.upstream.toLowerCase().includes(q) ||
+        r.allowedMethods.toLowerCase().includes(q)
+      );
+    });
+  }, [routes, hiddenIds, searchTerm]);
 
   const loadAcl = useCallback(async () => {
     try {
@@ -352,6 +363,16 @@ function RoutesAdmin() {
             Operator: sửa route có sẵn — không tạo/xóa route mới.
           </p>
         )}
+      </div>
+
+      <div className="mb-4 relative max-w-md">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+        <Input
+          placeholder="Tìm path, upstream, methods…"
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          className="pl-10 bg-input border-border text-foreground"
+        />
       </div>
 
       <RoutesTable

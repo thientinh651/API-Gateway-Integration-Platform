@@ -82,10 +82,33 @@ export function isDataPlaneTypoPath(path: string): boolean {
   return p.startsWith(DATA_PLANE_PREFIX) && p !== DATA_PLANE_PREFIX && !p.startsWith(`${DATA_PLANE_PREFIX}/`);
 }
 
-/** Response là HTML shell SPA, không phải JSON API. */
-export function looksLikeSpaShell(result: ProxyTryResult): boolean {
-  const t = result.bodyText.trim().toLowerCase();
+function isHtmlBody(text: string): boolean {
+  const t = text.trim().toLowerCase();
   return t.startsWith('<!doctype') || t.startsWith('<html');
+}
+
+/** HTML lỗi mặc định từ Nginx (502/503/504) — không phải SPA. */
+export function looksLikeNginxGatewayError(result: ProxyTryResult): boolean {
+  if (!isHtmlBody(result.bodyText)) return false;
+  const t = result.bodyText.toLowerCase();
+  if (t.includes('nginx')) return true;
+  if (result.status < 502 || result.status > 504) return false;
+  return (
+    t.includes('bad gateway') ||
+    t.includes('gateway time') ||
+    t.includes('service temporarily') ||
+    t.includes('503 service')
+  );
+}
+
+/**
+ * Response là HTML shell SPA (fallback index), không phải JSON API.
+ * Loại trừ trang lỗi Nginx — trước đây 502 HTML bị nhầm thành “path sai”.
+ */
+export function looksLikeSpaShell(result: ProxyTryResult): boolean {
+  if (!isHtmlBody(result.bodyText)) return false;
+  if (looksLikeNginxGatewayError(result)) return false;
+  return true;
 }
 
 function integrationFailureHint(bodyJson: unknown): string | null {
@@ -110,6 +133,10 @@ import {
 export function describeProxyExpectation(result: ProxyTryResult, mode: 'no_token' | 'with_token'): string {
   const gwErr = parseGatewayErrorBody(result.bodyJson);
   const errCode = gwErr?.error ?? '';
+
+  if (looksLikeNginxGatewayError(result)) {
+    return `HTTP ${result.status} từ Nginx — gateway backend không phản hồi (process dừng hoặc sai port proxy_pass). Kiểm tra systemctl status avaso-gateway / curl 127.0.0.1:3000/health.`;
+  }
 
   if (looksLikeSpaShell(result)) {
     return `HTTP ${result.status} nhưng body là HTML giao diện — không phải API. Dùng path dạng ${DATA_PLANE_PREFIX}/... (có dấu / sau api).`;

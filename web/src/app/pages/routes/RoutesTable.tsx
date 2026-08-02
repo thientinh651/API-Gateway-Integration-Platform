@@ -68,6 +68,12 @@ export function RoutesTable({
                   Đang tải…
                 </td>
               </tr>
+            ) : routes.length === 0 ? (
+              <tr className="border-b border-border/50">
+                <td className="px-6 py-8 text-muted-foreground text-center" colSpan={7}>
+                  Không có route khớp
+                </td>
+              </tr>
             ) : (
               routes.map((route) => (
                 <tr key={route.id} className="border-b border-border/50 hover:bg-primary/5">
