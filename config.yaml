@@ -1,11 +1,10 @@
 routes:
-  - path: "/test"
+  - path: "/v1/api/fact"
+    target: "https://catfact.ninja/fact"
+  - path: "/v1/api/demo"
     target: "https://httpbin.org"
-  - path: "/my-api"
-    target: "http://localhost:5000"
 
 # OAuth2 clients — seed lần đầu; runtime dùng PostgreSQL gateway_client_keys.
-# Data-plane bắt buộc Bearer JWT từ POST /oauth/token.
 api_keys:
   - "demo-key-1"
 
