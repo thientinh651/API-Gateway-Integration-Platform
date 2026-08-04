@@ -20,6 +20,8 @@ use sha2::{Digest, Sha256};
 const SF_PROVIDER: &str = "salesforce";
 const ZOHO_PROVIDER: &str = "zoho_projects";
 const FLOW_SALES_TO_DELIVERY: &str = "sales_to_delivery";
+/// Catalog flow: Zoho báo dự án hoàn thành → cập nhật Opportunity trên Salesforce.
+const FLOW_DELIVERY_TO_SALES: &str = "delivery_to_sales";
 const OAUTH_STATE_TTL: Duration = Duration::from_secs(600);
 
 /// Typed integration events — extensible catalog for pipeline observability.
@@ -68,6 +70,16 @@ impl<'a> SyncEventOpts<'a> {
             flow_type: Some(FLOW_SALES_TO_DELIVERY),
             source_provider: Some(SF_PROVIDER),
             target_provider: Some(ZOHO_PROVIDER),
+            correlation_id,
+            ..Default::default()
+        }
+    }
+
+    fn delivery_to_sales(correlation_id: Option<&'a str>) -> Self {
+        Self {
+            flow_type: Some(FLOW_DELIVERY_TO_SALES),
+            source_provider: Some(ZOHO_PROVIDER),
+            target_provider: Some(SF_PROVIDER),
             correlation_id,
             ..Default::default()
         }
@@ -1279,11 +1291,65 @@ fn map_zoho_projects(items: &[serde_json::Value]) -> Vec<serde_json::Value> {
             serde_json::json!({
                 "id": zoho_id_str(p),
                 "name": p.get("name").and_then(|v| v.as_str()).unwrap_or(""),
-                "status": p.get("status").or_else(|| p.get("project_status")).and_then(|v| v.as_str()).unwrap_or(""),
+                "status": extract_zoho_project_status_label(p),
                 "owner": p.get("owner_name").and_then(|v| v.as_str()).unwrap_or(""),
             })
         })
         .collect()
+}
+
+/// Lấy nhãn trạng thái nghiệp vụ (vd «Đã hoàn tất»).
+///
+/// Zoho Projects API v3 thường trả `status` dạng object:
+/// `{ "name": "Đã hoàn tất", "is_closed_type": true, ... }` — không phải chuỗi `active`.
+fn extract_zoho_project_status_label(p: &serde_json::Value) -> String {
+    if let Some(s) = p
+        .get("custom_status_name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return s.to_string();
+    }
+
+    // API v3: status / custom_status là object có name + is_closed_type.
+    for key in ["status", "custom_status", "project_status"] {
+        if let Some(obj) = p.get(key).and_then(|v| v.as_object()) {
+            for name_key in ["name", "status_name", "value"] {
+                if let Some(s) = obj.get(name_key).and_then(|v| v.as_str()).map(str::trim) {
+                    if !s.is_empty() && !is_zoho_lifecycle_status(s) {
+                        return s.to_string();
+                    }
+                }
+            }
+            if obj.get("is_closed_type").and_then(|v| v.as_bool()) == Some(true)
+                || obj.get("is_closed").and_then(|v| v.as_bool()) == Some(true)
+            {
+                return "completed".into();
+            }
+        }
+    }
+
+    for key in ["status_name", "project_status", "custom_status"] {
+        if let Some(s) = p.get(key).and_then(|v| v.as_str()).map(str::trim) {
+            if !s.is_empty() && !is_zoho_lifecycle_status(s) {
+                return s.to_string();
+            }
+        }
+    }
+    if let Some(s) = p.get("status").and_then(|v| v.as_str()).map(str::trim) {
+        if !s.is_empty() && !is_zoho_lifecycle_status(s) {
+            return s.to_string();
+        }
+    }
+    String::new()
+}
+
+fn is_zoho_lifecycle_status(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "active" | "archived" | "template" | "active_projects" | "archived_projects"
+    )
 }
 
 fn map_zoho_tasks(items: &[serde_json::Value], project_id: &str) -> Vec<serde_json::Value> {
@@ -3583,7 +3649,8 @@ pub async fn push_salesforce_to_zoho(
     }))
 }
 
-/// Full pipeline: refresh tokens → pull SF → lọc Closed Won → push Zoho Projects + tasks.
+/// Full pipeline: refresh tokens → pull SF → lọc Closed Won → push Zoho →
+/// rồi poll Zoho status hoàn thành → cập nhật Opportunity (định kỳ).
 pub async fn run_full_sync_pipeline(
     pool: &PgPool,
     tenant_id: i64,
@@ -3616,15 +3683,25 @@ pub async fn run_full_sync_pipeline(
         }));
     }
     let push = push_salesforce_to_zoho(pool, tenant_id, Some(&correlation_id)).await?;
+    let delivery = pull_zoho_completions_to_salesforce(pool, tenant_id, Some(&correlation_id))
+        .await
+        .unwrap_or_else(|e| {
+            serde_json::json!({
+                "status": "error",
+                "message": e,
+                "updated": 0,
+                "checked": 0,
+            })
+        });
     log_sync(
         pool,
         tenant_id,
         "SUCCESS",
-        "Pipeline completed: sales_to_delivery",
+        "Pipeline completed: sales_to_delivery + delivery_to_sales",
         None,
         SyncEventOpts::sales_to_delivery(Some(&correlation_id))
             .with_event(IntegrationEventType::PipelineCompleted)
-            .with_metadata(serde_json::json!({ "push": push })),
+            .with_metadata(serde_json::json!({ "push": push, "delivery": delivery })),
     )
     .await;
     Ok(serde_json::json!({
@@ -3633,6 +3710,491 @@ pub async fn run_full_sync_pipeline(
         "flow_type": FLOW_SALES_TO_DELIVERY,
         "salesforce": sf,
         "push": push,
+        "delivery": delivery,
+    }))
+}
+
+/// Đọc trạng thái project Zoho đã link; nếu «Đã hoàn tất» thì đánh dấu Opportunity trên Salesforce.
+///
+/// Chạy trong Sync Now / worker định kỳ — phía Zoho chỉ cần đổi Trạng Thái.
+pub async fn pull_zoho_completions_to_salesforce(
+    pool: &PgPool,
+    tenant_id: i64,
+    correlation_id: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let event_base = || SyncEventOpts::delivery_to_sales(correlation_id);
+    if !integration_both_connected(pool, tenant_id).await {
+        return Ok(serde_json::json!({
+            "status": "skipped",
+            "reason": "need_both_connected",
+            "updated": 0,
+            "checked": 0,
+        }));
+    }
+    if let Ok(token) = load_sf_token(pool, tenant_id).await {
+        reject_integration_demo_token(token.demo)?;
+    }
+    if let Ok(token) = load_zoho_token(pool, tenant_id).await {
+        reject_integration_demo_token(token.demo)?;
+    }
+
+    let pending = db::list_entity_links_pending_delivery(pool, tenant_id, FLOW_SALES_TO_DELIVERY)
+        .await
+        .map_err(|e| format!("db pending links: {e}"))?;
+    if pending.is_empty() {
+        return Ok(serde_json::json!({
+            "status": "ok",
+            "updated": 0,
+            "checked": 0,
+            "reason": "no_pending_links",
+            "correlation_id": correlation_id,
+        }));
+    }
+
+    let portal_id = ensure_zoho_portal_id_sync(pool, tenant_id).await?;
+    // Lấy cả active và archived — project «Đã hoàn tất» đôi khi chuyển sang archived.
+    let mut status_by_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for lifecycle in ["active", "archived"] {
+        let raw = crate::sync_worker_gateway::zoho_get_via_gateway(
+            &format!("/api/v3/portal/{portal_id}/projects"),
+            Some(&format!("status={lifecycle}")),
+        )
+        .await
+        .unwrap_or_else(|_| serde_json::json!({}));
+        let items = extract_zoho_array(&raw, &["projects"]);
+        for p in &items {
+            let id = zoho_id_str(p);
+            if id.is_empty() {
+                continue;
+            }
+            let label = extract_zoho_project_status_label(p);
+            if !label.is_empty() || !status_by_id.contains_key(&id) {
+                status_by_id.insert(id, label);
+            }
+        }
+    }
+    // Fallback: list không lọc status (một số portal bỏ qua query status).
+    if status_by_id.is_empty() {
+        let raw = crate::sync_worker_gateway::zoho_get_via_gateway(
+            &format!("/api/v3/portal/{portal_id}/projects"),
+            None,
+        )
+        .await?;
+        for p in extract_zoho_array(&raw, &["projects"]) {
+            let id = zoho_id_str(&p);
+            if id.is_empty() {
+                continue;
+            }
+            status_by_id.insert(id, extract_zoho_project_status_label(&p));
+        }
+    }
+
+    // Project nằm trong link nhưng thiếu/không rõ status trên list → GET chi tiết từng cái.
+    for link in &pending {
+        let need_detail = match status_by_id.get(&link.target_id) {
+            None => true,
+            Some(s) if s.is_empty() || is_zoho_lifecycle_status(s) => true,
+            Some(_) => false,
+        };
+        if !need_detail {
+            continue;
+        }
+        let path = format!(
+            "/api/v3/portal/{portal_id}/projects/{}",
+            link.target_id
+        );
+        if let Ok(detail) = crate::sync_worker_gateway::zoho_get_via_gateway(&path, None).await {
+            let project_val = detail
+                .get("projects")
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.first())
+                .cloned()
+                .or_else(|| detail.get("project").cloned())
+                .unwrap_or(detail);
+            let label = extract_zoho_project_status_label(&project_val);
+            if !label.is_empty() {
+                status_by_id.insert(link.target_id.clone(), label);
+            }
+        }
+    }
+
+    let mut updated = 0_i64;
+    let mut skipped = 0_i64;
+    let checked = pending.len() as i64;
+
+    for link in pending {
+        let status_label = status_by_id
+            .get(&link.target_id)
+            .cloned()
+            .unwrap_or_default();
+        if !is_zoho_project_completed(&status_label) {
+            skipped += 1;
+            log_sync(
+                pool,
+                tenant_id,
+                "SKIPPED",
+                &format!(
+                    "Đồng bộ hoàn thành: project {} chưa đủ điều kiện (status={})",
+                    link.target_id,
+                    if status_label.is_empty() {
+                        "(trống)"
+                    } else {
+                        status_label.as_str()
+                    }
+                ),
+                None,
+                event_base()
+                    .with_event(IntegrationEventType::DealFiltered)
+                    .with_metadata(serde_json::json!({
+                        "project_id": link.target_id,
+                        "opportunity_id": link.source_id,
+                        "zoho_status": status_label,
+                    })),
+            )
+            .await;
+            continue;
+        }
+
+        if let Err(e) =
+            patch_sf_opportunity_delivery_completed(pool, tenant_id, &link.source_id).await
+        {
+            log_sync(
+                pool,
+                tenant_id,
+                "FAILED",
+                &format!(
+                    "Đồng bộ hoàn thành: cập nhật Opportunity {} thất bại (Zoho project {})",
+                    link.source_id, link.target_id
+                ),
+                Some(&e),
+                event_base()
+                    .with_event(IntegrationEventType::EntityPushFailed)
+                    .with_metadata(serde_json::json!({
+                        "project_id": link.target_id,
+                        "opportunity_id": link.source_id,
+                        "zoho_status": status_label,
+                    })),
+            )
+            .await;
+            continue;
+        }
+
+        let _ = db::mark_entity_link_delivery_notified(
+            pool,
+            tenant_id,
+            FLOW_SALES_TO_DELIVERY,
+            SF_PROVIDER,
+            &link.source_entity_type,
+            &link.source_id,
+        )
+        .await;
+
+        updated += 1;
+        let field = sf_delivery_completed_field();
+        log_sync(
+            pool,
+            tenant_id,
+            "SUCCESS",
+            &format!(
+                "Đồng bộ hoàn thành: Zoho project {} ({status_label}) → Opportunity {}.{field}=true",
+                link.target_id, link.source_id
+            ),
+            None,
+            event_base()
+                .with_event(IntegrationEventType::EntityPushed)
+                .with_metadata(serde_json::json!({
+                    "project_id": link.target_id,
+                    "opportunity_id": link.source_id,
+                    "zoho_status": status_label,
+                    "field": field,
+                    "source": "periodic_poll",
+                })),
+        )
+        .await;
+
+        match create_sf_invoice_for_completed_project(
+            pool,
+            tenant_id,
+            &link.source_id,
+            &link.target_id,
+            link.target_name.as_deref(),
+        )
+        .await
+        {
+            Ok(Some(invoice_id)) => {
+                let _ = db::mark_entity_link_invoice_created(
+                    pool,
+                    tenant_id,
+                    FLOW_SALES_TO_DELIVERY,
+                    SF_PROVIDER,
+                    &link.source_entity_type,
+                    &link.source_id,
+                    &invoice_id,
+                )
+                .await;
+                log_sync(
+                    pool,
+                    tenant_id,
+                    "SUCCESS",
+                    &format!(
+                        "Xuất hóa đơn: Opportunity {} → {} id {}",
+                        link.source_id,
+                        sf_invoice_object(),
+                        invoice_id
+                    ),
+                    None,
+                    event_base()
+                        .with_event(IntegrationEventType::EntityPushed)
+                        .with_metadata(serde_json::json!({
+                            "opportunity_id": link.source_id,
+                            "project_id": link.target_id,
+                            "invoice_id": invoice_id,
+                            "object": sf_invoice_object(),
+                        })),
+                )
+                .await;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                log_sync(
+                    pool,
+                    tenant_id,
+                    "FAILED",
+                    &format!(
+                        "Xuất hóa đơn thất bại cho Opportunity {} (project {})",
+                        link.source_id, link.target_id
+                    ),
+                    Some(&e),
+                    event_base()
+                        .with_event(IntegrationEventType::EntityPushFailed)
+                        .with_metadata(serde_json::json!({
+                            "opportunity_id": link.source_id,
+                            "project_id": link.target_id,
+                            "object": sf_invoice_object(),
+                        })),
+                )
+                .await;
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(zoho_push_delay_ms())).await;
+    }
+
+    let invoices = issue_pending_salesforce_invoices(pool, tenant_id, correlation_id)
+        .await
+        .unwrap_or_else(|e| {
+            serde_json::json!({ "status": "error", "message": e, "created": 0 })
+        });
+
+    Ok(serde_json::json!({
+        "status": "ok",
+        "flow_type": FLOW_DELIVERY_TO_SALES,
+        "checked": checked,
+        "updated": updated,
+        "skipped_not_completed": skipped,
+        "invoices": invoices,
+        "correlation_id": correlation_id,
+    }))
+}
+
+/// Object hóa đơn trên Salesforce (custom). Ghi đè bằng env nếu org dùng API name khác.
+fn sf_invoice_object() -> String {
+    std::env::var("INTEGRATION_SF_INVOICE_OBJECT")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Invoice__c".into())
+}
+
+fn sf_today_iso_date() -> String {
+    // YYYY-MM-DD UTC — đủ cho field Date Salesforce.
+    chrono::Utc::now().format("%Y-%m-%d").to_string()
+}
+
+async fn fetch_sf_opportunity_for_invoice(
+    pool: &PgPool,
+    tenant_id: i64,
+    opportunity_id: &str,
+) -> Result<serde_json::Value, String> {
+    let path = format!(
+        "/sobjects/Opportunity/{opportunity_id}?fields=Id,Name,Amount,AccountId,StageName"
+    );
+    let (status, resp, _) =
+        sf_request_raw_with_refresh(pool, tenant_id, "GET", &path, None, None, None).await?;
+    if !status.is_success() {
+        let detail = String::from_utf8_lossy(&resp);
+        return Err(format!("GET Opportunity {status}: {detail}"));
+    }
+    serde_json::from_slice(&resp).map_err(|e| format!("parse Opportunity: {e}"))
+}
+
+/// Tạo bản ghi hóa đơn trên Salesforce từ Opportunity đã hoàn thành giao hàng.
+///
+/// Trả về `Ok(None)` khi tắt bằng env `INTEGRATION_SF_INVOICE_ENABLED=0`.
+async fn create_sf_invoice_for_completed_project(
+    pool: &PgPool,
+    tenant_id: i64,
+    opportunity_id: &str,
+    zoho_project_id: &str,
+    project_name: Option<&str>,
+) -> Result<Option<String>, String> {
+    let enabled = std::env::var("INTEGRATION_SF_INVOICE_ENABLED")
+        .ok()
+        .map(|s| {
+            let t = s.trim().to_ascii_lowercase();
+            !(t == "0" || t == "false" || t == "off" || t == "no")
+        })
+        .unwrap_or(true);
+    if !enabled {
+        return Ok(None);
+    }
+
+    let opp = fetch_sf_opportunity_for_invoice(pool, tenant_id, opportunity_id).await?;
+    let opp_name = opp
+        .get("Name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Opportunity")
+        .trim();
+    let amount = opp.get("Amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let account_id = opp
+        .get("AccountId")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let today = sf_today_iso_date();
+    let label = project_name
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(opp_name);
+    let mut name = format!("INV-{label}-{today}");
+    if name.len() > 80 {
+        name = format!("INV-{}-{today}", &opportunity_id[..opportunity_id.len().min(15)]);
+    }
+
+    let object = sf_invoice_object();
+    let mut body = serde_json::json!({
+        "Name": name,
+        "Opportunity__c": opportunity_id,
+        "Amount__c": amount,
+        "Status__c": "Issued",
+        "Issued_Date__c": today,
+        "Zoho_Project_Id__c": zoho_project_id,
+    });
+    if let Some(acc) = account_id {
+        body["Account__c"] = serde_json::json!(acc);
+    }
+
+    let bytes = serde_json::to_vec(&body).map_err(|e| format!("serialize invoice: {e}"))?;
+    let path = format!("/sobjects/{object}");
+    let (status, resp, _) = sf_request_raw_with_refresh(
+        pool,
+        tenant_id,
+        "POST",
+        &path,
+        None,
+        Some(&bytes),
+        Some("application/json"),
+    )
+    .await?;
+    if !status.is_success() {
+        let detail = String::from_utf8_lossy(&resp);
+        return Err(format!(
+            "POST {object} {status}: {detail}. Kiểm tra object/field Invoice__c trên Salesforce (xem docs/TICH_HOP_ZOHO_DELIVERY.md)."
+        ));
+    }
+    let created: serde_json::Value =
+        serde_json::from_slice(&resp).map_err(|e| format!("parse create invoice: {e}"))?;
+    let id = created
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Salesforce không trả id hóa đơn".to_string())?;
+    Ok(Some(id.to_string()))
+}
+
+/// Bù hóa đơn cho link đã đánh dấu hoàn thành trước khi bật tính năng xuất hóa đơn.
+async fn issue_pending_salesforce_invoices(
+    pool: &PgPool,
+    tenant_id: i64,
+    correlation_id: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let event_base = || SyncEventOpts::delivery_to_sales(correlation_id);
+    let pending = db::list_entity_links_pending_invoice(pool, tenant_id, FLOW_SALES_TO_DELIVERY)
+        .await
+        .map_err(|e| format!("db pending invoice: {e}"))?;
+    let mut created = 0_i64;
+    let mut failed = 0_i64;
+    for link in pending {
+        match create_sf_invoice_for_completed_project(
+            pool,
+            tenant_id,
+            &link.source_id,
+            &link.target_id,
+            link.target_name.as_deref(),
+        )
+        .await
+        {
+            Ok(Some(invoice_id)) => {
+                let _ = db::mark_entity_link_invoice_created(
+                    pool,
+                    tenant_id,
+                    FLOW_SALES_TO_DELIVERY,
+                    SF_PROVIDER,
+                    &link.source_entity_type,
+                    &link.source_id,
+                    &invoice_id,
+                )
+                .await;
+                created += 1;
+                log_sync(
+                    pool,
+                    tenant_id,
+                    "SUCCESS",
+                    &format!(
+                        "Xuất hóa đơn: Opportunity {} → {} id {}",
+                        link.source_id,
+                        sf_invoice_object(),
+                        invoice_id
+                    ),
+                    None,
+                    event_base()
+                        .with_event(IntegrationEventType::EntityPushed)
+                        .with_metadata(serde_json::json!({
+                            "opportunity_id": link.source_id,
+                            "invoice_id": invoice_id,
+                            "source": "pending_backfill",
+                        })),
+                )
+                .await;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                failed += 1;
+                log_sync(
+                    pool,
+                    tenant_id,
+                    "FAILED",
+                    &format!(
+                        "Xuất hóa đơn thất bại cho Opportunity {}",
+                        link.source_id
+                    ),
+                    Some(&e),
+                    event_base()
+                        .with_event(IntegrationEventType::EntityPushFailed)
+                        .with_metadata(serde_json::json!({
+                            "opportunity_id": link.source_id,
+                        })),
+                )
+                .await;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(zoho_push_delay_ms())).await;
+    }
+    Ok(serde_json::json!({
+        "created": created,
+        "failed": failed,
+        "object": sf_invoice_object(),
     }))
 }
 
@@ -3728,6 +4290,140 @@ pub async fn api_reset_integration_sync(ctx: &AdminCtx) -> Response {
             axum::Json(serde_json::json!({ "error": format!("{e}") })),
         )
             .into_response(),
+    }
+}
+
+/// Trường Opportunity nhận tín hiệu hoàn thành (checkbox). Ghi đè bằng env nếu cần.
+fn sf_delivery_completed_field() -> String {
+    std::env::var("INTEGRATION_SF_DELIVERY_FIELD")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Project_Completed__c".into())
+}
+
+/// Trạng thái được coi là hoàn thành (portal VN: «Đã hoàn tất»).
+fn is_zoho_project_completed(status: &str) -> bool {
+    let n = status.trim().to_lowercase();
+    if n.is_empty() {
+        return false;
+    }
+    let defaults = [
+        "đã hoàn tất",
+        "da hoan tat",
+        "đã lập hóa đơn",
+        "da lap hoa don",
+        "completed",
+        "complete",
+        "closed",
+        "hoàn thành",
+        "hoan thanh",
+    ];
+    if defaults.iter().any(|d| n == *d || n.contains(d)) {
+        return true;
+    }
+    if let Ok(extra) = std::env::var("INTEGRATION_ZOHO_COMPLETED_STATUS") {
+        for part in extra.split(',') {
+            let p = part.trim().to_lowercase();
+            if !p.is_empty() && (n == p || n.contains(&p)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+async fn patch_sf_opportunity_delivery_completed(
+    pool: &PgPool,
+    tenant_id: i64,
+    opportunity_id: &str,
+) -> Result<(), String> {
+    let field = sf_delivery_completed_field();
+    let path = format!("/sobjects/Opportunity/{opportunity_id}");
+    let body = serde_json::json!({ field: true });
+    let bytes = serde_json::to_vec(&body).map_err(|e| format!("serialize patch: {e}"))?;
+    let (status, resp, _) = sf_request_raw_with_refresh(
+        pool,
+        tenant_id,
+        "PATCH",
+        &path,
+        None,
+        Some(&bytes),
+        Some("application/json"),
+    )
+    .await?;
+    if status.is_success() || status.as_u16() == 204 {
+        return Ok(());
+    }
+    let detail = String::from_utf8_lossy(&resp);
+    Err(format!("Salesforce PATCH {status}: {detail}"))
+}
+
+#[cfg(test)]
+mod delivery_sync_tests {
+    use super::{extract_zoho_project_status_label, is_zoho_project_completed};
+
+    #[test]
+    fn completed_status_vietnamese_and_english() {
+        assert!(is_zoho_project_completed("Đã hoàn tất"));
+        assert!(is_zoho_project_completed("completed"));
+        assert!(is_zoho_project_completed("Completed"));
+        assert!(!is_zoho_project_completed("Có hiệu lực"));
+        assert!(!is_zoho_project_completed(""));
+    }
+
+    #[test]
+    fn extract_status_from_custom_status_object() {
+        let p = serde_json::json!({
+            "id": "1",
+            "custom_status": { "name": "Đã hoàn tất", "is_closed": true }
+        });
+        assert_eq!(extract_zoho_project_status_label(&p), "Đã hoàn tất");
+    }
+
+    #[test]
+    fn extract_status_object_v3_api() {
+        let p = serde_json::json!({
+            "id": "2682758000000171003",
+            "name": "Đơn hàng abc",
+            "status": {
+                "id": "2682758000000020116",
+                "name": "Đã hoàn tất",
+                "is_closed_type": true,
+                "color": "#4fd3e5"
+            }
+        });
+        assert_eq!(extract_zoho_project_status_label(&p), "Đã hoàn tất");
+        assert!(is_zoho_project_completed(&extract_zoho_project_status_label(&p)));
+    }
+
+    #[test]
+    fn extract_ignores_lifecycle_active_when_custom_present() {
+        let p = serde_json::json!({
+            "id": "1",
+            "status": "active",
+            "custom_status": { "name": "Đã hoàn tất", "is_closed": true }
+        });
+        assert_eq!(extract_zoho_project_status_label(&p), "Đã hoàn tất");
+        assert!(is_zoho_project_completed(&extract_zoho_project_status_label(&p)));
+    }
+
+    #[test]
+    fn lifecycle_active_alone_is_not_completed() {
+        let p = serde_json::json!({ "id": "1", "status": "active" });
+        let label = extract_zoho_project_status_label(&p);
+        assert!(label.is_empty() || !is_zoho_project_completed(&label));
+    }
+
+    #[test]
+    fn active_status_object_not_completed() {
+        let p = serde_json::json!({
+            "id": "1",
+            "status": { "name": "Có hiệu lực", "is_closed_type": false }
+        });
+        let label = extract_zoho_project_status_label(&p);
+        assert_eq!(label, "Có hiệu lực");
+        assert!(!is_zoho_project_completed(&label));
     }
 }
 
@@ -3831,10 +4527,6 @@ fn build_pipeline_from_run(
         .and_then(|o| o.get("opportunity"))
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
-    let acc = sf
-        .and_then(|o| o.get("account"))
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
     let push = summary.get("push").and_then(|v| v.as_object());
     let reason = push
         .and_then(|p| p.get("reason"))
@@ -3858,7 +4550,7 @@ fn build_pipeline_from_run(
         label: "Snapshot SF".into(),
         status: if opp > 0 { "ok" } else { "skipped" }.into(),
         summary: if opp > 0 {
-            format!("{opp} Opportunity · {acc} Account — pull qua gateway loopback")
+            format!("{opp} Opportunity — pull qua gateway loopback")
         } else {
             "Snapshot rỗng — kiểm tra kết nối Salesforce".into()
         },

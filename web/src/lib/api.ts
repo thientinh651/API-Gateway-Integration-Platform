@@ -707,13 +707,14 @@ export function fetchSyncLogs(): Promise<SyncLogRow[]> {
 
 export type SyncNowResult = {
   status: string;
-  salesforce: {
-    provider: string;
-    opportunity: number;
-    account: number;
+  salesforce?: {
+    provider?: string;
+    opportunity?: number;
+    account?: number;
+    task?: number;
     demo?: boolean;
   };
-  push: {
+  push?: {
     status?: string;
     created?: number;
     skipped?: number;
@@ -721,7 +722,20 @@ export type SyncNowResult = {
     reason?: string;
     message?: string;
   };
+  delivery?: {
+    status?: string;
+    checked?: number;
+    updated?: number;
+    skipped_not_completed?: number;
+    reason?: string;
+    invoices?: {
+      created?: number;
+      failed?: number;
+      object?: string;
+    };
+  };
   pipeline?: IntegrationPipelineStatus;
+  correlation_id?: string;
 };
 
 export type IntegrationPipelineStep = {

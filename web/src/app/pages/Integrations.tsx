@@ -410,10 +410,19 @@ function IntegrationsAdmin() {
         toast.message('Đã sync Salesforce — kết nối Zoho Projects để đẩy dự án');
       } else {
         const opp = res.salesforce?.opportunity ?? 0;
-        const acc = res.salesforce?.account ?? 0;
-        toast.success(
-          `Sync xong: pull SF ${opp} Opportunity · ${acc} Account → Zoho tạo ${push?.created ?? 0} dự án (${push?.skipped ?? 0} bỏ qua)`,
-        );
+        const created = push?.created ?? 0;
+        const skipped = push?.skipped ?? 0;
+        const completed = res.delivery?.updated ?? 0;
+        const inv = res.delivery?.invoices?.created ?? 0;
+        const invFail = res.delivery?.invoices?.failed ?? 0;
+        const parts = [
+          `SF→Zoho: ${opp} Opportunity · tạo ${created} dự án (${skipped} bỏ qua)`,
+          `Zoho→SF: ${completed} hoàn thành · ${inv} hóa đơn`,
+        ];
+        if (invFail > 0) {
+          parts.push(`${invFail} hóa đơn lỗi`);
+        }
+        toast.success(`Sync xong: ${parts.join(' · ')}`);
       }
       await load();
     } catch (e) {

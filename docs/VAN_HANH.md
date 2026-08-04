@@ -137,10 +137,15 @@ sudo systemctl restart avaso-gateway
 
 ```
 Sales đóng deal SF (Closed Won, đủ Amount)
-    → Worker 15p hoặc Sync Now
-    → Zoho Project [VIP] + tasks
-    → PDF hợp đồng (Office)
-    → Link PDF trong mô tả project
+    → Worker / Sync Now
+    → Zoho Project + tasks
+
+Zoho đổi Trạng Thái → Đã hoàn tất
+    → Cùng worker / Sync Now (định kỳ)
+    → Opportunity.Project_Completed__c = true
+    → Tạo Invoice__c trên Salesforce
 ```
 
-Không cần copy tay sang Zoho.
+Chi tiết chiều về + setup Invoice: [`TICH_HOP_ZOHO_DELIVERY.md`](TICH_HOP_ZOHO_DELIVERY.md).
+
+Không cần copy tay sang Zoho. Không cần cấu hình URL trên Zoho.

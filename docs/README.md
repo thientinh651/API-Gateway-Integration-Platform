@@ -38,6 +38,7 @@ Production: https://thientinh.io.vn
 | File | Nội dung |
 |------|----------|
 | [`TICH_HOP_SALESFORCE.md`](TICH_HOP_SALESFORCE.md) | OAuth Salesforce |
+| [`TICH_HOP_ZOHO_DELIVERY.md`](TICH_HOP_ZOHO_DELIVERY.md) | Zoho hoàn thành → SF (đồng bộ định kỳ) |
 | [`INTEGRATION_DB_DESIGN.md`](INTEGRATION_DB_DESIGN.md) | Schema tích hợp đa provider |
 | [`schema_full_postgresql.sql`](schema_full_postgresql.sql) | Schema PostgreSQL (tham chiếu) |
 

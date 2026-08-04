@@ -38,7 +38,6 @@ function countLogs(logs: SyncLogRow[], status: string) {
 /** Mirror Rust `build_pipeline_from_run` — unit test / đối chiếu client-server. */
 export function buildPipelineFromSyncNow(res: SyncNowResult, syncLogs: SyncLogRow[]): PipelineStep[] {
   const opp = res.salesforce?.opportunity ?? 0;
-  const acc = res.salesforce?.account ?? 0;
   const push = res.push ?? {};
 
   const step1: PipelineStep = {
@@ -47,7 +46,7 @@ export function buildPipelineFromSyncNow(res: SyncNowResult, syncLogs: SyncLogRo
     status: opp > 0 ? 'ok' : 'skipped',
     summary:
       opp > 0
-        ? `${opp} Opportunity · ${acc} Account — pull qua gateway loopback`
+        ? `${opp} Opportunity — pull qua gateway loopback`
         : 'Snapshot rỗng — kiểm tra kết nối Salesforce',
   };
 

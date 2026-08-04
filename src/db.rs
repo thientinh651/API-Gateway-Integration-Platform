@@ -1477,12 +1477,6 @@ pub async fn load_route_rows(pool: &PgPool) -> Result<Vec<RouteRow>, sqlx::Error
     .await
 }
 
-pub async fn load_client_key_hashes(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar("SELECT secret_sha256_hex FROM gateway_client_keys ORDER BY id")
-        .fetch_all(pool)
-        .await
-}
-
 pub async fn load_admin_hash(pool: &PgPool) -> Result<String, sqlx::Error> {
     sqlx::query_scalar("SELECT v FROM gateway_settings WHERE k = 'admin_x_api_key_sha256' LIMIT 1")
         .fetch_one(pool)
@@ -2300,17 +2294,15 @@ pub async fn insert_oauth_client(
 ) -> Result<i64, sqlx::Error> {
     let hash = hash_client_secret(secret_key)
         .map_err(|e| sqlx::Error::Configuration(format!("hash client secret: {e}").into()))?;
-    let unique_row = format!("argon2id:{}", sha256_hex(api_key));
     // owner_user_id NULL hợp lệ (FK ON DELETE SET NULL); không insert 0 giả.
     let owner = owner_user_id.filter(|&id| id > 0);
     sqlx::query_scalar(
-        "INSERT INTO gateway_client_keys (name, api_key, secret_encrypted, secret_hash, secret_sha256_hex, tenant_id, integration_type, owner_user_id, status, rate_limit_per_min)
-         VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, 'active', $8) RETURNING id",
+        "INSERT INTO gateway_client_keys (name, api_key, secret_encrypted, secret_hash, tenant_id, integration_type, owner_user_id, status, rate_limit_per_min)
+         VALUES ($1, $2, NULL, $3, $4, $5, $6, 'active', $7) RETURNING id",
     )
     .bind(name)
     .bind(api_key)
     .bind(&hash)
-    .bind(&unique_row)
     .bind(tenant_id)
     .bind(integration_type)
     .bind(owner)
@@ -3310,7 +3302,19 @@ pub struct EntityLinkRow {
     pub target_entity_type: String,
     pub target_id: String,
     pub target_name: Option<String>,
+    /// Thời điểm đã báo hoàn thành về Salesforce; NULL nếu chưa gửi.
+    pub delivery_notified_at: Option<String>,
+    /// Id bản ghi hóa đơn trên Salesforce (nếu đã tạo).
+    pub invoice_sf_id: Option<String>,
+    pub invoice_created_at: Option<String>,
 }
+
+const ENTITY_LINK_SELECT: &str = "SELECT flow_type, source_provider, source_entity_type, source_id,
+                target_provider, target_entity_type, target_id, target_name,
+                delivery_notified_at::text AS delivery_notified_at,
+                invoice_sf_id,
+                invoice_created_at::text AS invoice_created_at
+         FROM integration_entity_links";
 
 pub async fn fetch_entity_link(
     pool: &PgPool,
@@ -3320,16 +3324,14 @@ pub async fn fetch_entity_link(
     source_entity_type: &str,
     source_id: &str,
 ) -> Result<Option<EntityLinkRow>, sqlx::Error> {
-    sqlx::query_as::<_, EntityLinkRow>(
-        "SELECT flow_type, source_provider, source_entity_type, source_id,
-                target_provider, target_entity_type, target_id, target_name
-         FROM integration_entity_links
+    sqlx::query_as::<_, EntityLinkRow>(&format!(
+        "{ENTITY_LINK_SELECT}
          WHERE tenant_id = $1
            AND flow_type = $2
            AND source_provider = $3
            AND source_entity_type = $4
-           AND source_id = $5",
-    )
+           AND source_id = $5"
+    ))
     .bind(tenant_id)
     .bind(flow_type)
     .bind(source_provider)
@@ -3339,19 +3341,151 @@ pub async fn fetch_entity_link(
     .await
 }
 
+/// Tra link theo đích Zoho (project_id) — dùng khi đồng bộ ngược trạng thái hoàn thành.
+pub async fn fetch_entity_link_by_target(
+    pool: &PgPool,
+    tenant_id: i64,
+    flow_type: &str,
+    target_provider: &str,
+    target_entity_type: &str,
+    target_id: &str,
+) -> Result<Option<EntityLinkRow>, sqlx::Error> {
+    sqlx::query_as::<_, EntityLinkRow>(&format!(
+        "{ENTITY_LINK_SELECT}
+         WHERE tenant_id = $1
+           AND flow_type = $2
+           AND target_provider = $3
+           AND target_entity_type = $4
+           AND target_id = $5
+         ORDER BY last_synced_at DESC
+         LIMIT 1"
+    ))
+    .bind(tenant_id)
+    .bind(flow_type)
+    .bind(target_provider)
+    .bind(target_entity_type)
+    .bind(target_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Đánh dấu đã báo hoàn thành. Trả về true nếu đây là lần đầu (trước đó NULL).
+pub async fn mark_entity_link_delivery_notified(
+    pool: &PgPool,
+    tenant_id: i64,
+    flow_type: &str,
+    source_provider: &str,
+    source_entity_type: &str,
+    source_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let rows = sqlx::query(
+        "UPDATE integration_entity_links
+         SET delivery_notified_at = NOW()
+         WHERE tenant_id = $1
+           AND flow_type = $2
+           AND source_provider = $3
+           AND source_entity_type = $4
+           AND source_id = $5
+           AND delivery_notified_at IS NULL",
+    )
+    .bind(tenant_id)
+    .bind(flow_type)
+    .bind(source_provider)
+    .bind(source_entity_type)
+    .bind(source_id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(rows > 0)
+}
+
 pub async fn list_entity_links(
     pool: &PgPool,
     tenant_id: i64,
 ) -> Result<Vec<EntityLinkRow>, sqlx::Error> {
-    sqlx::query_as::<_, EntityLinkRow>(
-        "SELECT flow_type, source_provider, source_entity_type, source_id,
-                target_provider, target_entity_type, target_id, target_name
-         FROM integration_entity_links
-         WHERE tenant_id = $1",
-    )
+    sqlx::query_as::<_, EntityLinkRow>(&format!(
+        "{ENTITY_LINK_SELECT}
+         WHERE tenant_id = $1"
+    ))
     .bind(tenant_id)
     .fetch_all(pool)
     .await
+}
+
+/// Link SF→Zoho chưa báo hoàn thành về Salesforce (để worker poll định kỳ).
+pub async fn list_entity_links_pending_delivery(
+    pool: &PgPool,
+    tenant_id: i64,
+    flow_type: &str,
+) -> Result<Vec<EntityLinkRow>, sqlx::Error> {
+    sqlx::query_as::<_, EntityLinkRow>(&format!(
+        "{ENTITY_LINK_SELECT}
+         WHERE tenant_id = $1
+           AND flow_type = $2
+           AND target_provider = 'zoho_projects'
+           AND target_entity_type = 'project'
+           AND delivery_notified_at IS NULL
+         ORDER BY last_synced_at ASC"
+    ))
+    .bind(tenant_id)
+    .bind(flow_type)
+    .fetch_all(pool)
+    .await
+}
+
+/// Link đã báo hoàn thành nhưng chưa tạo hóa đơn Salesforce.
+pub async fn list_entity_links_pending_invoice(
+    pool: &PgPool,
+    tenant_id: i64,
+    flow_type: &str,
+) -> Result<Vec<EntityLinkRow>, sqlx::Error> {
+    sqlx::query_as::<_, EntityLinkRow>(&format!(
+        "{ENTITY_LINK_SELECT}
+         WHERE tenant_id = $1
+           AND flow_type = $2
+           AND target_provider = 'zoho_projects'
+           AND target_entity_type = 'project'
+           AND delivery_notified_at IS NOT NULL
+           AND (invoice_sf_id IS NULL OR invoice_sf_id = '')
+         ORDER BY delivery_notified_at ASC"
+    ))
+    .bind(tenant_id)
+    .bind(flow_type)
+    .fetch_all(pool)
+    .await
+}
+
+/// Lưu id hóa đơn Salesforce trên entity link (idempotent).
+pub async fn mark_entity_link_invoice_created(
+    pool: &PgPool,
+    tenant_id: i64,
+    flow_type: &str,
+    source_provider: &str,
+    source_entity_type: &str,
+    source_id: &str,
+    invoice_sf_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let rows = sqlx::query(
+        "UPDATE integration_entity_links
+         SET invoice_sf_id = $6,
+             invoice_created_at = NOW()
+         WHERE tenant_id = $1
+           AND flow_type = $2
+           AND source_provider = $3
+           AND source_entity_type = $4
+           AND source_id = $5
+           AND (invoice_sf_id IS NULL OR invoice_sf_id = '')",
+    )
+    .bind(tenant_id)
+    .bind(flow_type)
+    .bind(source_provider)
+    .bind(source_entity_type)
+    .bind(source_id)
+    .bind(invoice_sf_id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(rows > 0)
 }
 
 pub async fn delete_entity_link(

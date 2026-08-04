@@ -58,7 +58,6 @@ CREATE TABLE gateway_routes (
 CREATE TABLE gateway_client_keys (
     id BIGSERIAL PRIMARY KEY,
     name TEXT NOT NULL DEFAULT '',
-    secret_sha256_hex TEXT NOT NULL UNIQUE,
     api_key TEXT,
     secret_encrypted TEXT,
     tenant_id BIGINT NOT NULL DEFAULT 1 REFERENCES tenants (id),
@@ -243,6 +242,17 @@ VALUES (
 )
 ON CONFLICT (id) DO NOTHING;
 
+INSERT INTO integration_flow_types (id, display_name, source_provider, target_provider, description, enabled)
+VALUES (
+    'delivery_to_sales',
+    'Delivery-to-Sales (Zoho → Salesforce)',
+    'zoho_projects',
+    'salesforce',
+    'Zoho project status Đã hoàn tất → Salesforce Opportunity Project_Completed__c',
+    1
+)
+ON CONFLICT (id) DO NOTHING;
+
 -- tenant_id: không có FK trên DB migrate (DEFAULT 1)
 CREATE TABLE integrations (
     id BIGSERIAL PRIMARY KEY,
@@ -302,32 +312,11 @@ CREATE TABLE integration_entity_links (
     target_entity_type TEXT NOT NULL,
     target_id TEXT NOT NULL,
     target_name TEXT,
-    last_synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    last_synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    delivery_notified_at TIMESTAMPTZ,
+    invoice_sf_id TEXT,
+    invoice_created_at TIMESTAMPTZ
 );
-
--- ═══ VIEWS ═══
-
-CREATE OR REPLACE VIEW integration_tokens AS
-SELECT
-    i.id,
-    i.tenant_id,
-    i.provider,
-    i.config_encrypted AS access_token_encrypted,
-    i.config_encrypted AS refresh_token_encrypted,
-    i.updated_at AS expires_at,
-    i.updated_at
-FROM integrations i
-WHERE i.config_encrypted IS NOT NULL;
-
-CREATE OR REPLACE VIEW salesforce_accounts_snapshot AS
-SELECT
-    id,
-    tenant_id,
-    payload_json,
-    record_count,
-    fetched_at
-FROM integration_snapshots
-WHERE provider = 'salesforce' AND entity_type = 'account';
 
 -- ═══ UNIQUE INDEXES ═══
 
