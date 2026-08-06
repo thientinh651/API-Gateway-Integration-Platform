@@ -310,8 +310,8 @@ mod tests {
             transform_remove_headers: "[]".into(),
             retry_max: 0,
             retry_on_status: default_retry_status_codes(),
-            retry_on_timeout: 1,
-            queue_on_failure: 0,
+            retry_on_timeout: true,
+            queue_on_failure: false,
             allowed_methods: methods,
         }
     }

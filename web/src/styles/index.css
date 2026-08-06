@@ -115,6 +115,29 @@ html[dir='ltr'],
   }
 }
 
+/* Undo-delete toast: thanh đếm lùi (scaleX, không phụ thuộc remount width %) */
+@keyframes avaso-undo-bar-shrink {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+.avaso-undo-bar {
+  transform-origin: left center;
+  animation-name: avaso-undo-bar-shrink;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .avaso-undo-bar {
+    animation: none !important;
+  }
+}
+
 /* Proxy Try: mask Secret nhưng giữ type=text — không kích password manager */
 .gw-secret-mask {
   -webkit-text-security: disc;

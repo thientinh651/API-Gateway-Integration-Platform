@@ -61,7 +61,7 @@ pub async fn list_third_party_apps(
     tenant_id: i64,
 ) -> Result<Vec<ThirdPartyAppRow>, sqlx::Error> {
     sqlx::query_as::<_, ThirdPartyAppRow>(
-        "SELECT id, tenant_id, client_id, name, redirect_uris_json, scopes,
+        "SELECT id, tenant_id, client_id, name, redirect_uris_json::text AS redirect_uris_json, scopes,
                 (client_secret_encrypted IS NOT NULL AND client_secret_encrypted != '') AS has_secret,
                 created_at
          FROM oauth_third_party_apps WHERE tenant_id = $1 ORDER BY id",
@@ -76,7 +76,7 @@ pub async fn fetch_third_party_app(
     client_id: &str,
 ) -> Result<Option<ThirdPartyApp>, sqlx::Error> {
     let row: Option<(i64, i64, String, Option<String>, String, String, String)> = sqlx::query_as(
-        "SELECT id, tenant_id, client_id, client_secret_encrypted, name, redirect_uris_json, scopes
+        "SELECT id, tenant_id, client_id, client_secret_encrypted, name, redirect_uris_json::text AS redirect_uris_json, scopes
          FROM oauth_third_party_apps WHERE client_id = $1 LIMIT 1",
     )
     .bind(client_id)
@@ -119,7 +119,7 @@ pub async fn insert_third_party_app(
     let uris_json = serde_json::to_string(redirect_uris).unwrap_or_else(|_| "[]".into());
     sqlx::query(
         "INSERT INTO oauth_third_party_apps (tenant_id, client_id, client_secret_encrypted, name, redirect_uris_json)
-         VALUES ($1, $2, $3, $4, $5)",
+         VALUES ($1, $2, $3, $4, $5::jsonb)",
     )
     .bind(tenant_id)
     .bind(&client_id)
@@ -180,7 +180,7 @@ pub async fn update_third_party_app(
 ) -> Result<bool, sqlx::Error> {
     let uris_json = serde_json::to_string(redirect_uris).unwrap_or_else(|_| "[]".into());
     let r = sqlx::query(
-        "UPDATE oauth_third_party_apps SET name = $3, redirect_uris_json = $4
+        "UPDATE oauth_third_party_apps SET name = $3, redirect_uris_json = $4::jsonb
          WHERE id = $1 AND tenant_id = $2",
     )
     .bind(id)
@@ -434,7 +434,7 @@ pub async fn exchange_authorization_code(
         .map_err(|e| OAuthTokenError::Internal(format!("{e}")))?
         .ok_or(OAuthTokenError::InvalidGrant)?;
 
-    if user.is_active == 0 {
+    if !user.is_active {
         return Err(OAuthTokenError::InvalidGrant);
     }
 

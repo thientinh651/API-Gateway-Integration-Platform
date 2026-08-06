@@ -11,8 +11,8 @@ export type GatewayRouteRow = {
   retry_max?: number;
   /** PostgreSQL `INTEGER[]` — vd `[502,503,504]` */
   retry_on_status?: number[] | string;
-  retry_on_timeout?: number;
-  queue_on_failure?: number;
+  retry_on_timeout?: boolean;
+  queue_on_failure?: boolean;
 };
 
 import { DEFAULT_ALLOWED_METHODS, allowedMethodsFromApi } from './allowedMethodsOptions';
@@ -30,8 +30,8 @@ export function rowsToUiRoutes(rows: GatewayRouteRow[]) {
     transformRemoveHeaders: r.transform_remove_headers ?? '[]',
     retryMax: r.retry_max ?? 0,
     retryOnStatus: retryOnStatusFromApi(r.retry_on_status),
-    retryOnTimeout: (r.retry_on_timeout ?? 1) !== 0,
-    queueOnFailure: (r.queue_on_failure ?? 0) !== 0,
+    retryOnTimeout: r.retry_on_timeout ?? true,
+    queueOnFailure: r.queue_on_failure ?? false,
   }));
 }
 

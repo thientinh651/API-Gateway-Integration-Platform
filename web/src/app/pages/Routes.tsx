@@ -74,7 +74,7 @@ function routeBodyFromForm(form: RouteFormState, defaults: RouteNumericDefaults)
     transform_remove_headers: form.transformRemoveHeaders.trim() || '[]',
     retry_max: Number.parseInt(parseDefaultNumber(form.retryMax, defaults.retryMax), 10) || 0,
     retry_on_status: parseRetryOnStatus(form.retryOnStatus.trim() || '502,503,504'),
-    retry_on_timeout: form.retryOnTimeout ? 1 : 0,
+    retry_on_timeout: form.retryOnTimeout,
     queue_on_failure: form.queueOnFailure,
   };
 }

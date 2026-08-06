@@ -9,7 +9,7 @@ Tài liệu trả lời hội đồng: *"Tại sao schema không cứng Salesfor
 | Nguyên tắc | Ý nghĩa |
 |------------|---------|
 | **Provider-agnostic** | Cột `provider` thay vì bảng `sf_*` / `zoho_*` riêng |
-| **Flow abstraction** | Pipeline SF→Zoho là **một flow type** (`sales_to_delivery`), không phải toàn bộ hệ thống |
+| **Flow abstraction** | Mỗi pipeline là một `flow_type` (`sales_to_delivery`, `delivery_to_sales`, …) |
 | **Event typing** | Mỗi bước pipeline ghi `event_type` + `correlation_id` — truy vết end-to-end |
 | **Entity mapping generic** | Link nguồn↔đích dùng `(source_provider, source_id) → (target_provider, target_id)` |
 | **Catalog tables** | `integration_providers` + `integration_flow_types` — khai báo connector/flow mới không đổi core |
@@ -21,18 +21,20 @@ Tài liệu trả lời hội đồng: *"Tại sao schema không cứng Salesfor
 ```text
 integration_providers          integration_flow_types
   salesforce                     sales_to_delivery
-  zoho_projects                  (sf → zoho, POC hiện tại)
+  zoho_projects                  delivery_to_sales
         │                                │
         └──────────┬─────────────────────┘
                    ▼
-            integrations (tenant × provider, OAuth token)
+     integration_connections   (tenant × provider, OAuth token runtime)
+     integration_provider_configs (tenant × provider, admin settings)
                    │
      ┌─────────────┼─────────────┐
      ▼             ▼             ▼
-integration_   integration_   sync_logs (events)
-snapshots      entity_links
+integration_   integration_   integration_events
+snapshots      entity_links   (pipeline events)
 (provider,     (flow_type,
- entity_type)   source → target)
+ entity_type)   source → target
+                + workflow state POC)
 ```
 
 ---
@@ -48,70 +50,70 @@ snapshots      entity_links
 | `auth_type` | `oauth2` |
 | `capabilities_json` | `["crm","snapshot"]` — mô tả khả năng connector |
 
-**Trả lời HĐ:** Thêm provider mới = INSERT 1 dòng catalog + implement connector Rust, **không migration schema**.
-
 ### 3.2 `integration_flow_types` (catalog pipeline)
 
 | Cột | Mô tả |
 |-----|-------|
-| `id` | `sales_to_delivery` (POC), tương lai: `lead_to_crm`, `invoice_to_erp` |
+| `id` | `sales_to_delivery`, `delivery_to_sales`, … |
 | `source_provider` / `target_provider` | FK → `integration_providers` |
-| `enabled` | Bật/tắt flow theo tenant hoặc global |
+| `enabled` | Bật/tắt flow |
 
-**POC hiện tại:** `sales_to_delivery` = Closed Won Opportunity (SF) → Zoho Project + tasks.
+**POC hiện tại:**
 
-### 3.3 `integrations` (đã generic từ trước)
+| Flow | Ý nghĩa |
+|------|---------|
+| `sales_to_delivery` | Closed Won Opportunity (SF) → Zoho Project + tasks |
+| `delivery_to_sales` | Zoho «Đã hoàn tất» → SF `Project_Completed__c` + tạo `Invoice__c` |
+
+### 3.3 `integration_connections` (trạng thái kết nối)
 
 ```sql
 (tenant_id, provider) UNIQUE
-status, config_encrypted  -- OAuth tokens AES-256-GCM
+status, token_payload_encrypted  -- OAuth tokens AES-256-GCM
+last_sync_at, last_error
 ```
 
-Provider values: `salesforce`, `zoho_projects`.
+Không nhầm với catalog `integration_providers`.
 
-### 3.4 `integration_snapshots` (đã generic)
+### 3.4 `integration_provider_configs` (cấu hình admin)
+
+```sql
+(tenant_id, provider) UNIQUE
+settings_encrypted  -- client_id, secret, redirect_uri, scopes
+```
+
+### 3.5 `integration_snapshots`
 
 ```sql
 (tenant_id, provider, entity_type, payload_json, fetched_at)
 ```
 
-Ví dụ: `salesforce/opportunity`, `salesforce/account`.
+### 3.6 `integration_events` (pipeline events)
 
-### 3.5 `sync_logs` → integration events
-
-**Migration 20260704120000** bổ sung:
-
-| Cột mới | Mô tả |
-|---------|-------|
+| Cột | Mô tả |
+|-----|-------|
 | `event_type` | `pipeline_started`, `deal_filtered`, `entity_pushed`, … |
-| `flow_type` | `sales_to_delivery` |
+| `flow_type` | `sales_to_delivery` / `delivery_to_sales` |
 | `source_provider` / `target_provider` | Ngữ cảnh event |
-| `correlation_id` | UUID — gom toàn bộ log 1 lần Sync Now |
+| `correlation_id` | UUID — gom log 1 lần Sync Now |
 | `metadata_json` | `{ "source_id", "target_id", "amount" }` |
 
-Giữ `status`, `message` — tương thích UI cũ.
+API dashboard vẫn expose `/api/integrations/sync-logs` (product path).
 
-### 3.6 `integration_entity_links` (đã refactor generic)
+### 3.7 `integration_entity_links`
 
-**Trước (cứng SF/Zoho):**
 ```sql
-sf_entity_type, sf_id, zoho_entity_type, zoho_id, zoho_name
-```
-
-**Sau (mở rộng):**
-```sql
-flow_type           -- sales_to_delivery
-source_provider     -- salesforce
-source_entity_type  -- opportunity
-source_id
-target_provider     -- zoho_projects
-target_entity_type  -- project
-target_id
-target_name
+flow_type
+source_provider / source_entity_type / source_id
+target_provider / target_entity_type / target_id
+target_display_name
+last_synced_at
+-- Workflow state POC (mapping + trạng thái nghiệp vụ cùng bảng):
+completion_synced_at   -- đã báo hoàn thành về SF
+invoice_external_id    -- id hóa đơn phía hệ thống đích (SF)
+invoice_created_at
 UNIQUE (tenant_id, flow_type, source_provider, source_entity_type, source_id)
 ```
-
-**Trả lời HĐ:** Flow SF→HubSpot chỉ cần flow_type mới + mapping mới, **cùng một bảng**.
 
 ---
 
@@ -131,53 +133,35 @@ enum IntegrationEventType {
 }
 ```
 
-Mỗi lần **Sync Now** sinh `correlation_id` — filter log theo trace trong dashboard.
+---
+
+## 5. Mở rộng tương lai
+
+### Thêm provider mới
+1. `INSERT INTO integration_providers`
+2. Implement OAuth + proxy trong Rust
+3. Row trong `integration_connections` / `integration_provider_configs`
+
+### Thêm flow mới
+1. `INSERT INTO integration_flow_types`
+2. Implement worker/pipeline
+3. Entity links dùng `flow_type` mới
 
 ---
 
-## 5. Mở rộng tương lai — checklist
+## 6. Câu hỏi hội đồng — gợi ý
 
-### Thêm provider mới (ví dụ HubSpot)
+**Q: Tại sao không tách `sf_sync_logs` / `zoho_sync_logs`?**  
+A: Một bảng `integration_events` + `flow_type` / provider — query thống nhất.
 
-1. `INSERT INTO integration_providers ('hubspot', ...)`
-2. Implement OAuth + proxy path `/v1/api/hubspot/*` trong Rust
-3. `INSERT INTO integrations (tenant_id, 'hubspot', ...)`
+**Q: Truy vết 1 deal?**  
+A: `correlation_id` + `integration_entity_links`.
 
-**Không đổi:** `integrations`, `integration_snapshots`, `sync_logs` schema.
+**Q: Thêm SAP?**  
+A: Catalog provider + flow mới; tái sử dụng schema.
 
-### Thêm flow mới (ví dụ SF → HubSpot Deal)
-
-1. `INSERT INTO integration_flow_types ('sf_to_hubspot', ...)`
-2. Implement worker/pipeline cho flow đó
-3. Entity links dùng `flow_type = 'sf_to_hubspot'`
-
-### Thêm connector trong code (hướng dài hạn)
-
-```rust
-trait IntegrationProvider {
-    fn id(&self) -> &str;
-    async fn refresh_token(&self, ...) -> Result<()>;
-    async fn proxy_request(&self, ...) -> Result<Response>;
-}
-```
-
-POC chưa implement trait — **documented as future work**; DB đã sẵn sàng.
-
----
-
-## 6. Câu hỏi hội đồng — gợi ý trả lời
-
-**Q: Tại sao không tách bảng `sf_sync_logs` và `zoho_sync_logs`?**  
-A: Một bảng event + cột `provider`/`flow_type` — query thống nhất, thêm provider không migration.
-
-**Q: Làm sao truy vết 1 deal qua nhiều bước?**  
-A: `correlation_id` gom log pipeline; `integration_entity_links` lưu mapping idempotent.
-
-**Q: Thêm SAP thì sao?**  
-A: Catalog provider + flow mới; snapshots/links/events tái sử dụng cùng schema.
-
-**Q: Code vẫn hardcode SF/Zoho?**  
-A: Đúng ở tầng connector (POC). Schema và event model đã tách abstraction — bước tiếp theo là `IntegrationProvider` trait.
+**Q: Code còn hardcode SF/Zoho?**  
+A: Đúng ở tầng connector (POC). Schema đã tách abstraction.
 
 ---
 
@@ -185,16 +169,15 @@ A: Đúng ở tầng connector (POC). Schema và event model đã tách abstract
 
 | Endpoint | Mô tả |
 |----------|-------|
-| `GET /api/integrations/catalog` | Danh sách providers + flow types đã đăng ký |
-| `GET /api/integrations/sync-logs` | Events có `event_type`, `correlation_id` |
-| `GET /api/integrations/entity-links` | Mapping generic source→target |
+| `GET /api/integrations/catalog` | Providers + flow types |
+| `GET /api/integrations/sync-logs` | Events (`integration_events`) |
+| `GET /api/integrations/entity-links` | Mapping source→target |
 
 ---
 
-## 8. Migration
+## 8. Migration rename (20260804120000)
 
-File: `migrations/20260704120000_integration_extensible_schema.sql`
-
-- Tạo catalog tables + seed SF/Zoho
-- ALTER `sync_logs`, migrate `integration_entity_links`
-- Data cũ được backfill tự động
+- `integrations` → `integration_connections` (`token_payload_encrypted`)
+- `integration_provider_configs.config_encrypted` → `settings_encrypted`
+- `sync_logs` → `integration_events`
+- Entity links: `target_display_name`, `completion_synced_at`, `invoice_external_id`

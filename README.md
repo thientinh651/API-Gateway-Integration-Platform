@@ -60,7 +60,7 @@ Client → Nginx (TLS) → avaso-gateway :3000
 
 **Lưu trữ state:**
 
-- **PostgreSQL**: routes, users, client keys, integrations, snapshots, sync logs, entity links, transaction/audit logs, DLQ persist
+- **PostgreSQL**: routes, users, client keys, integration connections/events/links, snapshots, transaction/audit logs, DLQ persist
 - **Redis**: session admin (TTL 24h), rate limit distributed, JWT revocation
 - **In-memory**: buffer proxy queue trước khi flush xuống PostgreSQL
 

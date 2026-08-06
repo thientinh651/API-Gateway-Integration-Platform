@@ -1,7 +1,7 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Avaso Gateway — PostgreSQL schema (trạng thái cuối sau toàn bộ migrations/)
 -- Tài liệu / ERD / báo cáo. Runtime áp schema qua sqlx migrate, không chạy file này.
--- Đồng bộ: migrations đến 20260717120000_route_array_columns.sql
+-- Đồng bộ: migrations đến 20260806120000_drop_client_secret_encrypted.sql
 -- ═══════════════════════════════════════════════════════════════════════════
 
 -- ═══ CORE / TENANTS ═══
@@ -21,8 +21,7 @@ CREATE TABLE dashboard_users (
     role TEXT NOT NULL DEFAULT 'admin'
         CHECK (role IN ('admin', 'operator', 'viewer')),
     tenant_id BIGINT NOT NULL DEFAULT 1 REFERENCES tenants (id),
-    is_active INTEGER NOT NULL DEFAULT 1
-        CHECK (is_active IN (0, 1)),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     email TEXT,
     token_version INTEGER NOT NULL DEFAULT 0
@@ -46,12 +45,12 @@ CREATE TABLE gateway_routes (
     timeout_secs INTEGER NOT NULL DEFAULT 30,
     rate_limit_per_min INTEGER NOT NULL DEFAULT 100,
     tenant_id BIGINT NOT NULL DEFAULT 1 REFERENCES tenants (id),
-    transform_add_headers TEXT NOT NULL DEFAULT '{}',
-    transform_remove_headers TEXT NOT NULL DEFAULT '[]',
+    transform_add_headers JSONB NOT NULL DEFAULT '{}'::jsonb,
+    transform_remove_headers JSONB NOT NULL DEFAULT '[]'::jsonb,
     retry_max INTEGER NOT NULL DEFAULT 0,
     retry_on_status INTEGER[] DEFAULT ARRAY[502, 503, 504]::INTEGER[],
-    retry_on_timeout INTEGER NOT NULL DEFAULT 1,
-    queue_on_failure INTEGER NOT NULL DEFAULT 0,
+    retry_on_timeout BOOLEAN NOT NULL DEFAULT TRUE,
+    queue_on_failure BOOLEAN NOT NULL DEFAULT FALSE,
     allowed_methods TEXT[] DEFAULT ARRAY['*']::TEXT[]
 );
 
@@ -59,7 +58,6 @@ CREATE TABLE gateway_client_keys (
     id BIGSERIAL PRIMARY KEY,
     name TEXT NOT NULL DEFAULT '',
     api_key TEXT,
-    secret_encrypted TEXT,
     tenant_id BIGINT NOT NULL DEFAULT 1 REFERENCES tenants (id),
     integration_type TEXT NOT NULL DEFAULT 'app',
     owner_user_id BIGINT REFERENCES dashboard_users (id) ON DELETE SET NULL,
@@ -82,10 +80,9 @@ CREATE TABLE gateway_settings (
     v TEXT NOT NULL
 );
 
--- tenant_id / route_id: không có FK trên DB migrate (giữ đúng hiện trạng)
 CREATE TABLE gateway_transaction_logs (
     id BIGSERIAL PRIMARY KEY,
-    tenant_id BIGINT,
+    tenant_id BIGINT REFERENCES tenants (id) ON DELETE SET NULL,
     request_id TEXT NOT NULL,
     method TEXT NOT NULL,
     path TEXT NOT NULL,
@@ -98,27 +95,26 @@ CREATE TABLE gateway_transaction_logs (
     upstream TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     client_key_id BIGINT REFERENCES gateway_client_keys (id) ON DELETE SET NULL,
-    route_id BIGINT,
-    req_headers TEXT,
+    route_id BIGINT REFERENCES gateway_routes (id) ON DELETE SET NULL,
+    req_headers JSONB,
     req_body TEXT,
     req_bytes BIGINT,
     req_truncated BOOLEAN NOT NULL DEFAULT FALSE,
-    resp_headers TEXT,
+    resp_headers JSONB,
     resp_body TEXT,
     resp_bytes BIGINT,
     resp_truncated BOOLEAN NOT NULL DEFAULT FALSE,
     upstream_url TEXT
 );
 
--- route_id: không có FK trên DB migrate
 CREATE TABLE gateway_proxy_queue (
     id TEXT PRIMARY KEY,
     tenant_id BIGINT NOT NULL REFERENCES tenants (id),
-    route_id BIGINT NOT NULL,
+    route_id BIGINT REFERENCES gateway_routes (id) ON DELETE SET NULL,
     method TEXT NOT NULL,
     path TEXT NOT NULL,
     upstream_url TEXT NOT NULL,
-    headers_json TEXT NOT NULL DEFAULT '{}',
+    headers_json JSONB NOT NULL DEFAULT '{}'::jsonb,
     body_b64 TEXT NOT NULL DEFAULT '',
     failure_reason TEXT NOT NULL,
     retry_attempts INTEGER NOT NULL DEFAULT 0,
@@ -130,10 +126,9 @@ CREATE TABLE gateway_proxy_queue (
 
 -- ═══ ADMIN / AUDIT ═══
 
--- tenant_id: không có FK trên DB migrate
 CREATE TABLE audit_logs (
     id BIGSERIAL PRIMARY KEY,
-    tenant_id BIGINT NOT NULL DEFAULT 1,
+    tenant_id BIGINT NOT NULL DEFAULT 1 REFERENCES tenants (id) ON DELETE RESTRICT,
     actor TEXT NOT NULL,
     role TEXT NOT NULL,
     action TEXT NOT NULL,
@@ -148,7 +143,7 @@ CREATE TABLE audit_logs (
 
 CREATE TABLE oauth_pending_states (
     state TEXT PRIMARY KEY,
-    tenant_id BIGINT NOT NULL,
+    tenant_id BIGINT NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
     provider TEXT NOT NULL,
     actor TEXT NOT NULL DEFAULT '',
     role TEXT NOT NULL DEFAULT 'admin',
@@ -178,14 +173,14 @@ CREATE TABLE oauth_third_party_apps (
     client_id TEXT NOT NULL UNIQUE,
     client_secret_encrypted TEXT,
     name TEXT NOT NULL,
-    redirect_uris_json TEXT NOT NULL,
+    redirect_uris_json JSONB NOT NULL,
     scopes TEXT NOT NULL DEFAULT 'proxy:invoke',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE oauth_authorization_codes (
     code TEXT PRIMARY KEY,
-    app_client_id TEXT NOT NULL,
+    app_client_id TEXT NOT NULL REFERENCES oauth_third_party_apps (client_id) ON DELETE CASCADE,
     user_id BIGINT NOT NULL REFERENCES dashboard_users (id),
     tenant_id BIGINT NOT NULL REFERENCES tenants (id),
     redirect_uri TEXT NOT NULL,
@@ -198,7 +193,7 @@ CREATE TABLE oauth_authorization_codes (
 
 CREATE TABLE oauth_user_consents (
     user_id BIGINT NOT NULL REFERENCES dashboard_users (id),
-    app_client_id TEXT NOT NULL,
+    app_client_id TEXT NOT NULL REFERENCES oauth_third_party_apps (client_id) ON DELETE CASCADE,
     scope TEXT NOT NULL,
     granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (user_id, app_client_id)
@@ -210,7 +205,7 @@ CREATE TABLE integration_providers (
     id TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
     auth_type TEXT NOT NULL DEFAULT 'oauth2',
-    capabilities_json TEXT NOT NULL DEFAULT '[]',
+    capabilities_json JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -220,8 +215,8 @@ CREATE TABLE integration_flow_types (
     source_provider TEXT NOT NULL REFERENCES integration_providers (id),
     target_provider TEXT NOT NULL REFERENCES integration_providers (id),
     description TEXT,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    config_schema_json TEXT,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    config_schema_json JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -238,7 +233,7 @@ VALUES (
     'salesforce',
     'zoho_projects',
     'Closed Won Opportunity → Zoho Project + delivery tasks',
-    1
+    TRUE
 )
 ON CONFLICT (id) DO NOTHING;
 
@@ -249,28 +244,29 @@ VALUES (
     'zoho_projects',
     'salesforce',
     'Zoho project status Đã hoàn tất → Salesforce Opportunity Project_Completed__c',
-    1
+    TRUE
 )
 ON CONFLICT (id) DO NOTHING;
 
--- tenant_id: không có FK trên DB migrate (DEFAULT 1)
-CREATE TABLE integrations (
+-- Trạng thái kết nối OAuth theo tenant × provider (token runtime).
+CREATE TABLE integration_connections (
     id BIGSERIAL PRIMARY KEY,
-    tenant_id BIGINT NOT NULL DEFAULT 1,
-    provider TEXT NOT NULL,
+    tenant_id BIGINT NOT NULL DEFAULT 1 REFERENCES tenants (id) ON DELETE CASCADE,
+    provider TEXT NOT NULL REFERENCES integration_providers (id) ON DELETE RESTRICT,
     status TEXT NOT NULL DEFAULT 'disconnected',
-    config_encrypted TEXT,
+    token_payload_encrypted TEXT,
     last_sync_at TIMESTAMPTZ,
     last_error TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (tenant_id, provider)
 );
 
+-- Cấu hình admin (client_id / secret / redirect / scopes).
 CREATE TABLE integration_provider_configs (
     id BIGSERIAL PRIMARY KEY,
-    tenant_id BIGINT NOT NULL DEFAULT 1,
-    provider TEXT NOT NULL,
-    config_encrypted TEXT NOT NULL,
+    tenant_id BIGINT NOT NULL DEFAULT 1 REFERENCES tenants (id) ON DELETE CASCADE,
+    provider TEXT NOT NULL REFERENCES integration_providers (id) ON DELETE RESTRICT,
+    settings_encrypted TEXT NOT NULL,
     updated_by TEXT NOT NULL DEFAULT '',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (tenant_id, provider)
@@ -278,15 +274,16 @@ CREATE TABLE integration_provider_configs (
 
 CREATE TABLE integration_snapshots (
     id BIGSERIAL PRIMARY KEY,
-    tenant_id BIGINT NOT NULL DEFAULT 1,
+    tenant_id BIGINT NOT NULL DEFAULT 1 REFERENCES tenants (id) ON DELETE CASCADE,
     provider TEXT NOT NULL,
     entity_type TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
+    payload_json JSONB NOT NULL,
     record_count BIGINT NOT NULL DEFAULT 0,
     fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE sync_logs (
+-- Event pipeline đồng bộ (không chỉ “sync log” thuần).
+CREATE TABLE integration_events (
     id BIGSERIAL PRIMARY KEY,
     tenant_id BIGINT NOT NULL DEFAULT 1 REFERENCES tenants (id),
     status TEXT NOT NULL,
@@ -297,10 +294,11 @@ CREATE TABLE sync_logs (
     source_provider TEXT,
     target_provider TEXT,
     correlation_id TEXT,
-    metadata_json TEXT,
+    metadata_json JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Mapping source↔target + state workflow POC (completion / invoice).
 CREATE TABLE integration_entity_links (
     id BIGSERIAL PRIMARY KEY,
     tenant_id BIGINT NOT NULL DEFAULT 1 REFERENCES tenants (id),
@@ -311,10 +309,10 @@ CREATE TABLE integration_entity_links (
     target_provider TEXT NOT NULL DEFAULT 'zoho_projects',
     target_entity_type TEXT NOT NULL,
     target_id TEXT NOT NULL,
-    target_name TEXT,
+    target_display_name TEXT,
     last_synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    delivery_notified_at TIMESTAMPTZ,
-    invoice_sf_id TEXT,
+    completion_synced_at TIMESTAMPTZ,
+    invoice_external_id TEXT,
     invoice_created_at TIMESTAMPTZ
 );
 
@@ -369,6 +367,12 @@ CREATE INDEX idx_gw_tx_tenant_outcome
     ON gateway_transaction_logs (tenant_id, outcome)
     WHERE outcome IS NOT NULL AND outcome != 'success';
 
+CREATE INDEX idx_gw_tx_tenant_status_created
+    ON gateway_transaction_logs (tenant_id, status, created_at DESC);
+
+CREATE INDEX idx_gw_tx_request_id
+    ON gateway_transaction_logs (request_id);
+
 CREATE INDEX idx_proxy_queue_tenant_created
     ON gateway_proxy_queue (tenant_id, created_at);
 
@@ -392,8 +396,14 @@ CREATE INDEX idx_oauth_access_tokens_active_client
     ON oauth_access_tokens (client_key_id)
     WHERE revoked_at IS NULL;
 
-CREATE INDEX idx_integrations_tenant
-    ON integrations (tenant_id);
+CREATE INDEX idx_oauth_access_tokens_expires
+    ON oauth_access_tokens (expires_at);
+
+CREATE INDEX idx_oauth_access_tokens_tenant_expires
+    ON oauth_access_tokens (tenant_id, expires_at);
+
+CREATE INDEX idx_integration_connections_tenant
+    ON integration_connections (tenant_id);
 
 CREATE INDEX idx_integration_provider_configs_tenant
     ON integration_provider_configs (tenant_id);
@@ -401,15 +411,15 @@ CREATE INDEX idx_integration_provider_configs_tenant
 CREATE INDEX idx_integration_snapshots_tenant_provider
     ON integration_snapshots (tenant_id, provider, entity_type, fetched_at DESC);
 
-CREATE INDEX idx_sync_logs_tenant_created
-    ON sync_logs (tenant_id, id DESC);
+CREATE INDEX idx_integration_events_tenant_created
+    ON integration_events (tenant_id, id DESC);
 
-CREATE INDEX idx_sync_logs_correlation
-    ON sync_logs (tenant_id, correlation_id)
+CREATE INDEX idx_integration_events_correlation
+    ON integration_events (tenant_id, correlation_id)
     WHERE correlation_id IS NOT NULL;
 
-CREATE INDEX idx_sync_logs_event_type
-    ON sync_logs (tenant_id, event_type, id DESC)
+CREATE INDEX idx_integration_events_event_type
+    ON integration_events (tenant_id, event_type, id DESC)
     WHERE event_type IS NOT NULL;
 
 CREATE INDEX idx_entity_links_target

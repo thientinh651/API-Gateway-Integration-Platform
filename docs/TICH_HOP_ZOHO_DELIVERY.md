@@ -80,9 +80,9 @@ Cấp quyền Read/Create cho profile dùng Connected App. Thêm tab **Invoices*
 |-------------|-------------|--------|
 | FAILED xuất hóa đơn, `INVALID_TYPE` | Chưa tạo `Invoice__c` | Tạo object + fields như bảng trên |
 | `REQUIRED_FIELD_MISSING` | Thiếu field / API name sai | Đối chiếu đúng `Opportunity__c`, `Amount__c`, … |
-| Project Completed tick nhưng không có Invoice | Lần sync trước FAILED | Sửa SF rồi Sync Now lại (backfill `invoice_sf_id` trống) |
+| Project Completed tick nhưng không có Invoice | Lần sync trước FAILED | Sửa SF rồi Sync Now lại (backfill `invoice_external_id` trống) |
 
 ## Ghi chú kỹ thuật
 
 - `pull_zoho_completions_to_salesforce` + `create_sf_invoice_for_completed_project`
-- Idempotent: `delivery_notified_at`, `invoice_sf_id` trên `integration_entity_links`
+- Idempotent: `completion_synced_at`, `invoice_external_id` trên `integration_entity_links`

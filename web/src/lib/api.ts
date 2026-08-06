@@ -265,7 +265,7 @@ export type RouteWriteBody = {
   /** Mảng mã HTTP, vd `[502,503,504]` */
   retry_on_status?: number[];
   /** Backend API: 0 | 1 */
-  retry_on_timeout?: number;
+  retry_on_timeout?: boolean;
   queue_on_failure?: boolean;
 };
 
@@ -764,8 +764,11 @@ export type EntityLinkRow = {
   target_provider: string;
   target_entity_type: string;
   target_id: string;
-  target_name: string | null;
+  target_display_name: string | null;
   last_synced_at: string;
+  completion_synced_at: string | null;
+  invoice_external_id: string | null;
+  invoice_created_at: string | null;
 };
 
 export type IntegrationProviderRow = {
@@ -781,7 +784,7 @@ export type IntegrationFlowTypeRow = {
   source_provider: string;
   target_provider: string;
   description: string | null;
-  enabled: number;
+  enabled: boolean;
 };
 
 export type IntegrationCatalog = {

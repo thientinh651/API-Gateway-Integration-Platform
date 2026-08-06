@@ -5,27 +5,32 @@ import { Button } from './ui/button';
 type Props = {
   message: string;
   durationMs: number;
+  /** Mốc bắt đầu đếm — giữ tiến trình khi Sonner remount toast. */
+  startedAt: number;
   onUndo: () => void;
 };
 
 /** Toast xóa có hoàn tác: đếm ngược + thanh tiến trình. */
-export function UndoDeleteToast({ message, durationMs, onUndo }: Props) {
-  const [remainingMs, setRemainingMs] = useState(durationMs);
+export function UndoDeleteToast({ message, durationMs, startedAt, onUndo }: Props) {
+  const [remainingMs, setRemainingMs] = useState(() =>
+    Math.max(0, durationMs - (Date.now() - startedAt)),
+  );
 
   useEffect(() => {
-    const started = Date.now();
     let raf = 0;
     const tick = () => {
-      const left = Math.max(0, durationMs - (Date.now() - started));
+      const left = Math.max(0, durationMs - (Date.now() - startedAt));
       setRemainingMs(left);
       if (left > 0) raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [durationMs]);
+  }, [durationMs, startedAt]);
 
   const secs = Math.max(1, Math.ceil(remainingMs / 1000));
-  const progress = durationMs > 0 ? (remainingMs / durationMs) * 100 : 0;
+  const elapsed = Math.min(durationMs, Math.max(0, Date.now() - startedAt));
+  /** Negative delay: CSS animation tiếp tục đúng chỗ sau remount. */
+  const animationDelay = `-${elapsed}ms`;
 
   return (
     <div className="w-[min(22rem,calc(100vw-2rem))] rounded-xl border border-border bg-card/95 shadow-lg backdrop-blur-md overflow-hidden">
@@ -47,10 +52,13 @@ export function UndoDeleteToast({ message, durationMs, onUndo }: Props) {
           Hoàn tác
         </Button>
       </div>
-      <div className="h-1 w-full bg-primary/15">
+      <div className="h-1 w-full bg-primary/15 overflow-hidden">
         <div
-          className="h-full bg-primary transition-[width] duration-75 ease-linear"
-          style={{ width: `${progress}%` }}
+          className="avaso-undo-bar h-full w-full origin-left bg-primary"
+          style={{
+            animationDuration: `${durationMs}ms`,
+            animationDelay,
+          }}
         />
       </div>
     </div>

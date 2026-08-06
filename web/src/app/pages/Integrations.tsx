@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { toast } from 'sonner';
-import { Cloud, Plug, RefreshCw, X } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import { AdminOnly } from '../components/auth/AdminOnly';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import {
@@ -43,6 +43,7 @@ import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import {
   IntegrationConnectorCard,
   IntegrationConnectPrompt,
@@ -59,6 +60,7 @@ import { IntegrationSnapshotsPanel } from './integrations/IntegrationSnapshotsPa
 import { resolvePipelineSteps } from '../../lib/integrationPipeline';
 
 type FieldErrors = Record<string, string>;
+type TabId = 'overview' | 'results' | 'config';
 
 const PROVIDER_META = INTEGRATION_PROVIDER_META;
 
@@ -130,9 +132,9 @@ function IntegrationsAdmin() {
   const { user } = useAdminAuth();
   const isAdmin = canManageIntegrations(user);
   const [params, setParams] = useSearchParams();
+  const [tab, setTab] = useState<TabId>('overview');
   const [rows, setRows] = useState<IntegrationRow[]>([]);
   const [loading, setLoading] = useState(true);
-  /** Màn cấu hình khi chưa kết nối — null = không mở form setup. */
   const [workspace, setWorkspace] = useState<ProviderKind | null>(null);
   const [testingProvider, setTestingProvider] = useState<string | null>(null);
   const [syncingProvider, setSyncingProvider] = useState<string | null>(null);
@@ -240,17 +242,20 @@ function IntegrationsAdmin() {
     if (ok === 'salesforce') {
       toast.success('Salesforce đã kết nối');
       setWorkspace(null);
+      setTab('overview');
       setParams({}, { replace: true });
       void load();
     } else if (ok === 'zoho') {
       toast.success('Zoho Projects đã kết nối');
       setWorkspace(null);
+      setTab('overview');
       setParams({}, { replace: true });
       void load();
     } else if (err) {
       const detail = params.get('detail');
       const provider = params.get('provider');
       toast.error(describeOAuthRedirectError(err, detail));
+      setTab('config');
       if (provider === 'salesforce' || provider === 'zoho_projects') {
         setWorkspace(provider);
       }
@@ -260,6 +265,7 @@ function IntegrationsAdmin() {
   }, [params, setParams, load]);
 
   const openWorkspace = (kind: ProviderKind) => {
+    setTab('config');
     setWorkspace(kind);
     void loadProviderConfig(kind);
   };
@@ -360,11 +366,14 @@ function IntegrationsAdmin() {
   const handleConnect = async (kind: ProviderKind) => {
     setConnecting((s) => ({ ...s, [kind]: true }));
     try {
-      const ok =
+      const saved =
         kind === 'salesforce' ? await persistSfConfig() : await persistZohoConfig();
-      if (!ok) return;
-      window.location.href =
-        kind === 'salesforce' ? salesforceConnectUrl() : zohoConnectUrl();
+      if (!saved) return;
+      const url =
+        kind === 'salesforce' ? await salesforceConnectUrl() : await zohoConnectUrl();
+      window.location.href = url.url;
+    } catch (e) {
+      toastApiError(e);
     } finally {
       setConnecting((s) => ({ ...s, [kind]: false }));
     }
@@ -375,7 +384,7 @@ function IntegrationsAdmin() {
     try {
       const res = await salesforceSync();
       toast.success(
-        `Pull SF: ${res.summary.opportunity} Opportunity · ${res.summary.account} Account`,
+        `Pull SF: ${res.summary.account} Account · ${res.summary.opportunity} Opportunity`,
       );
       await load();
     } catch (e) {
@@ -402,29 +411,25 @@ function IntegrationsAdmin() {
     setSyncingNow(true);
     try {
       const res = await integrationSyncNow();
-      if (res.pipeline) {
-        setPipelineStatus(res.pipeline);
-      }
-      const push = res.push;
-      if (push?.status === 'skipped' && push?.reason === 'need_both_connected') {
+      if (res.pipeline) setPipelineStatus(res.pipeline);
+      const delivery = res.delivery as
+        | { updated?: number; invoices?: { created?: number } }
+        | undefined;
+      const push = res.push as { created?: number; skipped?: number } | undefined;
+      const opp = (res.opportunity as { count?: number } | undefined)?.count;
+      if (!res.zoho_connected) {
         toast.message('Đã sync Salesforce — kết nối Zoho Projects để đẩy dự án');
       } else {
-        const opp = res.salesforce?.opportunity ?? 0;
         const created = push?.created ?? 0;
         const skipped = push?.skipped ?? 0;
-        const completed = res.delivery?.updated ?? 0;
-        const inv = res.delivery?.invoices?.created ?? 0;
-        const invFail = res.delivery?.invoices?.failed ?? 0;
-        const parts = [
-          `SF→Zoho: ${opp} Opportunity · tạo ${created} dự án (${skipped} bỏ qua)`,
-          `Zoho→SF: ${completed} hoàn thành · ${inv} hóa đơn`,
-        ];
-        if (invFail > 0) {
-          parts.push(`${invFail} hóa đơn lỗi`);
-        }
-        toast.success(`Sync xong: ${parts.join(' · ')}`);
+        const completed = delivery?.updated ?? 0;
+        const inv = delivery?.invoices?.created ?? 0;
+        toast.success(
+          `Sync xong: SF→Zoho: ${opp ?? '—'} Opportunity · tạo ${created} dự án (${skipped} bỏ qua) · Zoho→SF: ${completed} hoàn thành · ${inv} hóa đơn`,
+        );
       }
       await load();
+      setTab('results');
     } catch (e) {
       toastApiError(e);
     } finally {
@@ -437,9 +442,8 @@ function IntegrationsAdmin() {
     setTestResult(null);
     try {
       const res = await salesforceTest();
-      setTestResult(JSON.stringify(res.limits, null, 2));
+      setTestResult(JSON.stringify(res, null, 2));
       toast.success('Gọi Salesforce API limits thành công');
-      await load();
     } catch (e) {
       toastApiError(e);
     } finally {
@@ -452,14 +456,12 @@ function IntegrationsAdmin() {
     setTestResult(null);
     try {
       const res = await zohoTest();
-      setTestResult(JSON.stringify(res.portals, null, 2));
-      const empty = Array.isArray(res.portals) && res.portals.length === 0;
-      if (empty) {
+      setTestResult(JSON.stringify(res, null, 2));
+      if (!res.portal_id && (res.portals_count ?? 0) === 0) {
         toast.warning('Zoho OK nhưng chưa thấy portal.');
       } else {
         toast.success(res.portal_id ? `Zoho OK — portal_id=${res.portal_id}` : 'Zoho portals OK');
       }
-      await load();
     } catch (e) {
       toastApiError(e);
     } finally {
@@ -472,9 +474,8 @@ function IntegrationsAdmin() {
     setTestResult(null);
     try {
       const res = await zohoProjects();
-      setTestResult(JSON.stringify(res.projects, null, 2));
+      setTestResult(JSON.stringify(res, null, 2));
       toast.success(`Zoho projects OK — portal_id=${res.portal_id}`);
-      await load();
     } catch (e) {
       toastApiError(e);
     } finally {
@@ -486,18 +487,13 @@ function IntegrationsAdmin() {
     setTestingProvider('zoho_projects');
     setTestResult(null);
     try {
-      const proj = await zohoProjects();
-      const firstId =
-        (proj.projects as { projects?: Array<{ id?: string | number }> })?.projects?.[0]?.id ??
-        (Array.isArray(proj.projects) ? (proj.projects as Array<{ id?: string | number }>)[0]?.id : null);
-      if (!firstId) {
+      const res = await zohoTasks();
+      setTestResult(JSON.stringify(res, null, 2));
+      if (!res.project_id) {
         toast.warning('Không có project_id — test projects trước.');
-        return;
+      } else {
+        toast.success(`Zoho tasks OK — project_id=${res.project_id}`);
       }
-      const res = await zohoTasks(String(firstId));
-      setTestResult(JSON.stringify(res.tasks, null, 2));
-      toast.success(`Zoho tasks OK — project_id=${res.project_id}`);
-      await load();
     } catch (e) {
       toastApiError(e);
     } finally {
@@ -510,212 +506,12 @@ function IntegrationsAdmin() {
       if (kind === 'salesforce') await salesforceDisconnect();
       else await zohoDisconnect();
       toast.success(`Đã ngắt kết nối ${PROVIDER_META[kind].label}`);
-      setTestResult(null);
+      setWorkspace(null);
       await load();
     } catch (e) {
       toastApiError(e);
     }
   };
-
-  const sf = rows.find((r) => r.provider === 'salesforce');
-  const zoho = rows.find((r) => r.provider === 'zoho_projects');
-  const sfConnected = sf?.status === 'connected';
-  const zohoConnected = zoho?.status === 'connected';
-  const showPipeline = sfConnected;
-
-  const pipelineSteps = useMemo(
-    () =>
-      resolvePipelineSteps(
-        pipelineStatus,
-        snapshots,
-        syncLogs,
-        sfConnected,
-        zohoConnected,
-      ),
-    [pipelineStatus, snapshots, syncLogs, sfConnected, zohoConnected],
-  );
-
-  const scrollToSyncLogs = () => {
-    document.getElementById('section-sync-logs')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
-
-  const renderSfConfigForm = () => (
-    <div className="space-y-3">
-      {sfCfgErrors._form ? (
-        <p className="text-sm text-red-400 border border-red-500/30 rounded p-2">{sfCfgErrors._form}</p>
-      ) : null}
-      {cfgLoading.salesforce ? (
-        <p className="text-sm text-muted-foreground">Đang tải cấu hình…</p>
-      ) : (
-        <>
-          <div>
-            <Label>Consumer Key (Client ID)</Label>
-            <Input
-              className={fieldInputClass(Boolean(sfCfgErrors.client_id))}
-              value={sfCfg.client_id}
-              onChange={(e) => patchSfCfg({ client_id: e.target.value }, 'client_id')}
-              disabled={!isAdmin}
-            />
-            <FieldHint error={sfCfgErrors.client_id} />
-          </div>
-          <div>
-            <Label>Consumer Secret</Label>
-            <Input
-              type="password"
-              autoComplete="off"
-              className={fieldInputClass(Boolean(sfCfgErrors.client_secret))}
-              value={sfCfg.client_secret}
-              onChange={(e) => patchSfCfg({ client_secret: e.target.value }, 'client_secret')}
-              placeholder={sfCfg.has_secret ? '' : 'Nhập Consumer Secret'}
-              disabled={!isAdmin}
-            />
-            <FieldHint error={sfCfgErrors.client_secret} />
-          </div>
-          <div>
-            <Label>Login URL</Label>
-            <Input
-              className={fieldInputClass(Boolean(sfCfgErrors.login_url))}
-              value={sfCfg.login_url}
-              onChange={(e) => patchSfCfg({ login_url: e.target.value }, 'login_url')}
-              disabled={!isAdmin}
-            />
-            <FieldHint error={sfCfgErrors.login_url} />
-          </div>
-          <div>
-            <Label>Redirect URI (Callback)</Label>
-            <Input
-              className={fieldInputClass(Boolean(sfCfgErrors.redirect_uri))}
-              value={sfCfg.redirect_uri}
-              onChange={(e) => patchSfCfg({ redirect_uri: e.target.value }, 'redirect_uri')}
-              disabled={!isAdmin}
-            />
-            <FieldHint error={sfCfgErrors.redirect_uri} />
-          </div>
-        </>
-      )}
-    </div>
-  );
-
-  const renderZohoConfigForm = () => (
-    <div className="space-y-3">
-      {zohoCfgErrors._form ? (
-        <p className="text-sm text-red-400 border border-red-500/30 rounded p-2">{zohoCfgErrors._form}</p>
-      ) : null}
-      {cfgLoading.zoho_projects ? (
-        <p className="text-sm text-muted-foreground">Đang tải cấu hình…</p>
-      ) : (
-        <>
-          <div>
-            <Label>Client ID</Label>
-            <Input
-              className={fieldInputClass(Boolean(zohoCfgErrors.client_id))}
-              value={zohoCfg.client_id}
-              onChange={(e) => patchZohoCfg({ client_id: e.target.value }, 'client_id')}
-              disabled={!isAdmin}
-            />
-            <FieldHint error={zohoCfgErrors.client_id} />
-          </div>
-          <div>
-            <Label>Client Secret</Label>
-            <Input
-              type="password"
-              autoComplete="off"
-              className={fieldInputClass(Boolean(zohoCfgErrors.client_secret))}
-              value={zohoCfg.client_secret}
-              onChange={(e) => patchZohoCfg({ client_secret: e.target.value }, 'client_secret')}
-              placeholder={zohoCfg.has_secret ? '' : 'Nhập Client Secret'}
-              disabled={!isAdmin}
-            />
-            <FieldHint error={zohoCfgErrors.client_secret} />
-          </div>
-          <div>
-            <Label>Accounts URL</Label>
-            <Input
-              className={fieldInputClass(Boolean(zohoCfgErrors.accounts_url))}
-              value={zohoCfg.accounts_url}
-              onChange={(e) => patchZohoCfg({ accounts_url: e.target.value }, 'accounts_url')}
-              disabled={!isAdmin}
-            />
-            <FieldHint error={zohoCfgErrors.accounts_url} />
-          </div>
-          <div>
-            <Label>Redirect URI</Label>
-            <Input
-              className={fieldInputClass(Boolean(zohoCfgErrors.redirect_uri))}
-              value={zohoCfg.redirect_uri}
-              onChange={(e) => patchZohoCfg({ redirect_uri: e.target.value }, 'redirect_uri')}
-              disabled={!isAdmin}
-            />
-            <FieldHint error={zohoCfgErrors.redirect_uri} />
-          </div>
-          <div>
-            <Label>Scopes</Label>
-            <Input
-              className={fieldInputClass(Boolean(zohoCfgErrors.scopes))}
-              value={zohoCfg.scopes}
-              onChange={(e) => patchZohoCfg({ scopes: e.target.value }, 'scopes')}
-              disabled={!isAdmin}
-            />
-            <FieldHint error={zohoCfgErrors.scopes} />
-          </div>
-        </>
-      )}
-    </div>
-  );
-
-  const renderSetupWorkspace = (kind: ProviderKind) => {
-    const meta = PROVIDER_META[kind];
-    const row = rows.find((r) => r.provider === kind);
-    if (row?.status === 'connected') return null;
-
-    return (
-      <Card key={`setup-${kind}`} className="p-6 bg-card/80 border-primary/30 border">
-        <div className="flex items-start justify-between gap-3 mb-4">
-          <div className="flex items-start gap-3 min-w-0">
-            <div className="p-2 rounded-lg bg-primary/10 shrink-0">
-              <Cloud className="w-5 h-5 text-primary" />
-            </div>
-            <div>
-              <h2 className="font-bold text-white text-lg">Cấu hình {meta.short}</h2>
-              <p className="text-xs text-muted-foreground mt-1">Nhập OAuth app rồi bấm Kết nối</p>
-            </div>
-          </div>
-          <button
-            type="button"
-            className="p-2 rounded-lg text-muted-foreground hover:text-white hover:bg-slate-800 shrink-0"
-            onClick={closeWorkspace}
-            aria-label="Đóng"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {isAdmin ? (
-          <EnterSubmitForm
-            className="space-y-0"
-            disabled={connecting[kind]}
-            onSubmit={() => void handleConnect(kind)}
-          >
-            {kind === 'salesforce' ? renderSfConfigForm() : renderZohoConfigForm()}
-            <div className="mt-6 pt-4 border-t border-dashed border-border">
-              <Button
-                type="submit"
-                className="w-full sm:w-auto bg-primary hover:bg-primary/90"
-                disabled={connecting[kind]}
-              >
-                <Plug className="w-4 h-4 mr-2" />
-                {connecting[kind] ? 'Đang chuyển OAuth…' : `Kết nối ${meta.label}`}
-              </Button>
-            </div>
-          </EnterSubmitForm>
-        ) : (
-          <p className="text-sm text-muted-foreground">Chỉ admin cấu hình và kết nối.</p>
-        )}
-      </Card>
-    );
-  };
-
-  const inDemoMode = Boolean(sf?.is_demo || zoho?.is_demo);
 
   const handleResetSync = async () => {
     try {
@@ -726,6 +522,207 @@ function IntegrationsAdmin() {
       toastApiError(e);
     }
   };
+
+  const sf = rows.find((r) => r.provider === 'salesforce');
+  const zoho = rows.find((r) => r.provider === 'zoho_projects');
+  const sfConnected = sf?.status === 'connected';
+  const zohoConnected = zoho?.status === 'connected';
+  const inDemoMode = Boolean(sf?.is_demo || zoho?.is_demo);
+  const showPipeline = sfConnected;
+
+  const pipelineSteps = useMemo(
+    () => resolvePipelineSteps(pipelineStatus, snapshots, syncLogs, sfConnected, zohoConnected),
+    [pipelineStatus, snapshots, syncLogs, sfConnected, zohoConnected],
+  );
+
+  const scrollToSyncLogs = () => {
+    setTab('results');
+    requestAnimationFrame(() => {
+      document.getElementById('section-sync-logs')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
+
+  const renderSfConfigForm = () => (
+    <div className="space-y-3">
+      <div>
+        <Label className="text-slate-300">Consumer Key (Client ID)</Label>
+        <Input
+          className={`mt-1 bg-slate-950 border-border ${fieldInputClass(Boolean(sfCfgErrors.client_id))}`}
+          value={sfCfg.client_id}
+          onChange={(e) => patchSfCfg({ client_id: e.target.value }, 'client_id')}
+          autoComplete="off"
+        />
+        <FieldHint error={sfCfgErrors.client_id} />
+      </div>
+      <div>
+        <Label className="text-slate-300">Consumer Secret</Label>
+        <Input
+          type="password"
+          className={`mt-1 bg-slate-950 border-border ${fieldInputClass(Boolean(sfCfgErrors.client_secret))}`}
+          value={sfCfg.client_secret}
+          placeholder={sfCfg.has_secret ? sfCfg.secret_masked || '••••••••' : 'Nhập secret'}
+          onChange={(e) => patchSfCfg({ client_secret: e.target.value }, 'client_secret')}
+          autoComplete="new-password"
+        />
+        <FieldHint error={sfCfgErrors.client_secret} />
+      </div>
+      <div>
+        <Label className="text-slate-300">Login URL</Label>
+        <Input
+          className={`mt-1 bg-slate-950 border-border ${fieldInputClass(Boolean(sfCfgErrors.login_url))}`}
+          value={sfCfg.login_url}
+          onChange={(e) => patchSfCfg({ login_url: e.target.value }, 'login_url')}
+        />
+        <FieldHint error={sfCfgErrors.login_url} />
+      </div>
+      <div>
+        <Label className="text-slate-300">Redirect URI</Label>
+        <Input
+          className={`mt-1 bg-slate-950 border-border ${fieldInputClass(Boolean(sfCfgErrors.redirect_uri))}`}
+          value={sfCfg.redirect_uri}
+          onChange={(e) => patchSfCfg({ redirect_uri: e.target.value }, 'redirect_uri')}
+        />
+        <FieldHint error={sfCfgErrors.redirect_uri} />
+      </div>
+      <FieldHint error={sfCfgErrors._form} />
+    </div>
+  );
+
+  const renderZohoConfigForm = () => (
+    <div className="space-y-3">
+      <div>
+        <Label className="text-slate-300">Client ID</Label>
+        <Input
+          className={`mt-1 bg-slate-950 border-border ${fieldInputClass(Boolean(zohoCfgErrors.client_id))}`}
+          value={zohoCfg.client_id}
+          onChange={(e) => patchZohoCfg({ client_id: e.target.value }, 'client_id')}
+          autoComplete="off"
+        />
+        <FieldHint error={zohoCfgErrors.client_id} />
+      </div>
+      <div>
+        <Label className="text-slate-300">Client Secret</Label>
+        <Input
+          type="password"
+          className={`mt-1 bg-slate-950 border-border ${fieldInputClass(Boolean(zohoCfgErrors.client_secret))}`}
+          value={zohoCfg.client_secret}
+          placeholder={zohoCfg.has_secret ? zohoCfg.secret_masked || '••••••••' : 'Nhập secret'}
+          onChange={(e) => patchZohoCfg({ client_secret: e.target.value }, 'client_secret')}
+          autoComplete="new-password"
+        />
+        <FieldHint error={zohoCfgErrors.client_secret} />
+      </div>
+      <div>
+        <Label className="text-slate-300">Accounts URL</Label>
+        <Input
+          className={`mt-1 bg-slate-950 border-border ${fieldInputClass(Boolean(zohoCfgErrors.accounts_url))}`}
+          value={zohoCfg.accounts_url}
+          onChange={(e) => patchZohoCfg({ accounts_url: e.target.value }, 'accounts_url')}
+        />
+        <FieldHint error={zohoCfgErrors.accounts_url} />
+      </div>
+      <div>
+        <Label className="text-slate-300">Redirect URI</Label>
+        <Input
+          className={`mt-1 bg-slate-950 border-border ${fieldInputClass(Boolean(zohoCfgErrors.redirect_uri))}`}
+          value={zohoCfg.redirect_uri}
+          onChange={(e) => patchZohoCfg({ redirect_uri: e.target.value }, 'redirect_uri')}
+        />
+        <FieldHint error={zohoCfgErrors.redirect_uri} />
+      </div>
+      <div>
+        <Label className="text-slate-300">Scopes</Label>
+        <Input
+          className={`mt-1 bg-slate-950 border-border ${fieldInputClass(Boolean(zohoCfgErrors.scopes))}`}
+          value={zohoCfg.scopes}
+          onChange={(e) => patchZohoCfg({ scopes: e.target.value }, 'scopes')}
+        />
+        <FieldHint error={zohoCfgErrors.scopes} />
+      </div>
+      <FieldHint error={zohoCfgErrors._form} />
+    </div>
+  );
+
+  const renderSetupWorkspace = (kind: ProviderKind) => {
+    const busy = Boolean(cfgLoading[kind] || connecting[kind]);
+    return (
+      <Card key={`setup-${kind}`} className="p-6 bg-card/80 border-primary/30 border">
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div>
+            <h3 className="font-bold text-white">Cấu hình {PROVIDER_META[kind].label}</h3>
+            <p className="text-xs text-muted-foreground mt-1">Lưu rồi OAuth qua Connected App / API Console.</p>
+          </div>
+          <Button variant="ghost" size="sm" onClick={closeWorkspace}>
+            Đóng
+          </Button>
+        </div>
+        {cfgLoading[kind] ? (
+          <p className="text-sm text-muted-foreground">Đang tải cấu hình…</p>
+        ) : (
+          <EnterSubmitForm
+            className="space-y-4"
+            onSubmit={() => void handleConnect(kind)}
+            disabled={busy}
+          >
+            {kind === 'salesforce' ? renderSfConfigForm() : renderZohoConfigForm()}
+            <Button
+              type="submit"
+              className="w-full bg-primary hover:bg-primary/90"
+              disabled={busy || !isAdmin}
+            >
+              {connecting[kind] ? 'Đang chuyển OAuth…' : `Lưu & kết nối ${PROVIDER_META[kind].label}`}
+            </Button>
+          </EnterSubmitForm>
+        )}
+      </Card>
+    );
+  };
+
+  const connectorGrid = (
+    <div className="grid md:grid-cols-2 gap-4">
+      {sfConnected && sf ? (
+        <IntegrationConnectorCard
+          kind="salesforce"
+          row={sf}
+          isAdmin={isAdmin}
+          testing={testingProvider === 'salesforce'}
+          syncing={syncingProvider === 'salesforce'}
+          onDisconnect={() => handleDisconnect('salesforce')}
+          onTest={() => void handleSfTest()}
+          onSyncSnapshot={() => void handleSfSync()}
+          onConfigure={() => openWorkspace('salesforce')}
+        />
+      ) : (
+        <IntegrationConnectPrompt
+          kind="salesforce"
+          isAdmin={isAdmin}
+          onConnect={() => openWorkspace('salesforce')}
+        />
+      )}
+
+      {zohoConnected && zoho ? (
+        <IntegrationConnectorCard
+          kind="zoho_projects"
+          row={zoho}
+          isAdmin={isAdmin}
+          testing={testingProvider === 'zoho_projects'}
+          syncing={syncingProvider === 'zoho_projects'}
+          onDisconnect={() => handleDisconnect('zoho_projects')}
+          onTest={() => void handleZohoTest()}
+          onTestProjects={() => void handleZohoProjects()}
+          onTestTasks={() => void handleZohoTasks()}
+          onSyncSnapshot={() => void handleZohoSync()}
+          onConfigure={() => openWorkspace('zoho_projects')}
+        />
+      ) : (
+        <IntegrationConnectPrompt
+          kind="zoho_projects"
+          isAdmin={isAdmin}
+          onConnect={() => openWorkspace('zoho_projects')}
+        />
+      )}
+    </div>
+  );
 
   return (
     <>
@@ -751,132 +748,76 @@ function IntegrationsAdmin() {
         </div>
       </div>
 
-      {!loading && inDemoMode ? (
-        <Card className="mb-6 p-4 border-amber-500/35 bg-amber-500/10 text-sm">
-          <p className="font-medium text-amber-200">Connector đang dùng token demo</p>
-          <p className="text-xs text-amber-200/80 mt-1">
-            Kết nối OAuth thật trước khi bảo vệ. Link đồng bộ cũ có thể gây SKIPPED idempotent.
-          </p>
-          {isAdmin ? (
-            <Button
-              variant="outline"
-              size="sm"
-              className="mt-3 border-amber-500/40 text-amber-100"
-              onClick={() => void handleResetSync()}
-            >
-              Xóa entity links cũ
-            </Button>
-          ) : null}
-        </Card>
-      ) : null}
-
       {loading ? (
         <p className="text-muted-foreground">Đang tải…</p>
       ) : (
-        <div className="space-y-8">
-          <IntegrationStatusStrip sf={sf} zoho={zoho} />
+        <Tabs value={tab} onValueChange={(v) => setTab(v as TabId)} className="space-y-6">
+          <TabsList className="bg-slate-900/60 border border-border">
+            <TabsTrigger value="overview">Tổng quan</TabsTrigger>
+            <TabsTrigger value="results">Kết quả</TabsTrigger>
+            <TabsTrigger value="config">Cấu hình</TabsTrigger>
+          </TabsList>
 
-          {isAdmin && syncSchedule ? (
-            <section className="space-y-3">
-              <IntegrationAutoSyncPanel
-                schedule={syncSchedule}
-                onUpdated={setSyncSchedule}
-              />
-            </section>
-          ) : null}
-
-          <section className="space-y-3">
-            <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
-              Connector OAuth
-            </h2>
-            <div className="grid md:grid-cols-2 gap-4">
-              {sfConnected && sf ? (
-                <IntegrationConnectorCard
-                  kind="salesforce"
-                  row={sf}
-                  isAdmin={isAdmin}
-                  testing={testingProvider === 'salesforce'}
-                  syncing={syncingProvider === 'salesforce'}
-                  onDisconnect={() => handleDisconnect('salesforce')}
-                  onTest={() => void handleSfTest()}
-                  onSyncSnapshot={() => void handleSfSync()}
-                />
-              ) : workspace !== 'salesforce' ? (
-                <IntegrationConnectPrompt
-                  kind="salesforce"
-                  isAdmin={isAdmin}
-                  onConnect={() => openWorkspace('salesforce')}
-                />
-              ) : null}
-
-              {zohoConnected && zoho ? (
-                <IntegrationConnectorCard
-                  kind="zoho_projects"
-                  row={zoho}
-                  isAdmin={isAdmin}
-                  testing={testingProvider === 'zoho_projects'}
-                  syncing={syncingProvider === 'zoho_projects'}
-                  onDisconnect={() => handleDisconnect('zoho_projects')}
-                  onTest={() => void handleZohoTest()}
-                  onTestProjects={() => void handleZohoProjects()}
-                  onTestTasks={() => void handleZohoTasks()}
-                  onSyncSnapshot={() => void handleZohoSync()}
-                />
-              ) : workspace !== 'zoho_projects' ? (
-                <IntegrationConnectPrompt
-                  kind="zoho_projects"
-                  isAdmin={isAdmin}
-                  onConnect={() => openWorkspace('zoho_projects')}
-                />
-              ) : null}
-            </div>
-
-            {workspace ? (
-              <div className="md:col-span-2">{renderSetupWorkspace(workspace)}</div>
+          <TabsContent value="overview" className="space-y-6 mt-0">
+            <IntegrationStatusStrip sf={sf} zoho={zoho} />
+            {isAdmin && syncSchedule ? (
+              <IntegrationAutoSyncPanel schedule={syncSchedule} onUpdated={setSyncSchedule} />
             ) : null}
-          </section>
+            {connectorGrid}
+          </TabsContent>
 
-          {sfConnected ? (
-            <section className="space-y-4">
-              <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
-                Kết quả đồng bộ
-              </h2>
-              <IntegrationEntityLinksPanel links={entityLinks} />
-              <div className="grid lg:grid-cols-2 gap-4 items-stretch">
-                <IntegrationSyncLogsPanel logs={syncLogs} />
-                <IntegrationSnapshotsPanel snapshots={snapshots} />
-              </div>
-
-              {showPipeline ? (
-                <details className="group rounded-xl border border-border/70 bg-background/30 p-4">
-                  <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
-                    <div>
-                      <h3 className="text-sm font-semibold text-white">Chi tiết pipeline đồng bộ</h3>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Snapshot SF → lọc Closed Won → push Zoho → ghi Sync Log. Phần này dành cho lúc cần
-                        kiểm tra luồng xử lý.
-                      </p>
+          <TabsContent value="results" className="space-y-4 mt-0">
+            {!sfConnected ? (
+              <p className="text-sm text-muted-foreground">Kết nối Salesforce trước để xem kết quả đồng bộ.</p>
+            ) : (
+              <>
+                <IntegrationEntityLinksPanel links={entityLinks} />
+                <div className="grid lg:grid-cols-2 gap-4 items-stretch">
+                  <IntegrationSyncLogsPanel logs={syncLogs} />
+                  <IntegrationSnapshotsPanel snapshots={snapshots} />
+                </div>
+                {showPipeline ? (
+                  <details className="group rounded-xl border border-border/70 bg-background/30 p-4">
+                    <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
+                      <h3 className="text-sm font-semibold text-white">Chi tiết pipeline</h3>
+                      <span className="shrink-0 text-xs text-primary group-open:hidden">Mở</span>
+                      <span className="shrink-0 text-xs text-primary hidden group-open:inline">Ẩn</span>
+                    </summary>
+                    <div className="mt-4">
+                      <IntegrationPipelinePanel steps={pipelineSteps} onScrollLogs={scrollToSyncLogs} />
                     </div>
-                    <span className="shrink-0 text-xs text-primary group-open:hidden">Mở</span>
-                    <span className="shrink-0 text-xs text-primary hidden group-open:inline">Ẩn</span>
-                  </summary>
+                  </details>
+                ) : null}
+              </>
+            )}
+          </TabsContent>
 
-                  <div className="mt-4">
-                    <IntegrationPipelinePanel steps={pipelineSteps} onScrollLogs={scrollToSyncLogs} />
-                  </div>
-                </details>
-              ) : null}
-            </section>
-          ) : null}
-        </div>
+          <TabsContent value="config" className="space-y-4 mt-0">
+            {inDemoMode ? (
+              <Card className="p-4 border-amber-500/35 bg-amber-500/10 text-sm">
+                <p className="font-medium text-amber-200">Connector đang dùng token demo</p>
+                {isAdmin ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-3 border-amber-500/40 text-amber-100"
+                    onClick={() => void handleResetSync()}
+                  >
+                    Xóa entity links cũ
+                  </Button>
+                ) : null}
+              </Card>
+            ) : null}
+            {workspace ? renderSetupWorkspace(workspace) : connectorGrid}
+            {testResult ? (
+              <Card className="p-4 bg-slate-950 border-border border-dashed">
+                <h3 className="text-sm font-bold text-white mb-2">Kết quả chẩn đoán</h3>
+                <pre className="text-xs text-slate-300 overflow-auto max-h-64">{testResult}</pre>
+              </Card>
+            ) : null}
+          </TabsContent>
+        </Tabs>
       )}
-
-      {testResult ? (
-        <Card className="mt-6 p-4 bg-slate-950 border-border border-dashed">
-          <h3 className="text-sm font-bold text-white mb-2">Kết quả chẩn đoán</h3>
-          <pre className="text-xs text-slate-300 overflow-auto max-h-64">{testResult}</pre>
-        </Card>
-      ) : null}
     </>
   );
 }

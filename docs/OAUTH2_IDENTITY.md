@@ -90,9 +90,9 @@ Gateway: validate JWT → rate limit (token bucket, burst ≤3) → match route 
 
 ## Lưu trữ secret
 
-- `client_secret` **mã hóa AES-256-GCM** trong PostgreSQL (`secret_encrypted`), không plaintext.
-- Master key: env `CLIENT_KEY_MASTER_KEY`.
-- Mật khẩu admin dashboard: **Argon2id** (khác luồng OAuth client).
+- **OAuth client Gateway** (`gateway_client_keys`): `client_secret` lưu dạng **Argon2id** (`secret_hash`), không plaintext. Không lưu bản mã hóa AES trên bảng này.
+- **Ứng dụng bên thứ ba** (`oauth_third_party_apps`): `client_secret` mã hóa **AES-256-GCM** (`client_secret_encrypted`). Master key: env `CLIENT_KEY_MASTER_KEY`.
+- Mật khẩu admin dashboard: **Argon2id** (`dashboard_users.password_hash`).
 
 ## JWT
 

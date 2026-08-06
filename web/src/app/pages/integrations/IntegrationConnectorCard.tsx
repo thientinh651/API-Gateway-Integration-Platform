@@ -30,6 +30,7 @@ type ConnectedProps = {
   onTestProjects?: () => void;
   onTestTasks?: () => void;
   onSyncSnapshot?: () => void;
+  onConfigure?: () => void;
 };
 
 export function IntegrationConnectorCard({
@@ -43,6 +44,7 @@ export function IntegrationConnectorCard({
   onTestProjects,
   onTestTasks,
   onSyncSnapshot,
+  onConfigure,
 }: ConnectedProps) {
   const [diagOpen, setDiagOpen] = useState(false);
   const meta = META[kind];
@@ -84,6 +86,11 @@ export function IntegrationConnectorCard({
       </div>
 
       <div className="mt-auto space-y-3">
+        {isAdmin && onConfigure ? (
+          <Button variant="outline" size="sm" className="w-full border-border" onClick={onConfigure}>
+            Cấu hình OAuth
+          </Button>
+        ) : null}
         {isAdmin ? (
           <ConfirmDangerButton
             variant="outline"

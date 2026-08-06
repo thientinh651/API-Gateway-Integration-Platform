@@ -9,9 +9,9 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 
-use crate::{RouteRow, YamlBootstrap, crypto};
+use crate::{RouteRow, YamlBootstrap};
 
-pub const ROUTE_SELECT: &str = "id, path, target, timeout_secs, rate_limit_per_min, tenant_id, transform_add_headers, transform_remove_headers, retry_max, retry_on_status, retry_on_timeout, queue_on_failure, allowed_methods";
+pub const ROUTE_SELECT: &str = "id, path, target, timeout_secs, rate_limit_per_min, tenant_id, transform_add_headers::text AS transform_add_headers, transform_remove_headers::text AS transform_remove_headers, retry_max, retry_on_status, retry_on_timeout, queue_on_failure, allowed_methods";
 
 /// Runtime credentials for data-plane OAuth2 client_credentials.
 #[derive(Debug, Clone, Default)]
@@ -80,7 +80,7 @@ pub struct AdminUserRow {
     pub password_hash: String,
     pub role: String,
     pub tenant_id: Option<i64>,
-    pub is_active: i32,
+    pub is_active: bool,
     pub email: Option<String>,
     #[sqlx(default)]
     pub token_version: i32,
@@ -92,14 +92,9 @@ pub struct AdminUserPublic {
     pub username: String,
     pub role: String,
     pub tenant_id: i64,
-    #[serde(serialize_with = "serialize_bool_from_i32")]
-    pub is_active: i32,
+    pub is_active: bool,
     pub created_at: String,
     pub email: Option<String>,
-}
-
-fn serialize_bool_from_i32<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
-    s.serialize_bool(*v != 0)
 }
 
 pub async fn fetch_admin_user_by_username(
@@ -138,7 +133,7 @@ pub async fn bootstrap_admin_user_if_empty(pool: &PgPool) -> Result<(), sqlx::Er
     });
     sqlx::query(
         "INSERT INTO dashboard_users (username, password_hash, role, tenant_id, is_active, email)
-         VALUES ($1, $2, 'admin', $3, 1, $4)",
+         VALUES ($1, $2, 'admin', $3, TRUE, $4)",
     )
     .bind(username.trim())
     .bind(&password_hash)
@@ -200,7 +195,7 @@ pub async fn bootstrap_from_yaml_if_empty(
     .unwrap_or(1);
 
     let admin_owner_id: Option<i64> = sqlx::query_scalar(
-        "SELECT id FROM dashboard_users WHERE role = 'admin' AND is_active = 1 ORDER BY id LIMIT 1",
+        "SELECT id FROM dashboard_users WHERE role = 'admin' AND is_active ORDER BY id LIMIT 1",
     )
     .fetch_optional(pool)
     .await?;
@@ -477,7 +472,7 @@ pub async fn list_dashboard_users_for_tenant(
 ) -> Result<Vec<AdminUserPublic>, sqlx::Error> {
     sqlx::query_as::<_, AdminUserPublic>(
         "SELECT id, username, role, COALESCE(tenant_id, 1) AS tenant_id,
-                CASE WHEN is_active = 0 THEN 0 ELSE 1 END AS is_active, created_at::text AS created_at,
+                is_active, created_at::text AS created_at,
                 email
          FROM dashboard_users WHERE COALESCE(tenant_id, 1) = $1 ORDER BY username",
     )
@@ -493,7 +488,7 @@ pub async fn count_active_admins_in_tenant(
     sqlx::query_scalar(
         "SELECT COUNT(*) FROM dashboard_users
          WHERE COALESCE(tenant_id, 1) = $1
-           AND is_active <> 0
+           AND is_active
            AND LOWER(TRIM(role)) = 'admin'",
     )
     .bind(tenant_id)
@@ -614,14 +609,14 @@ pub async fn list_workspace_users(
         "SELECT u.id, u.username,
                 COALESCE(m.role, u.role) AS role,
                 COALESCE(u.tenant_id, 1) AS tenant_id,
-                CASE WHEN u.is_active = 0 THEN 0 ELSE 1 END AS is_active,
+                u.is_active,
                 u.created_at::text AS created_at,
                 u.email
          FROM dashboard_users u
          LEFT JOIN tenant_memberships m ON m.user_id = u.id AND m.tenant_id = $1
          WHERE COALESCE(u.tenant_id, 1) = $1
          UNION
-         SELECT u.id, u.username, m.role, COALESCE(u.tenant_id, 1), CASE WHEN u.is_active = 0 THEN 0 ELSE 1 END,
+         SELECT u.id, u.username, m.role, COALESCE(u.tenant_id, 1), u.is_active,
                 u.created_at::text, u.email
          FROM tenant_memberships m
          JOIN dashboard_users u ON u.id = m.user_id
@@ -658,7 +653,7 @@ pub async fn insert_admin_user(
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
         "INSERT INTO dashboard_users (username, password_hash, role, tenant_id, is_active, email)
-         VALUES ($1, $2, $3, $4, 1, $5) RETURNING id",
+         VALUES ($1, $2, $3, $4, TRUE, $5) RETURNING id",
     )
     .bind(username)
     .bind(password_hash)
@@ -675,7 +670,7 @@ pub async fn fetch_admin_user_by_email(
 ) -> Result<Option<AdminUserRow>, sqlx::Error> {
     sqlx::query_as::<_, AdminUserRow>(
         "SELECT id, username, password_hash, role, tenant_id, is_active, email
-         FROM dashboard_users WHERE LOWER(TRIM(email)) = LOWER(TRIM($1)) AND is_active = 1 LIMIT 1",
+         FROM dashboard_users WHERE LOWER(TRIM(email)) = LOWER(TRIM($1)) AND is_active LIMIT 1",
     )
     .bind(email)
     .fetch_optional(pool)
@@ -723,7 +718,7 @@ pub async fn update_own_profile(
     let affected = match (password_hash, email) {
         (Some(h), Some(em)) => sqlx::query(
             "UPDATE dashboard_users SET username = $1, email = $2, password_hash = $3
-                 WHERE id = $4 AND COALESCE(tenant_id, 1) = $5 AND is_active = 1",
+                 WHERE id = $4 AND COALESCE(tenant_id, 1) = $5 AND is_active",
         )
         .bind(username)
         .bind(em)
@@ -735,7 +730,7 @@ pub async fn update_own_profile(
         .rows_affected(),
         (Some(h), None) => sqlx::query(
             "UPDATE dashboard_users SET username = $1, password_hash = $2
-                 WHERE id = $3 AND COALESCE(tenant_id, 1) = $4 AND is_active = 1",
+                 WHERE id = $3 AND COALESCE(tenant_id, 1) = $4 AND is_active",
         )
         .bind(username)
         .bind(h)
@@ -746,7 +741,7 @@ pub async fn update_own_profile(
         .rows_affected(),
         (None, Some(em)) => sqlx::query(
             "UPDATE dashboard_users SET username = $1, email = $2
-                 WHERE id = $3 AND COALESCE(tenant_id, 1) = $4 AND is_active = 1",
+                 WHERE id = $3 AND COALESCE(tenant_id, 1) = $4 AND is_active",
         )
         .bind(username)
         .bind(em)
@@ -757,7 +752,7 @@ pub async fn update_own_profile(
         .rows_affected(),
         (None, None) => sqlx::query(
             "UPDATE dashboard_users SET username = $1
-                 WHERE id = $2 AND COALESCE(tenant_id, 1) = $3 AND is_active = 1",
+                 WHERE id = $2 AND COALESCE(tenant_id, 1) = $3 AND is_active",
         )
         .bind(username)
         .bind(id)
@@ -775,7 +770,7 @@ pub async fn fetch_dashboard_user_public_by_id(
 ) -> Result<Option<AdminUserPublic>, sqlx::Error> {
     sqlx::query_as::<_, AdminUserPublic>(
         "SELECT id, username, role, COALESCE(tenant_id, 1) AS tenant_id,
-                CASE WHEN is_active = 0 THEN 0 ELSE 1 END AS is_active, created_at::text AS created_at,
+                is_active, created_at::text AS created_at,
                 email
          FROM dashboard_users WHERE id = $1 LIMIT 1",
     )
@@ -791,7 +786,7 @@ pub async fn fetch_dashboard_user_public(
 ) -> Result<Option<AdminUserPublic>, sqlx::Error> {
     sqlx::query_as::<_, AdminUserPublic>(
         "SELECT id, username, role, COALESCE(tenant_id, 1) AS tenant_id,
-                CASE WHEN is_active = 0 THEN 0 ELSE 1 END AS is_active, created_at::text AS created_at,
+                is_active, created_at::text AS created_at,
                 email
          FROM dashboard_users WHERE id = $1 AND COALESCE(tenant_id, 1) = $2 LIMIT 1",
     )
@@ -820,7 +815,7 @@ pub async fn set_user_password(
     password_hash: &str,
 ) -> Result<u64, sqlx::Error> {
     let r = sqlx::query(
-        "UPDATE dashboard_users SET password_hash = $1 WHERE id = $2 AND is_active = 1",
+        "UPDATE dashboard_users SET password_hash = $1 WHERE id = $2 AND is_active",
     )
     .bind(password_hash)
     .bind(user_id)
@@ -847,7 +842,7 @@ pub async fn update_admin_user(
             )
             .bind(username)
             .bind(role)
-            .bind(if is_active { 1 } else { 0 })
+            .bind(is_active)
             .bind(em)
             .bind(h)
             .bind(id)
@@ -863,7 +858,7 @@ pub async fn update_admin_user(
             )
             .bind(username)
             .bind(role)
-            .bind(if is_active { 1 } else { 0 })
+            .bind(is_active)
             .bind(h)
             .bind(id)
             .bind(tenant_id)
@@ -878,7 +873,7 @@ pub async fn update_admin_user(
             )
             .bind(username)
             .bind(role)
-            .bind(if is_active { 1 } else { 0 })
+            .bind(is_active)
             .bind(em)
             .bind(id)
             .bind(tenant_id)
@@ -893,7 +888,7 @@ pub async fn update_admin_user(
             )
             .bind(username)
             .bind(role)
-            .bind(if is_active { 1 } else { 0 })
+            .bind(is_active)
             .bind(id)
             .bind(tenant_id)
             .execute(pool)
@@ -1058,7 +1053,7 @@ pub async fn insert_transaction_log(
         "INSERT INTO gateway_transaction_logs
          (tenant_id, request_id, method, path, status, duration_ms, client_ip, api_key_masked, client_key_id, outcome, reason, upstream,
           route_id, upstream_url, req_headers, req_body, req_bytes, req_truncated, resp_headers, resp_body, resp_bytes, resp_truncated)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16, $17, $18, $19::jsonb, $20, $21, $22)",
     )
     .bind(tenant_id)
     .bind(request_id)
@@ -1096,8 +1091,8 @@ pub async fn get_transaction_detail(
     sqlx::query_as::<_, TransactionDetailRow>(
         "SELECT t.id, t.request_id, t.method, t.path, t.status, t.duration_ms, t.client_ip, t.api_key_masked,
                 t.client_key_id, k.name AS client_name, t.outcome, t.reason, t.upstream, t.upstream_url, t.route_id,
-                t.req_headers, t.req_body, t.req_bytes, t.req_truncated,
-                t.resp_headers, t.resp_body, t.resp_bytes, t.resp_truncated,
+                t.req_headers::text AS req_headers, t.req_body, t.req_bytes, t.req_truncated,
+                t.resp_headers::text AS resp_headers, t.resp_body, t.resp_bytes, t.resp_truncated,
                 t.created_at::text AS created_at
          FROM gateway_transaction_logs t
          LEFT JOIN gateway_client_keys k ON k.id = t.client_key_id
@@ -1529,8 +1524,7 @@ pub async fn list_client_keys_scoped(
     if admin_sees_all || owner_user_id.is_none() {
         sqlx::query_as::<_, ClientKeyMeta>(
             "SELECT k.id, k.name, k.api_key,
-                    CASE WHEN (k.secret_hash IS NOT NULL AND k.secret_hash != '')
-                              OR (k.secret_encrypted IS NOT NULL AND k.secret_encrypted != '') THEN 'oauth_client'
+                    CASE WHEN k.secret_hash IS NOT NULL AND k.secret_hash != '' THEN 'oauth_client'
                          ELSE 'legacy' END AS auth_mode,
                     COALESCE(k.integration_type, 'app') AS integration_type,
                     k.tenant_id,
@@ -1551,8 +1545,7 @@ pub async fn list_client_keys_scoped(
         let uid = owner_user_id.unwrap_or(0);
         sqlx::query_as::<_, ClientKeyMeta>(
             "SELECT k.id, k.name, k.api_key,
-                    CASE WHEN (k.secret_hash IS NOT NULL AND k.secret_hash != '')
-                              OR (k.secret_encrypted IS NOT NULL AND k.secret_encrypted != '') THEN 'oauth_client'
+                    CASE WHEN k.secret_hash IS NOT NULL AND k.secret_hash != '' THEN 'oauth_client'
                          ELSE 'legacy' END AS auth_mode,
                     COALESCE(k.integration_type, 'app') AS integration_type,
                     k.tenant_id,
@@ -1587,49 +1580,9 @@ pub async fn fetch_client_key_owner(
     .await
 }
 
-pub async fn backfill_client_secret_hashes(pool: &PgPool) -> Result<u64, sqlx::Error> {
-    let rows: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT id, secret_encrypted FROM gateway_client_keys
-         WHERE secret_encrypted IS NOT NULL AND secret_encrypted != ''
-           AND (secret_hash IS NULL OR secret_hash = '')",
-    )
-    .fetch_all(pool)
-    .await?;
-    let mut migrated = 0u64;
-    for (id, enc) in rows {
-        let Ok(plain) = crypto::decrypt_secret(&enc) else {
-            tracing::error!(client_key_id = id, "skip secret backfill: decrypt failed");
-            continue;
-        };
-        match hash_client_secret(&plain) {
-            Ok(hash) => {
-                sqlx::query(
-                    "UPDATE gateway_client_keys SET secret_hash = $1, secret_encrypted = NULL WHERE id = $2",
-                )
-                .bind(&hash)
-                .bind(id)
-                .execute(pool)
-                .await?;
-                migrated += 1;
-            }
-            Err(e) => {
-                tracing::error!(client_key_id = id, error = %e, "hash client secret backfill failed")
-            }
-        }
-    }
-    if migrated > 0 {
-        tracing::info!(
-            count = migrated,
-            "migrated OAuth client secrets to Argon2id"
-        );
-    }
-    Ok(migrated)
-}
-
 pub async fn load_client_credentials(pool: &PgPool) -> Result<ClientCredentials, sqlx::Error> {
     let rows: Vec<(
         i64,
-        Option<String>,
         Option<String>,
         Option<String>,
         i64,
@@ -1637,7 +1590,7 @@ pub async fn load_client_credentials(pool: &PgPool) -> Result<ClientCredentials,
         i32,
         i32,
     )> = sqlx::query_as(
-        "SELECT id, api_key, secret_encrypted, secret_hash, tenant_id,
+        "SELECT id, api_key, secret_hash, tenant_id,
                 COALESCE(status, 'active'), COALESCE(rate_limit_per_min, 0), COALESCE(token_version, 0)
          FROM gateway_client_keys ORDER BY id",
     )
@@ -1652,7 +1605,6 @@ pub async fn load_client_credentials(pool: &PgPool) -> Result<ClientCredentials,
     for (
         id,
         api_key,
-        secret_enc,
         secret_hash,
         tenant_id,
         status,
@@ -1674,35 +1626,7 @@ pub async fn load_client_credentials(pool: &PgPool) -> Result<ClientCredentials,
         let Some(client_id) = api_key.filter(|s| !s.is_empty()) else {
             continue;
         };
-        let resolved_hash = if let Some(h) = secret_hash.filter(|s| !s.is_empty()) {
-            h
-        } else if let Some(enc) = secret_enc.filter(|s| !s.is_empty()) {
-            match crypto::decrypt_secret(&enc) {
-                Ok(plain) => match hash_client_secret(&plain) {
-                    Ok(h) => {
-                        if let Err(e) = sqlx::query(
-                            "UPDATE gateway_client_keys SET secret_hash = $1, secret_encrypted = NULL WHERE id = $2",
-                        )
-                        .bind(&h)
-                        .bind(id)
-                        .execute(pool)
-                        .await
-                        {
-                            tracing::error!(client_id = %client_id, error = %e, "inline secret hash migration failed");
-                        }
-                        h
-                    }
-                    Err(e) => {
-                        tracing::error!(client_id = %client_id, error = %e, "skip oauth client: hash failed");
-                        continue;
-                    }
-                },
-                Err(e) => {
-                    tracing::error!(client_id = %client_id, error = %e, "skip oauth client: decrypt failed");
-                    continue;
-                }
-            }
-        } else {
+        let Some(resolved_hash) = secret_hash.filter(|s| !s.is_empty()) else {
             continue;
         };
         creds.oauth_clients.push(OAuthClientKey {
@@ -1874,11 +1798,10 @@ pub async fn rotate_client_key_secret(
     let hash = hash_client_secret(new_secret)
         .map_err(|e| sqlx::Error::Configuration(format!("hash client secret: {e}").into()))?;
     sqlx::query_scalar(
-        "UPDATE gateway_client_keys SET secret_hash = $3, secret_encrypted = NULL
+        "UPDATE gateway_client_keys SET secret_hash = $3
          WHERE id = $1 AND tenant_id = $2
            AND api_key IS NOT NULL
-           AND (secret_hash IS NOT NULL AND secret_hash != ''
-                OR secret_encrypted IS NOT NULL AND secret_encrypted != '')
+           AND secret_hash IS NOT NULL AND secret_hash != ''
          RETURNING api_key",
     )
     .bind(id)
@@ -2018,14 +1941,14 @@ pub async fn insert_route(
     transform_remove_headers: &str,
     retry_max: i32,
     retry_on_status: &[i32],
-    retry_on_timeout: i32,
-    queue_on_failure: i32,
+    retry_on_timeout: bool,
+    queue_on_failure: bool,
     allowed_methods: &[String],
 ) -> Result<RouteRow, sqlx::Error> {
     sqlx::query_as::<_, RouteRow>(
         &format!(
             "INSERT INTO gateway_routes (path, target, timeout_secs, rate_limit_per_min, tenant_id, transform_add_headers, transform_remove_headers, retry_max, retry_on_status, retry_on_timeout, queue_on_failure, allowed_methods)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12)
          RETURNING {ROUTE_SELECT}"
         ),
     )
@@ -2066,13 +1989,13 @@ pub async fn update_route(
     transform_remove_headers: &str,
     retry_max: i32,
     retry_on_status: &[i32],
-    retry_on_timeout: i32,
-    queue_on_failure: i32,
+    retry_on_timeout: bool,
+    queue_on_failure: bool,
     allowed_methods: &[String],
 ) -> Result<u64, sqlx::Error> {
     let r = sqlx::query(
         "UPDATE gateway_routes SET path = $1, target = $2, timeout_secs = $3, rate_limit_per_min = $4,
-         transform_add_headers = $5, transform_remove_headers = $6, retry_max = $7, retry_on_status = $8,
+         transform_add_headers = $5::jsonb, transform_remove_headers = $6::jsonb, retry_max = $7, retry_on_status = $8,
          retry_on_timeout = $9, queue_on_failure = $10, allowed_methods = $11
          WHERE id = $12 AND tenant_id = $13",
     )
@@ -2243,7 +2166,7 @@ pub async fn ensure_sync_worker_client_key(
     }
 
     let owner_user_id = sqlx::query_scalar::<_, i64>(
-        "SELECT id FROM dashboard_users WHERE is_active = 1 ORDER BY id LIMIT 1",
+        "SELECT id FROM dashboard_users WHERE is_active ORDER BY id LIMIT 1",
     )
     .fetch_optional(pool)
     .await?;
@@ -2297,8 +2220,8 @@ pub async fn insert_oauth_client(
     // owner_user_id NULL hợp lệ (FK ON DELETE SET NULL); không insert 0 giả.
     let owner = owner_user_id.filter(|&id| id > 0);
     sqlx::query_scalar(
-        "INSERT INTO gateway_client_keys (name, api_key, secret_encrypted, secret_hash, tenant_id, integration_type, owner_user_id, status, rate_limit_per_min)
-         VALUES ($1, $2, NULL, $3, $4, $5, $6, 'active', $7) RETURNING id",
+        "INSERT INTO gateway_client_keys (name, api_key, secret_hash, tenant_id, integration_type, owner_user_id, status, rate_limit_per_min)
+         VALUES ($1, $2, $3, $4, $5, $6, 'active', $7) RETURNING id",
     )
     .bind(name)
     .bind(api_key)
@@ -2317,7 +2240,7 @@ pub struct IntegrationRow {
     pub tenant_id: i64,
     pub provider: String,
     pub status: String,
-    pub config_encrypted: Option<String>,
+    pub token_payload_encrypted: Option<String>,
     pub last_sync_at: Option<String>,
     pub last_error: Option<String>,
     pub updated_at: String,
@@ -2402,7 +2325,7 @@ pub async fn ensure_integration_row(
     provider: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO integrations (tenant_id, provider, status) VALUES ($1, $2, 'disconnected')
+        "INSERT INTO integration_connections (tenant_id, provider, status) VALUES ($1, $2, 'disconnected')
          ON CONFLICT (tenant_id, provider) DO NOTHING",
     )
     .bind(tenant_id)
@@ -2429,7 +2352,7 @@ pub async fn list_integrations(
 ) -> Result<Vec<IntegrationPublic>, sqlx::Error> {
     let rows = sqlx::query_as::<_, IntegrationPublicRow>(
         "SELECT id, provider, status, last_sync_at::text AS last_sync_at, last_error, updated_at::text AS updated_at
-         FROM integrations WHERE tenant_id = $1 ORDER BY provider",
+         FROM integration_connections WHERE tenant_id = $1 ORDER BY provider",
     )
     .bind(tenant_id)
     .fetch_all(pool)
@@ -2443,8 +2366,8 @@ pub async fn fetch_integration(
     provider: &str,
 ) -> Result<Option<IntegrationRow>, sqlx::Error> {
     sqlx::query_as::<_, IntegrationRow>(
-        "SELECT id, tenant_id, provider, status, config_encrypted, last_sync_at::text AS last_sync_at, last_error, updated_at::text AS updated_at
-         FROM integrations WHERE tenant_id = $1 AND provider = $2 LIMIT 1",
+        "SELECT id, tenant_id, provider, status, token_payload_encrypted, last_sync_at::text AS last_sync_at, last_error, updated_at::text AS updated_at
+         FROM integration_connections WHERE tenant_id = $1 AND provider = $2 LIMIT 1",
     )
     .bind(tenant_id)
     .bind(provider)
@@ -2460,7 +2383,7 @@ pub async fn set_integration_status(
     last_error: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO integrations (tenant_id, provider, status, last_error, updated_at)
+        "INSERT INTO integration_connections (tenant_id, provider, status, last_error, updated_at)
          VALUES ($1, $2, $3, $4, NOW())
          ON CONFLICT(tenant_id, provider) DO UPDATE SET
            status = excluded.status,
@@ -2481,22 +2404,22 @@ pub async fn upsert_integration_config(
     tenant_id: i64,
     provider: &str,
     status: &str,
-    config_encrypted: &str,
+    token_payload_encrypted: &str,
     last_error: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO integrations (tenant_id, provider, status, config_encrypted, last_error, updated_at)
+        "INSERT INTO integration_connections (tenant_id, provider, status, token_payload_encrypted, last_error, updated_at)
          VALUES ($1, $2, $3, $4, $5, NOW())
          ON CONFLICT(tenant_id, provider) DO UPDATE SET
            status = excluded.status,
-           config_encrypted = excluded.config_encrypted,
+           token_payload_encrypted = excluded.token_payload_encrypted,
            last_error = excluded.last_error,
            updated_at = NOW()",
     )
     .bind(tenant_id)
     .bind(provider)
     .bind(status)
-    .bind(config_encrypted)
+    .bind(token_payload_encrypted)
     .bind(last_error)
     .execute(pool)
     .await?;
@@ -2509,7 +2432,7 @@ pub async fn clear_integration(
     provider: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE integrations SET status = 'disconnected', config_encrypted = NULL, last_error = NULL,
+        "UPDATE integration_connections SET status = 'disconnected', token_payload_encrypted = NULL, last_error = NULL,
          updated_at = NOW() WHERE tenant_id = $1 AND provider = $2",
     )
     .bind(tenant_id)
@@ -2524,7 +2447,7 @@ pub struct IntegrationProviderConfigRow {
     pub id: i64,
     pub tenant_id: i64,
     pub provider: String,
-    pub config_encrypted: String,
+    pub settings_encrypted: String,
     pub updated_by: String,
     pub updated_at: String,
 }
@@ -2535,7 +2458,7 @@ pub async fn fetch_integration_provider_config(
     provider: &str,
 ) -> Result<Option<IntegrationProviderConfigRow>, sqlx::Error> {
     sqlx::query_as::<_, IntegrationProviderConfigRow>(
-        "SELECT id, tenant_id, provider, config_encrypted, updated_by, updated_at::text AS updated_at
+        "SELECT id, tenant_id, provider, settings_encrypted, updated_by, updated_at::text AS updated_at
          FROM integration_provider_configs
          WHERE tenant_id = $1 AND provider = $2 LIMIT 1",
     )
@@ -2549,20 +2472,20 @@ pub async fn upsert_integration_provider_config(
     pool: &PgPool,
     tenant_id: i64,
     provider: &str,
-    config_encrypted: &str,
+    settings_encrypted: &str,
     updated_by: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO integration_provider_configs (tenant_id, provider, config_encrypted, updated_by, updated_at)
+        "INSERT INTO integration_provider_configs (tenant_id, provider, settings_encrypted, updated_by, updated_at)
          VALUES ($1, $2, $3, $4, NOW())
          ON CONFLICT(tenant_id, provider) DO UPDATE SET
-           config_encrypted = excluded.config_encrypted,
+           settings_encrypted = excluded.settings_encrypted,
            updated_by = excluded.updated_by,
            updated_at = NOW()",
     )
     .bind(tenant_id)
     .bind(provider)
-    .bind(config_encrypted)
+    .bind(settings_encrypted)
     .bind(updated_by)
     .execute(pool)
     .await?;
@@ -2598,7 +2521,7 @@ pub async fn insert_integration_snapshot(
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
         "INSERT INTO integration_snapshots (tenant_id, provider, entity_type, payload_json, record_count, fetched_at)
-         VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING id",
+         VALUES ($1, $2, $3, $4::jsonb, $5, NOW()) RETURNING id",
     )
     .bind(tenant_id)
     .bind(provider)
@@ -2683,7 +2606,7 @@ pub async fn fetch_latest_integration_snapshot(
     entity_type: &str,
 ) -> Result<Option<IntegrationSnapshotRow>, sqlx::Error> {
     sqlx::query_as::<_, IntegrationSnapshotRow>(
-        "SELECT id, tenant_id, provider, entity_type, payload_json, record_count, fetched_at::text AS fetched_at
+        "SELECT id, tenant_id, provider, entity_type, payload_json::text AS payload_json, record_count, fetched_at::text AS fetched_at
          FROM integration_snapshots
          WHERE tenant_id = $1 AND provider = $2 AND entity_type = $3
          ORDER BY fetched_at DESC, id DESC
@@ -2702,7 +2625,7 @@ pub async fn touch_integration_last_sync(
     provider: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE integrations SET last_sync_at = NOW(), updated_at = NOW()
+        "UPDATE integration_connections SET last_sync_at = NOW(), updated_at = NOW()
          WHERE tenant_id = $1 AND provider = $2",
     )
     .bind(tenant_id)
@@ -2798,7 +2721,7 @@ pub async fn fetch_client_key_meta_by_id(
 ) -> Result<Option<ClientKeyMeta>, sqlx::Error> {
     sqlx::query_as::<_, ClientKeyMeta>(
         "SELECT k.id, k.name, k.api_key,
-                CASE WHEN k.secret_encrypted IS NOT NULL AND k.secret_encrypted != '' THEN 'oauth_client'
+                CASE WHEN k.secret_hash IS NOT NULL AND k.secret_hash != '' THEN 'oauth_client'
                      ELSE 'legacy' END AS auth_mode,
                 COALESCE(k.integration_type, 'app') AS integration_type,
                 k.tenant_id,
@@ -3177,7 +3100,7 @@ pub async fn ping_timed(pool: &PgPool) -> (bool, u128) {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct SyncLogInsert {
+pub struct IntegrationEventInsert {
     pub event_type: Option<String>,
     pub flow_type: Option<String>,
     pub source_provider: Option<String>,
@@ -3187,7 +3110,7 @@ pub struct SyncLogInsert {
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct SyncLogRow {
+pub struct IntegrationEventRow {
     pub id: i64,
     pub tenant_id: i64,
     pub status: String,
@@ -3202,21 +3125,21 @@ pub struct SyncLogRow {
     pub created_at: String,
 }
 
-pub async fn insert_sync_log(
+pub async fn insert_integration_event(
     pool: &PgPool,
     tenant_id: i64,
     status: &str,
     message: &str,
     error_detail: Option<&str>,
-    meta: SyncLogInsert,
+    meta: IntegrationEventInsert,
 ) -> Result<i64, sqlx::Error> {
     let row: (i64,) = sqlx::query_as(
-        "INSERT INTO sync_logs (
+        "INSERT INTO integration_events (
             tenant_id, status, message, error_detail,
             event_type, flow_type, source_provider, target_provider,
             correlation_id, metadata_json
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
          RETURNING id",
     )
     .bind(tenant_id)
@@ -3239,7 +3162,7 @@ pub async fn latest_pipeline_sync_at(
     tenant_id: i64,
 ) -> Result<Option<String>, sqlx::Error> {
     sqlx::query_scalar(
-        "SELECT created_at::text FROM sync_logs
+        "SELECT created_at::text FROM integration_events
          WHERE tenant_id = $1 AND event_type = 'pipeline_completed'
          ORDER BY id DESC
          LIMIT 1",
@@ -3249,17 +3172,17 @@ pub async fn latest_pipeline_sync_at(
     .await
 }
 
-pub async fn list_sync_logs(
+pub async fn list_integration_events(
     pool: &PgPool,
     tenant_id: i64,
     limit: i64,
-) -> Result<Vec<SyncLogRow>, sqlx::Error> {
-    sqlx::query_as::<_, SyncLogRow>(
+) -> Result<Vec<IntegrationEventRow>, sqlx::Error> {
+    sqlx::query_as::<_, IntegrationEventRow>(
         "SELECT id, tenant_id, status, message, error_detail,
                 event_type, flow_type, source_provider, target_provider,
-                correlation_id, metadata_json,
+                correlation_id, metadata_json::text AS metadata_json,
                 created_at::text AS created_at
-         FROM sync_logs
+         FROM integration_events
          WHERE tenant_id = $1
          ORDER BY id DESC
          LIMIT $2",
@@ -3270,16 +3193,16 @@ pub async fn list_sync_logs(
     .await
 }
 
-pub async fn prune_sync_logs(
+pub async fn prune_integration_events(
     pool: &PgPool,
     tenant_id: i64,
     retain: i64,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "DELETE FROM sync_logs
+        "DELETE FROM integration_events
          WHERE tenant_id = $1
            AND id NOT IN (
-             SELECT id FROM sync_logs
+             SELECT id FROM integration_events
              WHERE tenant_id = $1
              ORDER BY id DESC
              LIMIT $2
@@ -3301,18 +3224,18 @@ pub struct EntityLinkRow {
     pub target_provider: String,
     pub target_entity_type: String,
     pub target_id: String,
-    pub target_name: Option<String>,
+    pub target_display_name: Option<String>,
     /// Thời điểm đã báo hoàn thành về Salesforce; NULL nếu chưa gửi.
-    pub delivery_notified_at: Option<String>,
+    pub completion_synced_at: Option<String>,
     /// Id bản ghi hóa đơn trên Salesforce (nếu đã tạo).
-    pub invoice_sf_id: Option<String>,
+    pub invoice_external_id: Option<String>,
     pub invoice_created_at: Option<String>,
 }
 
 const ENTITY_LINK_SELECT: &str = "SELECT flow_type, source_provider, source_entity_type, source_id,
-                target_provider, target_entity_type, target_id, target_name,
-                delivery_notified_at::text AS delivery_notified_at,
-                invoice_sf_id,
+                target_provider, target_entity_type, target_id, target_display_name,
+                completion_synced_at::text AS completion_synced_at,
+                invoice_external_id,
                 invoice_created_at::text AS invoice_created_at
          FROM integration_entity_links";
 
@@ -3370,7 +3293,7 @@ pub async fn fetch_entity_link_by_target(
 }
 
 /// Đánh dấu đã báo hoàn thành. Trả về true nếu đây là lần đầu (trước đó NULL).
-pub async fn mark_entity_link_delivery_notified(
+pub async fn mark_entity_link_completion_synced(
     pool: &PgPool,
     tenant_id: i64,
     flow_type: &str,
@@ -3380,13 +3303,13 @@ pub async fn mark_entity_link_delivery_notified(
 ) -> Result<bool, sqlx::Error> {
     let rows = sqlx::query(
         "UPDATE integration_entity_links
-         SET delivery_notified_at = NOW()
+         SET completion_synced_at = NOW()
          WHERE tenant_id = $1
            AND flow_type = $2
            AND source_provider = $3
            AND source_entity_type = $4
            AND source_id = $5
-           AND delivery_notified_at IS NULL",
+           AND completion_synced_at IS NULL",
     )
     .bind(tenant_id)
     .bind(flow_type)
@@ -3424,7 +3347,7 @@ pub async fn list_entity_links_pending_delivery(
            AND flow_type = $2
            AND target_provider = 'zoho_projects'
            AND target_entity_type = 'project'
-           AND delivery_notified_at IS NULL
+           AND completion_synced_at IS NULL
          ORDER BY last_synced_at ASC"
     ))
     .bind(tenant_id)
@@ -3445,9 +3368,9 @@ pub async fn list_entity_links_pending_invoice(
            AND flow_type = $2
            AND target_provider = 'zoho_projects'
            AND target_entity_type = 'project'
-           AND delivery_notified_at IS NOT NULL
-           AND (invoice_sf_id IS NULL OR invoice_sf_id = '')
-         ORDER BY delivery_notified_at ASC"
+           AND completion_synced_at IS NOT NULL
+           AND (invoice_external_id IS NULL OR invoice_external_id = '')
+         ORDER BY completion_synced_at ASC"
     ))
     .bind(tenant_id)
     .bind(flow_type)
@@ -3463,25 +3386,25 @@ pub async fn mark_entity_link_invoice_created(
     source_provider: &str,
     source_entity_type: &str,
     source_id: &str,
-    invoice_sf_id: &str,
+    invoice_external_id: &str,
 ) -> Result<bool, sqlx::Error> {
     let rows = sqlx::query(
         "UPDATE integration_entity_links
-         SET invoice_sf_id = $6,
+         SET invoice_external_id = $6,
              invoice_created_at = NOW()
          WHERE tenant_id = $1
            AND flow_type = $2
            AND source_provider = $3
            AND source_entity_type = $4
            AND source_id = $5
-           AND (invoice_sf_id IS NULL OR invoice_sf_id = '')",
+           AND (invoice_external_id IS NULL OR invoice_external_id = '')",
     )
     .bind(tenant_id)
     .bind(flow_type)
     .bind(source_provider)
     .bind(source_entity_type)
     .bind(source_id)
-    .bind(invoice_sf_id)
+    .bind(invoice_external_id)
     .execute(pool)
     .await?
     .rows_affected();
@@ -3524,13 +3447,13 @@ pub async fn upsert_entity_link(
     target_provider: &str,
     target_entity_type: &str,
     target_id: &str,
-    target_name: Option<&str>,
+    target_display_name: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO integration_entity_links (
             tenant_id, flow_type,
             source_provider, source_entity_type, source_id,
-            target_provider, target_entity_type, target_id, target_name,
+            target_provider, target_entity_type, target_id, target_display_name,
             last_synced_at
          )
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
@@ -3539,7 +3462,7 @@ pub async fn upsert_entity_link(
            target_provider = excluded.target_provider,
            target_entity_type = excluded.target_entity_type,
            target_id = excluded.target_id,
-           target_name = excluded.target_name,
+           target_display_name = excluded.target_display_name,
            last_synced_at = NOW()",
     )
     .bind(tenant_id)
@@ -3550,7 +3473,7 @@ pub async fn upsert_entity_link(
     .bind(target_provider)
     .bind(target_entity_type)
     .bind(target_id)
-    .bind(target_name)
+    .bind(target_display_name)
     .execute(pool)
     .await?;
     Ok(())
@@ -3571,8 +3494,11 @@ pub struct EntityLinkPublic {
     pub target_provider: String,
     pub target_entity_type: String,
     pub target_id: String,
-    pub target_name: Option<String>,
+    pub target_display_name: Option<String>,
     pub last_synced_at: String,
+    pub completion_synced_at: Option<String>,
+    pub invoice_external_id: Option<String>,
+    pub invoice_created_at: Option<String>,
 }
 
 pub async fn list_entity_links_public(
@@ -3581,8 +3507,11 @@ pub async fn list_entity_links_public(
 ) -> Result<Vec<EntityLinkPublic>, sqlx::Error> {
     sqlx::query_as::<_, EntityLinkPublic>(
         "SELECT flow_type, source_provider, source_entity_type, source_id,
-                target_provider, target_entity_type, target_id, target_name,
-                last_synced_at::text AS last_synced_at
+                target_provider, target_entity_type, target_id, target_display_name,
+                last_synced_at::text AS last_synced_at,
+                completion_synced_at::text AS completion_synced_at,
+                invoice_external_id,
+                invoice_created_at::text AS invoice_created_at
          FROM integration_entity_links
          WHERE tenant_id = $1
          ORDER BY last_synced_at DESC",
@@ -3607,14 +3536,14 @@ pub struct IntegrationFlowTypeRow {
     pub source_provider: String,
     pub target_provider: String,
     pub description: Option<String>,
-    pub enabled: i32,
+    pub enabled: bool,
 }
 
 pub async fn list_integration_providers(
     pool: &PgPool,
 ) -> Result<Vec<IntegrationProviderRow>, sqlx::Error> {
     sqlx::query_as::<_, IntegrationProviderRow>(
-        "SELECT id, display_name, auth_type, capabilities_json
+        "SELECT id, display_name, auth_type, capabilities_json::text AS capabilities_json
          FROM integration_providers
          ORDER BY id",
     )
@@ -3628,7 +3557,7 @@ pub async fn list_integration_flow_types(
     sqlx::query_as::<_, IntegrationFlowTypeRow>(
         "SELECT id, display_name, source_provider, target_provider, description, enabled
          FROM integration_flow_types
-         WHERE enabled = 1
+         WHERE enabled
          ORDER BY id",
     )
     .fetch_all(pool)

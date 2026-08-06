@@ -30,12 +30,12 @@ export function IntegrationSyncLogsPanel({ logs, emptyHint }: Props) {
       <div className="flex items-center gap-2 mb-4">
         <ScrollText className="w-4 h-4 text-primary" />
         <div>
-          <h3 className="text-sm font-bold text-white">Sync Log</h3>
+          <h3 className="text-sm font-bold text-white">Nhật ký sự kiện</h3>
         </div>
       </div>
       {logs.length === 0 ? (
         <p className="text-xs text-muted-foreground border border-dashed border-border rounded-lg p-4">
-          {emptyHint ?? 'Chưa có log — bấm Sync Now để chạy pipeline.'}
+          {emptyHint ?? 'Chưa có sự kiện — bấm Sync Now.'}
         </p>
       ) : (
         <div className="space-y-2 max-h-80 overflow-auto pr-1">

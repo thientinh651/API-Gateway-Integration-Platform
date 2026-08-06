@@ -161,7 +161,7 @@ pub fn issue_user_token_with_version(
     token_version: i32,
     scope: &str,
 ) -> Result<IssuedToken, String> {
-    if user.is_active == 0 {
+    if !user.is_active {
         return Err("account disabled".into());
     }
     let tenant_id = user.tenant_id.unwrap_or(1);
@@ -413,7 +413,7 @@ mod tests {
             password_hash: String::new(),
             role: "operator".into(),
             tenant_id: Some(1),
-            is_active: 1,
+            is_active: true,
             email: None,
             token_version: 0,
         };

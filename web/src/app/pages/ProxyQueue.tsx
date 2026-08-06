@@ -17,6 +17,7 @@ import {
 } from '../../lib/api';
 import { toastApiError } from '../../lib/apiClientError';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
+import { useUndoDelete } from '../../contexts/UndoDeleteContext';
 import { canMutateProxyQueue } from '../../lib/rbac';
 import { formatUnixTimestamp, formatDbTimestamp } from '../../lib/formatDbTimestamp';
 import { AdminOnly } from '../components/auth/AdminOnly';
@@ -71,11 +72,18 @@ function retryDisabledTitle(
 function ProxyQueueAdmin() {
   const { user } = useAdminAuth();
   const canMutate = canMutateProxyQueue(user);
+  const { scheduleDelete, scheduleBulkDelete, pendingIdSet, undoSeconds } = useUndoDelete();
   const [items, setItems] = useState<ProxyQueueItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+
+  const hiddenIds = pendingIdSet('queue');
+  const visibleItems = useMemo(
+    () => items.filter((i) => !hiddenIds.has(i.id)),
+    [items, hiddenIds],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -85,7 +93,7 @@ function ProxyQueueAdmin() {
       setSelected((prev) => {
         const valid = new Set(next.map((i) => i.id));
         const kept = new Set([...prev].filter((id) => valid.has(id)));
-        return kept.size === prev.size ? prev : kept;
+        return kept.size === prev.size && [...kept].every((id) => prev.has(id)) ? prev : kept;
       });
     } catch (e) {
       toastApiError(e);
@@ -98,7 +106,15 @@ function ProxyQueueAdmin() {
     void load();
   }, [load]);
 
-  const allSelected = items.length > 0 && selected.size === items.length;
+  useEffect(() => {
+    if (hiddenIds.size === 0) return;
+    setSelected((prev) => {
+      const kept = new Set([...prev].filter((id) => !hiddenIds.has(id)));
+      return kept.size === prev.size ? prev : kept;
+    });
+  }, [hiddenIds]);
+
+  const allSelected = visibleItems.length > 0 && selected.size === visibleItems.length;
   const someSelected = selected.size > 0;
   const selectedCount = useMemo(() => selected.size, [selected]);
 
@@ -113,23 +129,51 @@ function ProxyQueueAdmin() {
 
   const toggleAll = () => {
     if (allSelected) setSelected(new Set());
-    else setSelected(new Set(items.map((i) => i.id)));
+    else setSelected(new Set(visibleItems.map((i) => i.id)));
   };
 
-  const runBulkDelete = async () => {
+  const runBulkDelete = () => {
     if (selected.size === 0) return;
-    setBulkBusy(true);
-    try {
-      const ids = [...selected];
-      const { deleted } = await bulkDeleteProxyQueueItems(ids);
-      toast.success(`Đã xóa ${deleted} bản ghi`);
-      setSelected(new Set());
-      await load();
-    } catch (e) {
-      toastApiError(e);
-    } finally {
-      setBulkBusy(false);
-    }
+    const ids = [...selected];
+    const count = ids.length;
+    setSelected(new Set());
+    scheduleBulkDelete({
+      entity: 'queue',
+      ids,
+      label: `${count} bản ghi DLQ`,
+      execute: async () => {
+        setBulkBusy(true);
+        try {
+          await bulkDeleteProxyQueueItems(ids);
+          await load();
+        } finally {
+          setBulkBusy(false);
+        }
+      },
+    });
+  };
+
+  const runDeleteOne = (item: ProxyQueueItem) => {
+    setSelected((prev) => {
+      if (!prev.has(item.id)) return prev;
+      const next = new Set(prev);
+      next.delete(item.id);
+      return next;
+    });
+    scheduleDelete({
+      entity: 'queue',
+      id: item.id,
+      label: `DLQ ${item.method} ${item.path}`,
+      execute: async () => {
+        setBusyId(item.id);
+        try {
+          await deleteProxyQueueItem(item.id);
+          await load();
+        } finally {
+          setBusyId(null);
+        }
+      },
+    });
   };
 
   const colSpan = canMutate ? 9 : 8;
@@ -161,7 +205,11 @@ function ProxyQueueAdmin() {
               className="h-8 text-xs border-destructive/50 text-destructive"
               disabled={bulkBusy || !someSelected}
               title="Xóa các bản ghi đã chọn?"
-              description={`Xóa ${selectedCount} mục khỏi DLQ — không retry được nữa.`}
+              description={
+                undoSeconds > 0
+                  ? `Ẩn tạm ${selectedCount} mục DLQ. Có ${undoSeconds}s hoàn tác trước khi xóa thật.`
+                  : `Xóa ${selectedCount} mục khỏi DLQ — không retry được nữa.`
+              }
               confirmLabel="Xóa đã chọn"
               onConfirm={runBulkDelete}
             >
@@ -191,7 +239,7 @@ function ProxyQueueAdmin() {
                       className={queueCheckboxClass}
                       checked={allSelected ? true : someSelected ? 'indeterminate' : false}
                       onCheckedChange={() => toggleAll()}
-                      disabled={loading || items.length === 0 || bulkBusy}
+                      disabled={loading || visibleItems.length === 0 || bulkBusy}
                     />
                   </th>
                 ) : null}
@@ -206,7 +254,7 @@ function ProxyQueueAdmin() {
               </tr>
             </thead>
             <tbody>
-              {items.map((item) => {
+              {visibleItems.map((item) => {
                 const isSelected = selected.has(item.id);
                 const dlqStatus = normalizeDlqStatus(item.status);
                 const methodSafe = methodIdempotentForDlq(item.method);
@@ -300,26 +348,13 @@ function ProxyQueueAdmin() {
                           className="border-destructive/50 text-destructive"
                           disabled={busyId === item.id || bulkBusy}
                           title="Xóa khỏi queue?"
-                          description={`Xóa bản ghi DLQ ${item.method} ${item.path} — không retry được nữa.`}
+                          description={
+                            undoSeconds > 0
+                              ? `Ẩn ${item.method} ${item.path}. Có ${undoSeconds}s hoàn tác trước khi xóa thật.`
+                              : `Xóa bản ghi DLQ ${item.method} ${item.path} — không retry được nữa.`
+                          }
                           confirmLabel="Xóa"
-                          onConfirm={async () => {
-                            setBusyId(item.id);
-                            try {
-                              await deleteProxyQueueItem(item.id);
-                              toast.success('Đã xóa');
-                              setSelected((prev) => {
-                                if (!prev.has(item.id)) return prev;
-                                const next = new Set(prev);
-                                next.delete(item.id);
-                                return next;
-                              });
-                              await load();
-                            } catch (e) {
-                              toastApiError(e);
-                            } finally {
-                              setBusyId(null);
-                            }
-                          }}
+                          onConfirm={() => runDeleteOne(item)}
                         >
                           <Trash2 className="w-3 h-3" />
                         </ConfirmDangerButton>
@@ -331,14 +366,20 @@ function ProxyQueueAdmin() {
                 </tr>
               );
               })}
-              {!loading && items.length === 0 && (
+              {!loading && visibleItems.length === 0 && (
                 <tr>
                   <td colSpan={colSpan} className="px-4 py-8 text-center text-muted-foreground text-sm max-w-lg mx-auto">
-                    <p className="mb-2">Chưa có bản ghi</p>
-                    <p className="text-xs leading-relaxed">
-                      Chỉ method idempotent (GET/PUT/DELETE…) vào DLQ và được Replay. POST/PATCH thất bại
-                      không xếp hàng — đối soát Upstream/log để tránh trừ tiền hai lần. Bật DLQ trong Settings.
+                    <p className="mb-2">
+                      {items.length > 0 && hiddenIds.size > 0
+                        ? 'Đang chờ hoàn tác / xóa thật…'
+                        : 'Chưa có bản ghi'}
                     </p>
+                    {items.length === 0 ? (
+                      <p className="text-xs leading-relaxed">
+                        Chỉ method idempotent (GET/PUT/DELETE…) vào DLQ và được Replay. POST/PATCH thất bại
+                        không xếp hàng — đối soát Upstream/log để tránh trừ tiền hai lần. Bật DLQ trong Settings.
+                      </p>
+                    ) : null}
                   </td>
                 </tr>
               )}

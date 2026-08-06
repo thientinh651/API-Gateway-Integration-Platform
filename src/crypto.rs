@@ -1,5 +1,5 @@
-//! AES-256-GCM at rest for integration configs.
-//! OAuth2 client_secret uses Argon2id one-way hash in `db::hash_client_secret`.
+//! AES-256-GCM at rest for integration configs and third-party app secrets.
+//! Gateway OAuth client_secret uses Argon2id one-way hash (`db::hash_client_secret`).
 
 use aes_gcm::{
     Aes256Gcm, Nonce,

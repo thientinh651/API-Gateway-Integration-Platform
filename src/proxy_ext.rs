@@ -53,8 +53,8 @@ impl RouteProxyPolicy {
             transform_remove_headers,
             retry_max: row.retry_max.max(0) as u32,
             retry_on_status: row.retry_on_status.iter().map(|&c| c as u16).collect(),
-            retry_on_timeout: row.retry_on_timeout != 0,
-            queue_on_failure: row.queue_on_failure != 0,
+            retry_on_timeout: row.retry_on_timeout,
+            queue_on_failure: row.queue_on_failure,
         }
     }
 }
@@ -198,7 +198,7 @@ mod base64_bytes {
 type QueueRow = (
     String,
     i64,
-    i64,
+    Option<i64>,
     String,
     String,
     String,
@@ -217,7 +217,7 @@ fn row_to_item(r: QueueRow) -> Option<ProxyQueueItem> {
     Some(ProxyQueueItem {
         id: r.0,
         tenant_id: r.1,
-        route_id: r.2,
+        route_id: r.2.unwrap_or(0),
         method: r.3,
         path: r.4,
         upstream_url: r.5,
@@ -235,7 +235,7 @@ fn row_to_item(r: QueueRow) -> Option<ProxyQueueItem> {
     })
 }
 
-const QUEUE_SELECT: &str = "SELECT id, tenant_id, route_id, method, path, upstream_url, headers_json, body_b64, failure_reason, retry_attempts, created_at_unix, status, replayed_at::text";
+const QUEUE_SELECT: &str = "SELECT id, tenant_id, route_id, method, path, upstream_url, headers_json::text AS headers_json, body_b64, failure_reason, retry_attempts, created_at_unix, status, replayed_at::text";
 
 #[derive(Clone)]
 pub struct ProxyQueue {
@@ -252,7 +252,7 @@ impl ProxyQueue {
         let body_b64 = STANDARD.encode(&item.body);
         if let Err(e) = sqlx::query(
             "INSERT INTO gateway_proxy_queue (id, tenant_id, route_id, method, path, upstream_url, headers_json, body_b64, failure_reason, retry_attempts, created_at_unix, status)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)",
         )
         .bind(&item.id)
         .bind(item.tenant_id)
@@ -319,7 +319,7 @@ impl ProxyQueue {
 
     pub async fn take(&self, tenant_id: i64, id: &str) -> Option<ProxyQueueItem> {
         let sql = format!(
-            "DELETE FROM gateway_proxy_queue WHERE tenant_id = $1 AND id = $2 RETURNING id, tenant_id, route_id, method, path, upstream_url, headers_json, body_b64, failure_reason, retry_attempts, created_at_unix, status, replayed_at::text"
+            "DELETE FROM gateway_proxy_queue WHERE tenant_id = $1 AND id = $2 RETURNING id, tenant_id, route_id, method, path, upstream_url, headers_json::text AS headers_json, body_b64, failure_reason, retry_attempts, created_at_unix, status, replayed_at::text"
         );
         let row = sqlx::query_as::<_, QueueRow>(&sql)
             .bind(tenant_id)

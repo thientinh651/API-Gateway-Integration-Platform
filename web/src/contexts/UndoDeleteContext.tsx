@@ -13,7 +13,7 @@ import { UndoDeleteToast } from '../app/components/UndoDeleteToast';
 import { fetchGatewaySettings } from '../lib/api';
 import { useAdminAuth } from './AdminAuthContext';
 
-export type UndoDeleteEntity = 'route' | 'client' | 'user';
+export type UndoDeleteEntity = 'route' | 'client' | 'user' | 'queue';
 
 type ScheduleDeleteArgs = {
   entity: UndoDeleteEntity;
@@ -167,12 +167,14 @@ export function UndoDeleteProvider({ children }: { children: ReactNode }) {
       }
 
       const durationMs = seconds * 1000;
-      const toastId = `undo-delete-${keys.join('_')}-${Date.now()}`;
+      const startedAt = Date.now();
+      const toastId = `undo-delete-${keys.join('_')}-${startedAt}`;
       toast.custom(
         () => (
           <UndoDeleteToast
             message={message}
             durationMs={durationMs}
+            startedAt={startedAt}
             onUndo={() => undoDelete(keys, toastId, label)}
           />
         ),

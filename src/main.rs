@@ -95,9 +95,9 @@ pub struct RouteRow {
     #[serde(default = "route_match::default_retry_status_codes")]
     pub retry_on_status: Vec<i32>,
     #[serde(default = "default_one")]
-    pub retry_on_timeout: i32,
+    pub retry_on_timeout: bool,
     #[serde(default)]
-    pub queue_on_failure: i32,
+    pub queue_on_failure: bool,
     #[serde(default = "route_match::default_allowed_methods_list")]
     pub allowed_methods: Vec<String>,
 }
@@ -110,8 +110,8 @@ fn default_json_arr() -> String {
     "[]".into()
 }
 
-fn default_one() -> i32 {
-    1
+fn default_one() -> bool {
+    true
 }
 
 /// `path` / `target` pair in `config.yaml` bootstrap.
@@ -1214,9 +1214,6 @@ async fn main() {
     db::purge_expired_oauth_pending(&pool)
         .await
         .expect("purge expired oauth pending");
-    db::backfill_client_secret_hashes(&pool)
-        .await
-        .expect("backfill client secret Argon2id");
     gateway_rsa::ensure_gateway_rsa_keys(&pool)
         .await
         .expect("ensure gateway RSA keypair");
@@ -1715,7 +1712,7 @@ async fn establish_admin_session(
         );
     };
 
-    if admin.is_active == 0 {
+    if !admin.is_active {
         let mut ctx = AdminCtx::from_user(admin);
         ctx.client_ip = ip.clone();
         write_audit_failure(
@@ -2688,7 +2685,7 @@ async fn api_forgot_password(
         );
     };
 
-    if user.is_active == 0 {
+    if !user.is_active {
         return json_error(
             StatusCode::FORBIDDEN,
             "account_inactive",
@@ -3688,7 +3685,7 @@ struct RouteWriteBody {
     )]
     retry_on_status: Vec<i32>,
     #[serde(default = "default_one", deserialize_with = "deserialize_i32_or_bool")]
-    retry_on_timeout: i32,
+    retry_on_timeout: bool,
     #[serde(default)]
     queue_on_failure: bool,
     #[serde(
@@ -3699,47 +3696,47 @@ struct RouteWriteBody {
 }
 
 /// FE có thể gửi `true`/`false` hoặc `0`/`1`.
-fn deserialize_i32_or_bool<'de, D>(deserializer: D) -> Result<i32, D::Error>
+fn deserialize_i32_or_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     use serde::de::{self, Unexpected};
-    struct I32OrBool;
-    impl<'de> de::Visitor<'de> for I32OrBool {
-        type Value = i32;
+    struct BoolOrI32;
+    impl<'de> de::Visitor<'de> for BoolOrI32 {
+        type Value = bool;
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             f.write_str("boolean or integer 0/1")
         }
-        fn visit_bool<E>(self, v: bool) -> Result<i32, E> {
-            Ok(if v { 1 } else { 0 })
+        fn visit_bool<E>(self, v: bool) -> Result<bool, E> {
+            Ok(v)
         }
-        fn visit_i64<E>(self, v: i64) -> Result<i32, E> {
-            Ok(if v != 0 { 1 } else { 0 })
+        fn visit_i64<E>(self, v: i64) -> Result<bool, E> {
+            Ok(v != 0)
         }
-        fn visit_u64<E>(self, v: u64) -> Result<i32, E> {
-            Ok(if v != 0 { 1 } else { 0 })
+        fn visit_u64<E>(self, v: u64) -> Result<bool, E> {
+            Ok(v != 0)
         }
-        fn visit_str<E>(self, v: &str) -> Result<i32, E>
+        fn visit_str<E>(self, v: &str) -> Result<bool, E>
         where
             E: de::Error,
         {
             match v.trim().to_lowercase().as_str() {
-                "1" | "true" => Ok(1),
-                "0" | "false" => Ok(0),
+                "1" | "true" => Ok(true),
+                "0" | "false" => Ok(false),
                 _ => Err(de::Error::invalid_value(Unexpected::Str(v), &self)),
             }
         }
     }
-    deserializer.deserialize_any(I32OrBool)
+    deserializer.deserialize_any(BoolOrI32)
 }
 
-fn route_policy_from_body(body: &RouteWriteBody) -> (String, String, i32, i32, i32) {
+fn route_policy_from_body(body: &RouteWriteBody) -> (String, String, i32, bool, bool) {
     (
         body.transform_add_headers.clone(),
         body.transform_remove_headers.clone(),
         body.retry_max.max(0),
-        if body.retry_on_timeout != 0 { 1 } else { 0 },
-        if body.queue_on_failure { 1 } else { 0 },
+        body.retry_on_timeout,
+        body.queue_on_failure,
     )
 }
 
@@ -5583,7 +5580,7 @@ async fn api_delete_user(
         let target_tenant = target.tenant_id.unwrap_or(1);
         if target_tenant == ctx.tenant_id
             && normalize_user_role(&target.role).as_deref() == Some("admin")
-            && target.is_active != 0
+            && target.is_active
         {
             match db::count_active_admins_in_tenant(&st.pool, target_tenant).await {
                 Ok(n) if n <= 1 => {
@@ -6994,8 +6991,8 @@ mod path_tests {
             transform_remove_headers: "[]".into(),
             retry_max: 0,
             retry_on_status: vec![502],
-            retry_on_timeout: 1,
-            queue_on_failure: 0,
+            retry_on_timeout: true,
+            queue_on_failure: false,
             allowed_methods: vec!["*".into()],
         }
     }

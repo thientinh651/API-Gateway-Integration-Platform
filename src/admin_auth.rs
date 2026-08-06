@@ -400,7 +400,7 @@ pub async fn resolve_session_ctx(
     if now.saturating_sub(rec.last_db_check) >= recheck {
         // Kiểm tra user active
         match db::fetch_admin_user_by_id_any(pool, rec.user_id).await {
-            Ok(Some(user)) if user.is_active != 0 => {
+            Ok(Some(user)) if user.is_active => {
                 // User active, role, tenant
                 rec.normalize_legacy();
                 let home = user.tenant_id.unwrap_or(1);
