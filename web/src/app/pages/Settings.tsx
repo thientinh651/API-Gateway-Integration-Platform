@@ -239,7 +239,10 @@ export function Settings() {
             <Gauge className="w-4 h-4 text-primary" />
             <div>
               <h3 className="text-sm font-semibold text-white">Rate limit toàn cục</h3>
-              <p className="text-xs text-muted-foreground">Ưu tiên sau client limit và route limit.</p>
+              <p className="text-xs text-muted-foreground">
+                RPS: fallback khi client/route = 0. Trần burst: cap xả tức thời cho cả client/route
+                (min(RPM, trần)), kể cả khi Global RPS tắt.
+              </p>
             </div>
           </div>
           <div className="p-5 sm:p-6">
@@ -249,7 +252,10 @@ export function Settings() {
               <div className="space-y-5">
                 <div className="flex items-center justify-between gap-4 rounded-lg border border-border/60 bg-slate-900/30 px-4 py-3">
                   <div>
-                    <p className="text-sm font-medium text-white">Global rate limit</p>
+                    <p className="text-sm font-medium text-white">Global RPS</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Chỉ áp khi client và route không set RPM.
+                    </p>
                   </div>
                   <Switch
                     checked={settings.rateLimitEnabled}
@@ -259,11 +265,14 @@ export function Settings() {
                 </div>
                 <div className="flex items-center justify-between gap-4 rounded-lg border border-border/60 bg-slate-900/30 px-4 py-3">
                   <div>
-                    <p className="text-sm font-medium text-white">Burst</p>
+                    <p className="text-sm font-medium text-white">Cho phép burst</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Tắt = xô chứa 1 (nhỏ giọt). Bật = xả tới trần bên dưới.
+                    </p>
                   </div>
                   <Switch
                     checked={settings.rateLimitBurstEnabled}
-                    disabled={readOnly || !settings.rateLimitEnabled}
+                    disabled={readOnly}
                     onCheckedChange={(checked) =>
                       setSettings({ ...settings, rateLimitBurstEnabled: checked })
                     }
@@ -271,7 +280,7 @@ export function Settings() {
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <Label className="text-foreground">RPS</Label>
+                    <Label className="text-foreground">RPS (global)</Label>
                     <Input
                       value={settings.rateLimitRps}
                       onChange={(e) => {
@@ -293,7 +302,7 @@ export function Settings() {
                     <FieldError message={fieldErrors.rate_limit_rps} />
                   </div>
                   <div>
-                    <Label className="text-foreground">Burst</Label>
+                    <Label className="text-foreground">Trần burst (cap)</Label>
                     <Input
                       value={settings.rateLimitBurst}
                       onChange={(e) => {
@@ -310,8 +319,11 @@ export function Settings() {
                         Boolean(fieldErrors.rate_limit_burst),
                         'bg-input border-border text-foreground mt-1.5',
                       )}
-                      disabled={readOnly || !settings.rateLimitEnabled || !settings.rateLimitBurstEnabled}
+                      disabled={readOnly || !settings.rateLimitBurstEnabled}
                     />
+                    <p className="text-[11px] text-muted-foreground mt-1">
+                      Client/route: sức chứa xô = min(RPM, trần). Global RPS: sức chứa = trần.
+                    </p>
                     <FieldError message={fieldErrors.rate_limit_burst} />
                   </div>
                 </div>

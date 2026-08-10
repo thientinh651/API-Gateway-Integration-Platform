@@ -403,21 +403,28 @@ fn resolve_rate_limit(
     settings: &RuntimeSettings,
 ) -> ResolvedRateLimit {
     let burst_enabled = settings.rate_limit.burst_enabled;
+    // Trần burst hệ thống — áp client/route kể cả khi Global RPS tắt.
+    let global_burst_cap = settings.rate_limit.burst;
     if client.rate_limit_per_min > 0 {
-        let (rps, calculated) = rate_limit::per_min_to_bucket(client.rate_limit_per_min);
+        let (rps, burst) = rate_limit::per_min_to_bucket(
+            client.rate_limit_per_min,
+            global_burst_cap,
+            burst_enabled,
+        );
         return ResolvedRateLimit {
             active: true,
             rps,
-            burst: rate_limit::effective_burst(calculated, burst_enabled),
+            burst,
             limit_header: client.rate_limit_per_min as u32,
         };
     }
     if let Some(r) = route.filter(|r| r.rate_limit_per_min > 0) {
-        let (rps, calculated) = rate_limit::per_min_to_bucket(r.rate_limit_per_min);
+        let (rps, burst) =
+            rate_limit::per_min_to_bucket(r.rate_limit_per_min, global_burst_cap, burst_enabled);
         return ResolvedRateLimit {
             active: true,
             rps,
-            burst: rate_limit::effective_burst(calculated, burst_enabled),
+            burst,
             limit_header: r.rate_limit_per_min as u32,
         };
     }
@@ -1065,10 +1072,11 @@ fn validate_settings_write(body: &UpdateSettingsBody) -> Option<Response> {
             serde_json::Value::String("Bật rate limit thì RPS phải > 0".into()),
         );
     }
-    if body.rate_limit_enabled && body.rate_limit_burst_enabled && body.rate_limit_burst == 0 {
+    // Trần burst hệ thống dùng cho client/route — validate kể cả khi Global RPS tắt.
+    if body.rate_limit_burst_enabled && body.rate_limit_burst == 0 {
         fields.insert(
             "rate_limit_burst".into(),
-            serde_json::Value::String("Bật burst thì giá trị burst phải > 0".into()),
+            serde_json::Value::String("Bật burst thì trần burst phải > 0".into()),
         );
     }
     if body.rate_limit_rps > 100_000 {
@@ -6843,7 +6851,6 @@ async fn do_proxy(
 mod path_tests {
     use super::*;
     use axum::http::{HeaderValue, Uri};
-    use std::time::{Duration, Instant};
 
     #[test]
     fn data_plane_paths() {
@@ -6965,9 +6972,11 @@ mod path_tests {
 
     #[test]
     fn per_min_burst_capped_via_module() {
-        let (_, burst) = rate_limit::per_min_to_bucket(10);
-        assert_eq!(burst, 1);
-        assert_eq!(rate_limit::effective_burst(burst, false), 1);
+        let (_, burst) = rate_limit::per_min_to_bucket(60, 30, true);
+        assert_eq!(burst, 30);
+        let (_, full) = rate_limit::per_min_to_bucket(10, 30, true);
+        assert_eq!(full, 10);
+        assert_eq!(rate_limit::effective_burst(20, false), 1);
         assert_eq!(rate_limit::effective_burst(5, true), 5);
     }
 

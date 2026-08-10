@@ -11,7 +11,9 @@ api_keys:
 rate_limit:
   enabled: true
   rps: 10
+  # Trần burst hệ thống (cap). Client/route: min(RPM, burst) khi burst_enabled.
   burst: 20
+  # burst_enabled mặc định true nếu thiếu key (xem RateLimitConfig).
 
 # Bật/tắt global trong Cài đặt hệ thống; per-route override trên form Route.
 transform:

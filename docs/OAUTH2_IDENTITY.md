@@ -62,10 +62,10 @@ Response:
 
 **Rate limit token endpoint** (Token Bucket, Redis khi có):
 
-| Bucket | Quota | Burst tối đa |
-|--------|-------|----------------|
-| Theo `client_id` | 20 req/phút | 3 |
-| Theo IP nguồn | 50 req/phút | 3 |
+| Bucket | Quota | Burst (sức chứa xô) |
+|--------|-------|---------------------|
+| Theo `client_id` | 20 req/phút | **20** (= full quota) |
+| Theo IP nguồn | 50 req/phút | **50** (= full quota) |
 
 Vượt ngưỡng → `429` + `Retry-After`. Bảo vệ CPU/DB khỏi spam đổi token.
 
@@ -78,13 +78,18 @@ GET /v1/api/get
 Authorization: Bearer eyJ...
 ```
 
-Gateway: validate JWT → rate limit (token bucket, burst ≤3) → match route → proxy upstream → trả response về client.
+Gateway: validate JWT → rate limit (token bucket) → match route → proxy upstream → trả response về client.
 
 ### Rate limit data plane
 
-- Thuật toán: **Token Bucket** (giới hạn tốc độ trung bình, không khóa vĩnh viễn).
-- Ưu tiên: **client** `rate_limit_per_min` → **route** → **global** (Settings).
-- `burst = min(per_min, 3)` — demo trực quan hơn burst = full quota phút.
+- Thuật toán: **Token Bucket** (tách **rate** nạp và **burst** sức chứa — kiểu AWS/Kong).
+- Ưu tiên limit: **client** `rate_limit_per_min` → **route** → **global RPS** (Settings).
+- **Rate (nạp):** `RPM / 60` token/giây (vd RPM=60 → ~1 token/giây).
+- **Burst (sức chứa):**
+  - Bật «Cho phép burst»: client/route → `min(RPM, trần_burst)`; global RPS → = trần burst.
+  - Tắt burst → xô chứa **1** (strict drip).
+- **Trần burst** (Settings) áp cho client/route **kể cả khi Global RPS tắt** — bảo vệ upstream khỏi spike.
+- Ví dụ: RPM=60, trần=30, burst bật → xả tối đa 30 → 429 → +1/giây; nghỉ đủ lâu xô đầy lại ở **30** (không lên 60).
 - Lưu counter: **Redis** (`gw:rl:*`) khi có; fallback **RAM** nếu Redis lỗi.
 - Multi-instance: Redis đồng bộ quota giữa các gateway pod.
 

@@ -132,14 +132,24 @@ fn info_from_bucket(limit_header: u32, remaining_floor: u32, reset_unix: u64) ->
     }
 }
 
-/// Chuyển req/phút → (rps, burst tính toán). Burst = max(1, per_min/10), capped bởi per_min.
-pub fn per_min_to_bucket(per_min: i32) -> (f64, u32) {
+/// Chuyển req/phút → (rps, burst).
+///
+/// - Rate (nạp): `per_min / 60` token/giây
+/// - Burst (sức chứa): `min(per_min, global_burst_cap)` khi bật burst;
+///   tắt burst → xô chỉ chứa 1 (strict drip)
+///
+/// `global_burst_cap` là trần hệ thống (Settings → Burst), áp cả khi Global RPS tắt.
+pub fn per_min_to_bucket(per_min: i32, global_burst_cap: u32, burst_enabled: bool) -> (f64, u32) {
     let per_min = per_min.max(1) as u32;
-    let burst = (per_min / 10).max(1).min(per_min);
+    let burst = if burst_enabled {
+        per_min.min(global_burst_cap.max(1))
+    } else {
+        1
+    };
     (per_min as f64 / 60.0, burst)
 }
 
-/// Áp chế độ burst toàn hệ thống (Settings → burst_enabled).
+/// Burst cho Global RPS path (Settings → rps + burst).
 pub fn effective_burst(calculated_burst: u32, burst_enabled: bool) -> u32 {
     if burst_enabled {
         calculated_burst.max(1)
@@ -280,7 +290,8 @@ impl RateLimiter {
     }
 
     pub async fn try_consume_per_min(&self, key: &str, per_min: u32) -> ConsumeOutcome {
-        let (rps, burst) = per_min_to_bucket(per_min as i32);
+        // Không có global cap → burst = full RPM (tests / helper nội bộ).
+        let (rps, burst) = per_min_to_bucket(per_min as i32, per_min, true);
         self.try_consume(key, rps, burst, per_min).await
     }
 
@@ -324,15 +335,23 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn per_min_burst_scales() {
-        let (_, burst10) = per_min_to_bucket(10);
-        assert_eq!(burst10, 1);
-        let (_, burst60) = per_min_to_bucket(60);
-        assert_eq!(burst60, 6);
-        let (_, burst100) = per_min_to_bucket(100);
-        assert_eq!(burst100, 10);
-        let (_, burst2) = per_min_to_bucket(2);
-        assert_eq!(burst2, 1);
+    fn per_min_burst_capped_by_global() {
+        // RPM 60, trần 30 → xả tối đa 30; refill vẫn 1 token/s
+        let (rps, burst) = per_min_to_bucket(60, 30, true);
+        assert!((rps - 1.0).abs() < f64::EPSILON);
+        assert_eq!(burst, 30);
+
+        // RPM nhỏ hơn cap → burst = full RPM
+        let (_, burst10) = per_min_to_bucket(10, 30, true);
+        assert_eq!(burst10, 10);
+
+        // Cap 0 được nâng thành 1 khi bật burst
+        let (_, burst_cap0) = per_min_to_bucket(60, 0, true);
+        assert_eq!(burst_cap0, 1);
+
+        // Tắt burst → strict drip
+        let (_, burst_off) = per_min_to_bucket(60, 30, false);
+        assert_eq!(burst_off, 1);
     }
 
     #[test]

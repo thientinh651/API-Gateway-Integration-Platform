@@ -9,7 +9,7 @@ Pipeline mỗi request `/v1/api/*`:
 ```
 HTTP Request
   → JWT validate (jwt_auth.rs)
-  → Rate limit (token bucket)
+  → Rate limit (token bucket: rate = RPM/60, burst = min(RPM, trần Settings))
   → Route match (longest prefix, {param})
   → ACL client ↔ route
   → Transform headers (optional)
