@@ -30,7 +30,7 @@ sudo systemctl enable --now avaso-gateway
 | 2 | OAuth **Zoho Projects** (không Zoho CRM) |
 | 3 | Nhập **Zoho Office** API key (PDF) |
 | 4 | **Đồng bộ snapshot** SF + Zoho |
-| 5 | **Sync Now** hoặc chờ worker tự động (mặc định 15 phút) |
+| 5 | **Đồng bộ ngay** hoặc chờ worker tự động (mặc định 15 phút) |
 
 Worker nền: lịch lưu `gateway_settings.integration_sync_interval_mins` — chỉnh trên trang **Tích hợp → Tự động đồng bộ** (`off` / mỗi N phút / mỗi ngày lúc HH:MM UTC+7). Lần đầu chưa có DB dùng env `INTEGRATION_SYNC_INTERVAL_MINS` (mặc định 15). Log:
 
@@ -76,7 +76,7 @@ Chi tiết: [`OAUTH2_IDENTITY.md`](OAUTH2_IDENTITY.md), [`BAN_VE_HE_THONG.md`](B
 |-------------|--------|
 | SF/Zoho test 401 | Integrations → **Ngắt kết nối** → Connect lại |
 | `demo_token_rejected` | Không dùng token giả — OAuth thật |
-| `missing portal_id` | Reconnect Zoho hoặc Sync Now |
+| `missing portal_id` | Reconnect Zoho hoặc Đồng bộ ngay |
 
 ### Sync / middleware
 
@@ -137,11 +137,11 @@ sudo systemctl restart avaso-gateway
 
 ```
 Sales đóng deal SF (Closed Won, đủ Amount)
-    → Worker / Sync Now
+    → Worker / Đồng bộ ngay
     → Zoho Project + tasks
 
 Zoho đổi Trạng Thái → Đã hoàn tất
-    → Cùng worker / Sync Now (định kỳ)
+    → Cùng worker / Đồng bộ ngay (định kỳ)
     → Opportunity.Project_Completed__c = true
     → Tạo Invoice__c trên Salesforce
 ```

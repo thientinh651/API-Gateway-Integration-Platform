@@ -38,16 +38,16 @@ export function MiddlewareStatusCard({ clients, refreshKey = 0 }: Props) {
   return (
       <Card className="mb-6 p-4 rounded-2xl bg-slate-950/40 border-border border-dashed scroll-mt-24" id="section-middleware-status">
       <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-3">
-        Runtime middleware
+        Trạng thái middleware
       </p>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
         <div className="flex items-start gap-2">
           <Shield className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
           <div>
-            <p className="text-slate-400">OAuth clients</p>
+            <p className="text-slate-400">Client OAuth</p>
             <p className="text-white font-mono">{clientStats.total}</p>
             <p className="text-[10px] text-muted-foreground mt-0.5">
-              {clientStats.active} active · {clientStats.disabled} tắt
+              {clientStats.active} bật · {clientStats.disabled} tắt
             </p>
           </div>
         </div>
@@ -64,10 +64,10 @@ export function MiddlewareStatusCard({ clients, refreshKey = 0 }: Props) {
         <div className="flex items-start gap-2">
           <Gauge className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
           <div>
-            <p className="text-slate-400">Global RL</p>
+            <p className="text-slate-400">Giới hạn tốc độ chung</p>
             <p className="text-white font-mono">{rl}</p>
             <Link to="/settings" className="text-[10px] text-primary hover:underline">
-              Settings
+              Cài đặt
             </Link>
           </div>
         </div>
@@ -77,7 +77,7 @@ export function MiddlewareStatusCard({ clients, refreshKey = 0 }: Props) {
             <p className="text-slate-400">Data plane</p>
             <p className="text-white font-mono text-[10px] truncate">{status.data_plane_prefix}/*</p>
             <Link to="/proxy-try" className="text-[10px] text-primary hover:underline">
-              Thử gọi proxy
+              Thử gọi API
             </Link>
           </div>
         </div>

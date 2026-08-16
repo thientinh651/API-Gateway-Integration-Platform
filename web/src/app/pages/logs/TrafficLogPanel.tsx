@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { RefreshCw, Download, Search, Eye, CalendarDays, X, ChevronDown } from 'lucide-react';
 import { Card } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -97,6 +97,13 @@ const QUICK_RANGES: QuickRange[] = [
 ];
 
 export function TrafficLogPanel({ clientKeyFilter, onClearClientKey }: Props) {
+  const [searchParams] = useSearchParams();
+  const initialReason = searchParams.get('reason') || 'all';
+  const initialSearch = searchParams.get('search') || searchParams.get('q') || '';
+  const initialResultRaw = searchParams.get('result');
+  const initialResult: 'all' | 'success' | 'failure' =
+    initialResultRaw === 'success' || initialResultRaw === 'failure' ? initialResultRaw : 'all';
+
   const [rows, setRows] = useState<TransactionLogRow[]>([]);
   const [clientNames, setClientNames] = useState<Map<number, string>>(() => new Map());
   const [initialLoading, setInitialLoading] = useState(true);
@@ -105,11 +112,13 @@ export function TrafficLogPanel({ clientKeyFilter, onClearClientKey }: Props) {
   const [hasMore, setHasMore] = useState(false);
   const loadGenRef = useRef(0);
 
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = useState(initialSearch);
   const [methodFilter, setMethodFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState<'all' | '2xx' | '4xx' | '5xx'>('all');
-  const [resultFilter, setResultFilter] = useState<'all' | 'success' | 'failure'>('all');
-  const [reasonFilter, setReasonFilter] = useState('all');
+  const [resultFilter, setResultFilter] = useState<'all' | 'success' | 'failure'>(initialResult);
+  const [reasonFilter, setReasonFilter] = useState(
+    MIDDLEWARE_REASON_FILTER_OPTIONS.some((o) => o.value === initialReason) ? initialReason : 'all',
+  );
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
 

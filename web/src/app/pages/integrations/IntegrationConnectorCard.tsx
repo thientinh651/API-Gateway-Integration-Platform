@@ -76,7 +76,7 @@ export function IntegrationConnectorCard({
                 Sync gần nhất: {formatDbTimestamp(row.last_sync_at)}
               </p>
             ) : (
-              <p className="text-xs text-muted-foreground mt-1">OAuth qua gateway proxy</p>
+              <p className="text-xs text-muted-foreground mt-1">Đăng nhập qua gateway proxy</p>
             )}
             {row.last_error && row.status === 'error' ? (
               <p className="text-xs text-red-400 mt-2 break-all">{row.last_error}</p>

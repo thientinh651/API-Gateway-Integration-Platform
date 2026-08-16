@@ -16,11 +16,11 @@ export function NavCard({ to, children, className, ariaLabel }: Props) {
     <Link
       to={to}
       aria-label={ariaLabel}
-      className="block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="block h-full rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <Card
         className={cn(
-          'cursor-pointer hover:border-primary/35 transition-colors',
+          'h-full cursor-pointer hover:border-primary/35 transition-colors',
           className
         )}
       >

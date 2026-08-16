@@ -8,46 +8,75 @@ interface StatsCardProps {
   iconBg: string;
   title: string;
   value: string;
+  hint?: string;
   badge?: {
     text: string;
-    variant: 'success' | 'warning' | 'info';
+    variant: 'success' | 'warning' | 'info' | 'danger';
   };
+  valueTone?: 'default' | 'success' | 'danger' | 'warning';
   /** Bấm card → điều hướng trang liên quan. */
   to?: string;
 }
 
-export function StatsCard({ icon, iconBg, title, value, badge, to }: StatsCardProps) {
+export function StatsCard({
+  icon,
+  iconBg,
+  title,
+  value,
+  hint,
+  badge,
+  valueTone = 'default',
+  to,
+}: StatsCardProps) {
   const badgeColors = {
     success: 'text-emerald-400',
     warning: 'text-amber-400',
     info: 'text-slate-400',
+    danger: 'text-red-400',
+  };
+
+  const valueColors = {
+    default: 'text-white',
+    success: 'text-emerald-400',
+    danger: 'text-red-400',
+    warning: 'text-amber-400',
   };
 
   const body = (
     <Card
       className={cn(
-        'p-6 rounded-2xl bg-card/60 backdrop-blur-sm border-border/80 transition-colors group overflow-hidden relative',
-        to && 'cursor-pointer hover:border-primary/40'
+        'h-full min-h-[7rem] p-4 rounded-xl bg-card/70 border-border/80 transition-colors group',
+        'flex flex-col justify-between gap-2.5',
+        to && 'cursor-pointer hover:border-primary/40',
       )}
     >
-      <div className="pointer-events-none absolute top-0 right-0 w-24 h-24 bg-primary/5 rounded-full blur-2xl opacity-0 group-hover:opacity-100 transition-opacity" />
-      <div className="flex justify-between items-start mb-4 relative">
-        <div className={`p-2 ${iconBg} rounded-lg ring-1 ring-white/5`}>{icon}</div>
-        {badge && (
-          <span
-            className={`text-[10px] font-bold font-mono-tech uppercase tracking-wider ${badgeColors[badge.variant]}`}
-          >
-            {badge.text}
-          </span>
-        )}
+      <div className="flex items-start justify-between gap-2">
+        <div className={`p-2 ${iconBg} rounded-lg ring-1 ring-white/5 shrink-0`}>{icon}</div>
+        <span
+          className={cn(
+            'text-[10px] font-semibold uppercase tracking-wide text-right leading-tight min-h-[1.25rem]',
+            badge ? badgeColors[badge.variant] : 'invisible',
+          )}
+        >
+          {badge?.text ?? '—'}
+        </span>
       </div>
-      <p className="tech-label mb-1">{title}</p>
-      <h3 className="text-2xl font-bold text-white font-mono-tech tracking-tight">{value}</h3>
-      {to ? (
-        <p className="text-[10px] text-primary/80 mt-3 font-mono-tech uppercase tracking-wider opacity-0 group-hover:opacity-100 transition-opacity">
-          Xem chi tiết →
+      <div className="min-w-0">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+          {title}
         </p>
-      ) : null}
+        <p
+          className={cn(
+            'text-xl sm:text-2xl font-bold font-mono-tech tracking-tight tabular-nums',
+            valueColors[valueTone],
+          )}
+        >
+          {value}
+        </p>
+        <p className="text-[11px] text-muted-foreground mt-1 min-h-[1rem] truncate">
+          {hint ?? '\u00a0'}
+        </p>
+      </div>
     </Card>
   );
 
@@ -57,7 +86,7 @@ export function StatsCard({ icon, iconBg, title, value, badge, to }: StatsCardPr
     <Link
       to={to}
       aria-label={title}
-      className="block rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="block h-full rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       {body}
     </Link>

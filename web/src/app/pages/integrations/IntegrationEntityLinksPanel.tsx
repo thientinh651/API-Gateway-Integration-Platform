@@ -17,7 +17,7 @@ export function IntegrationEntityLinksPanel({ links }: Props) {
       </div>
       {links.length === 0 ? (
         <p className="text-xs text-muted-foreground border border-dashed border-border rounded-lg p-4">
-          Chưa có link — Sync Now sau khi có Opportunity Closed Won.
+          Chưa có link — Đồng bộ ngay sau khi có Opportunity Closed Won.
         </p>
       ) : (
         <div className="overflow-auto rounded-lg border border-border">

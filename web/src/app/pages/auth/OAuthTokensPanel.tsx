@@ -12,39 +12,70 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { ConfirmDangerButton } from '../../components/forms/ConfirmDangerButton';
-import { fetchOAuthTokens, revokeOAuthTokenJti, type OAuthTokenAuditRow } from '../../../lib/api';
+import {
+  fetchClientKeys,
+  fetchOAuthTokens,
+  revokeOAuthTokenJti,
+  type OAuthTokenAuditRow,
+} from '../../../lib/api';
 import { toastApiError } from '../../../lib/apiClientError';
 import { formatDbTimestamp } from '../../../lib/formatDbTimestamp';
 
 type Props = {
   canRevoke: boolean;
+  refreshKey?: number;
 };
 
-function subjectLabel(row: OAuthTokenAuditRow): string {
+type ClientNameMaps = {
+  byId: Map<number, string>;
+  byClientId: Map<string, string>;
+};
+
+function subjectLabel(row: OAuthTokenAuditRow, maps: ClientNameMaps): string {
   if (row.client_key_id != null) {
-    return `${row.subject} · client #${row.client_key_id}`;
+    const name = maps.byId.get(row.client_key_id);
+    if (name) return name;
   }
+  const cid = row.subject.startsWith('client:')
+    ? row.subject.slice('client:'.length)
+    : row.subject;
+  const byCid = maps.byClientId.get(cid);
+  if (byCid) return byCid;
   if (row.user_id != null) {
     return `${row.subject} · user #${row.user_id}`;
   }
   return row.subject;
 }
 
-export function OAuthTokensPanel({ canRevoke }: Props) {
+export function OAuthTokensPanel({ canRevoke, refreshKey = 0 }: Props) {
   const [rows, setRows] = useState<OAuthTokenAuditRow[]>([]);
+  const [nameMaps, setNameMaps] = useState<ClientNameMaps>({
+    byId: new Map(),
+    byClientId: new Map(),
+  });
   const [loading, setLoading] = useState(true);
   const [activeOnly, setActiveOnly] = useState<'true' | 'false'>('true');
 
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetchOAuthTokens({
-        active_only: activeOnly === 'true',
-        limit: 200,
-      });
+      const [res, clients] = await Promise.all([
+        fetchOAuthTokens({
+          active_only: activeOnly === 'true',
+          limit: 200,
+        }),
+        fetchClientKeys().catch(() => []),
+      ]);
       setRows(res.tokens);
+      const byId = new Map<number, string>();
+      const byClientId = new Map<string, string>();
+      for (const c of clients) {
+        byId.set(c.id, c.name);
+        if (c.api_key) byClientId.set(c.api_key, c.name);
+      }
+      setNameMaps({ byId, byClientId });
     } catch (e) {
-      toastApiError(e, 'Không tải danh sách token');
+      toastApiError(e);
       setRows([]);
     } finally {
       setLoading(false);
@@ -53,7 +84,7 @@ export function OAuthTokensPanel({ canRevoke }: Props) {
 
   useEffect(() => {
     void reload();
-  }, [reload]);
+  }, [reload, refreshKey]);
 
   const handleRevoke = async (jti: string) => {
     try {
@@ -61,7 +92,7 @@ export function OAuthTokensPanel({ canRevoke }: Props) {
       toast.success('Đã thu hồi token');
       await reload();
     } catch (e) {
-      toastApiError(e, 'Thu hồi token thất bại');
+      toastApiError(e);
     }
   };
 
@@ -139,11 +170,11 @@ export function OAuthTokensPanel({ canRevoke }: Props) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border text-left text-xs text-muted-foreground uppercase tracking-wide">
-                <th className="px-4 py-3 font-medium">JTI</th>
+                <th className="px-4 py-3 font-medium">Token ID</th>
                 <th className="px-4 py-3 font-medium">Subject</th>
                 <th className="px-4 py-3 font-medium">Grant</th>
                 <th className="px-4 py-3 font-medium">Scope</th>
-                <th className="px-4 py-3 font-medium">Cấp lúc</th>
+                <th className="px-4 py-3 font-medium">Thời gian cấp</th>
                 <th className="px-4 py-3 font-medium">Hết hạn</th>
                 <th className="px-4 py-3 font-medium">IP</th>
                 <th className="px-4 py-3 font-medium">Trạng thái</th>
@@ -160,7 +191,7 @@ export function OAuthTokensPanel({ canRevoke }: Props) {
               ) : rows.length === 0 ? (
                 <tr>
                   <td colSpan={canRevoke ? 9 : 8} className="px-4 py-8 text-center text-muted-foreground">
-                    Chưa có token nào được ghi — thử đổi token qua Proxy Try hoặc app.
+                    Chưa có token nào được ghi.
                   </td>
                 </tr>
               ) : (
@@ -183,15 +214,18 @@ export function OAuthTokensPanel({ canRevoke }: Props) {
                             className="text-slate-500 hover:text-slate-300 shrink-0"
                             onClick={() => {
                               void navigator.clipboard.writeText(row.jti);
-                              toast.success('Đã copy JTI');
+                              toast.success('Đã copy');
                             }}
                           >
                             <Copy className="w-3 h-3" />
                           </button>
                         </div>
                       </td>
-                      <td className="px-4 py-3 font-mono text-xs text-slate-300 max-w-[200px] truncate">
-                        {subjectLabel(row)}
+                      <td
+                        className="px-4 py-3 text-xs text-slate-200 max-w-[220px] truncate"
+                        title={row.subject}
+                      >
+                        {subjectLabel(row, nameMaps)}
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-400">{row.grant_type}</td>
                       <td className="px-4 py-3 text-xs font-mono text-slate-400 max-w-[120px] truncate">

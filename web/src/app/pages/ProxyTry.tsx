@@ -332,7 +332,7 @@ export function ProxyTry() {
                     className="w-full bg-primary hover:bg-primary/90 h-10"
                   >
                     <Send className="w-4 h-4 mr-2" />
-                    {busy ? 'Đang gửi qua middleware…' : 'Gửi có Bearer JWT'}
+                    {busy ? 'Đang gửi' : 'Gửi'}
                   </Button>
                   <Button
                     type="button"

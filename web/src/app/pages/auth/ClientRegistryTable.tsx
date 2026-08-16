@@ -250,15 +250,14 @@ export function ClientRegistryTable({
         <table className="w-full table-fixed text-left border-collapse">
           <colgroup>
             {canSelect ? <col className="w-9" /> : null}
-            <col className="w-[13%]" />
-            <col className="w-[14%]" />
-            <col className="w-[9%]" />
-            <col className="w-[14%]" />
-            <col className="w-[9%]" />
-            <col className="w-[5%]" />
+            <col className="w-[22%]" />
+            <col className="w-[10%]" />
+            <col className="w-[16%]" />
+            <col className="w-[10%]" />
+            <col className="w-[6%]" />
             <col className="w-[12%]" />
             <col className="w-[11%]" />
-            <col className="w-[15%]" />
+            <col className="w-[13%]" />
           </colgroup>
           <thead className="bg-slate-900/50 text-[10px] uppercase text-muted-foreground font-bold">
             <tr>
@@ -272,7 +271,6 @@ export function ClientRegistryTable({
                 </th>
               ) : null}
               <th className="px-3 py-2.5">Client</th>
-              <th className="px-3 py-2.5">Client ID</th>
               <th className="px-3 py-2.5">Xác thực</th>
               <th className="px-3 py-2.5">Phân quyền</th>
               <th className="px-3 py-2.5">Rate limit</th>
@@ -296,7 +294,9 @@ export function ClientRegistryTable({
                   </td>
                 ) : null}
                 <td className="px-3 py-3 align-middle max-w-0">
-                  <p className="text-slate-200 font-medium truncate">{client.name}</p>
+                  <p className="text-slate-200 font-medium truncate" title={client.apiKey}>
+                    {client.name}
+                  </p>
                   {client.integrationType !== 'app' ? (
                     <Badge
                       variant="outline"
@@ -305,11 +305,6 @@ export function ClientRegistryTable({
                       {integrationTypeLabel(client.integrationType)}
                     </Badge>
                   ) : null}
-                </td>
-                <td className="px-3 py-3 align-middle max-w-0">
-                  <span className="font-mono text-xs text-slate-400 truncate block" title={client.apiKey}>
-                    {client.apiKey}
-                  </span>
                 </td>
                 <td className="px-3 py-3 align-middle max-w-0 overflow-hidden">
                   <Badge

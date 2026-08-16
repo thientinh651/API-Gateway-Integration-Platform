@@ -44,7 +44,7 @@ export function RouteClientsSheet({ route, open, onOpenChange }: Props) {
         <SheetHeader className="text-left border-b border-border pb-4">
           <SheetTitle className="text-white flex items-center gap-2">
             <Users className="w-4 h-4 text-sky-400" />
-            Client ACL
+            Phân quyền client
           </SheetTitle>
           <SheetDescription className="text-muted-foreground font-mono text-xs">
             {route.path}

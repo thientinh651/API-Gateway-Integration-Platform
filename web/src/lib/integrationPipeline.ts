@@ -118,7 +118,7 @@ export function buildPipelineFromSyncNow(res: SyncNowResult, syncLogs: SyncLogRo
     summary:
       syncLogs.length > 0
         ? `${success} OK · ${skipped} SKIPPED · ${failed} FAILED`
-        : 'Chưa có log — chạy Sync Now',
+        : 'Chưa có log — chạy Đồng bộ ngay',
   };
 
   return [step1, step2, step3, step4];
@@ -143,7 +143,7 @@ export function buildPipelineFromState(
       ? 'Kết nối Salesforce trước'
       : oppCount > 0
         ? `${oppCount} Opportunity trong snapshot mới nhất`
-        : 'Chưa có snapshot — bấm Sync Now',
+        : 'Chưa có snapshot — bấm Đồng bộ ngay',
   };
 
   const routerSkipped = syncLogs.filter(
@@ -183,7 +183,7 @@ export function buildPipelineFromState(
   };
 
   let pushStatus: PipelineStepStatus = 'idle';
-  let pushSummary = !zohoConnected ? 'Kết nối Zoho Projects' : 'Chờ Sync Now';
+  let pushSummary = !zohoConnected ? 'Kết nối Zoho Projects' : 'Chờ Đồng bộ ngay';
   if (zohoConnected && syncLogs.length > 0) {
     if (failedPush > 0 && successPush === 0) {
       pushStatus = 'failed';

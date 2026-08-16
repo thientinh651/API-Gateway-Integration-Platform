@@ -4,7 +4,7 @@
 
 Trên Zoho Projects, khi dự án xong, người dùng **chỉ đổi Trạng Thái sang «Đã hoàn tất»**.
 
-Gateway **định kỳ** (Sync Now / worker):
+Gateway **định kỳ** (Đồng bộ ngay / worker):
 
 1. Đánh dấu Opportunity `Project_Completed__c = true`
 2. Tạo bản ghi hóa đơn `Invoice__c` trên Salesforce (Amount lấy từ Opportunity)
@@ -16,7 +16,7 @@ Không cấu hình Webhook trên Zoho. Không thao tác tay trên Salesforce sau
 ```
 Zoho: Trạng Thái → Đã hoàn tất
         ↓
-Gateway Sync Now / worker
+Gateway Đồng bộ ngay / worker
         ↓
 Opportunity.Project_Completed__c = true
         ↓
@@ -59,7 +59,7 @@ Cấp quyền Read/Create cho profile dùng Connected App. Thêm tab **Invoices*
 1. OAuth Salesforce + Zoho đã connected.
 2. Deal Closed Won đã sync → có Entity Link.
 3. Zoho: đổi status → **Đã hoàn tất**.
-4. **Sync Now** hoặc chờ worker.
+4. **Đồng bộ ngay** hoặc chờ worker.
 5. Kiểm tra:
    - Opportunity: **Project Completed** đã tick
    - Tab **Invoices**: bản ghi `INV-…` mới
@@ -80,7 +80,7 @@ Cấp quyền Read/Create cho profile dùng Connected App. Thêm tab **Invoices*
 |-------------|-------------|--------|
 | FAILED xuất hóa đơn, `INVALID_TYPE` | Chưa tạo `Invoice__c` | Tạo object + fields như bảng trên |
 | `REQUIRED_FIELD_MISSING` | Thiếu field / API name sai | Đối chiếu đúng `Opportunity__c`, `Amount__c`, … |
-| Project Completed tick nhưng không có Invoice | Lần sync trước FAILED | Sửa SF rồi Sync Now lại (backfill `invoice_external_id` trống) |
+| Project Completed tick nhưng không có Invoice | Lần sync trước FAILED | Sửa SF rồi Đồng bộ ngay lại (backfill `invoice_external_id` trống) |
 
 ## Ghi chú kỹ thuật
 

@@ -58,27 +58,27 @@ const RUNTIME_TOGGLES: Array<{
   {
     key: 'enableMetrics',
     label: 'Metrics',
-    description: 'Bật /metrics (JSON + Prometheus) cho observability.',
+    description: 'Cung cấp endpoint /metrics để theo dõi các chỉ số hoạt động của Gateway, hỗ trợ JSON và Prometheus',
   },
   {
     key: 'enableHealthCheck',
     label: 'Health check',
-    description: 'Endpoint /health — ping DB + Redis.',
+    description: 'Kiểm tra trạng thái hoạt động của Gateway và các dịch vụ',
   },
   {
     key: 'transformEnabled',
     label: 'Transform headers',
-    description: 'Thêm/xóa header theo cấu hình route trước upstream.',
+    description: 'Thêm hoặc xóa HTTP header theo cấu hình của từng route trước khi gửi request đến hệ thống đích',
   },
   {
     key: 'retryEnabled',
     label: 'Retry upstream',
-    description: 'Thử lại khi 502/503/504 hoặc timeout.',
+    description: 'Tự động gửi lại request khi hệ thống đích trả về lỗi 502, 503, 504 hoặc xảy ra timeout',
   },
   {
     key: 'queueEnabled',
     label: 'Dead-letter queue',
-    description: 'Ghi request thất bại vào DLQ để replay.',
+    description: 'Lưu các request không thể xử lý thành công vào hàng đợi DLQ để có thể xem xét và gửi lại',
   },
 ];
 
@@ -222,7 +222,7 @@ export function Settings() {
             disabled={loading || saving}
           >
             <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-            refresh
+            Làm mới
           </Button>
         }
       />
@@ -240,9 +240,10 @@ export function Settings() {
             <div>
               <h3 className="text-sm font-semibold text-white">Rate limit toàn cục</h3>
               <p className="text-xs text-muted-foreground">
-                RPS: fallback khi client/route = 0. Trần burst: cap xả tức thời cho cả client/route
-                (min(RPM, trần)), kể cả khi Global RPS tắt.
-              </p>
+  RPS được sử dụng khi Client/Route không cấu hình giới hạn riêng.
+  Burst tối đa xác định số request có thể xử lý liên tiếp trong thời gian ngắn,
+  áp dụng cho cả Client và Route, kể cả khi Global Rate Limit đang tắt.
+</p>
             </div>
           </div>
           <div className="p-5 sm:p-6">
@@ -254,7 +255,7 @@ export function Settings() {
                   <div>
                     <p className="text-sm font-medium text-white">Global RPS</p>
                     <p className="text-xs text-muted-foreground mt-0.5">
-                      Chỉ áp khi client và route không set RPM.
+                      Chỉ áp dụng khi client và route không set RPM.
                     </p>
                   </div>
                   <Switch
@@ -265,9 +266,10 @@ export function Settings() {
                 </div>
                 <div className="flex items-center justify-between gap-4 rounded-lg border border-border/60 bg-slate-900/30 px-4 py-3">
                   <div>
-                    <p className="text-sm font-medium text-white">Cho phép burst</p>
+                    <p className="text-sm font-medium text-white">Burst allow</p>
                     <p className="text-xs text-muted-foreground mt-0.5">
-                      Tắt = xô chứa 1 (nhỏ giọt). Bật = xả tới trần bên dưới.
+                    Tắt: Không giới hạn request ở cấp hệ thống.
+Bật: Giới hạn request theo số lượng/phút được cấu hình bên dưới.
                     </p>
                   </div>
                   <Switch
@@ -302,7 +304,7 @@ export function Settings() {
                     <FieldError message={fieldErrors.rate_limit_rps} />
                   </div>
                   <div>
-                    <Label className="text-foreground">Trần burst (cap)</Label>
+                    <Label className="text-foreground">Burst max</Label>
                     <Input
                       value={settings.rateLimitBurst}
                       onChange={(e) => {
@@ -322,8 +324,7 @@ export function Settings() {
                       disabled={readOnly || !settings.rateLimitBurstEnabled}
                     />
                     <p className="text-[11px] text-muted-foreground mt-1">
-                      Client/route: sức chứa xô = min(RPM, trần). Global RPS: sức chứa = trần.
-                    </p>
+                    Client/Route: Burst tối đa được tính theo mức giới hạn RPM và giá trị Burst. Global RPS: Burst tối đa theo giá trị Burst đã cấu hình.                    </p>
                     <FieldError message={fieldErrors.rate_limit_burst} />
                   </div>
                 </div>
@@ -337,7 +338,7 @@ export function Settings() {
             <Activity className="w-4 h-4 text-primary" />
             <div>
               <h3 className="text-sm font-semibold text-white">Runtime middleware</h3>
-              <p className="text-xs text-muted-foreground">Bật/tắt tính năng data plane và observability.</p>
+              <p className="text-xs text-muted-foreground">Quản lý các tính năng xử lý request trong quá trình Gateway hoạt động và theo dõi hệ thống</p>
             </div>
           </div>
           <div className="px-5 sm:px-6 py-2">
@@ -396,7 +397,7 @@ export function Settings() {
                 />
                 <FieldError message={fieldErrors.undo_delete_seconds} />
                 <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
-                  0 = xóa ngay, không hiện hoàn tác. Tối đa 120 giây.
+                  Xóa ngay khi xóa, tối đa 120 giây.
                 </p>
               </div>
             )}

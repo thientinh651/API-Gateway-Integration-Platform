@@ -1049,13 +1049,14 @@ pub async fn insert_transaction_log(
     detail: Option<&TransactionDetail>,
 ) -> Result<(), sqlx::Error> {
     let d = detail.cloned().unwrap_or_default();
+    let tenant = tenant_id.or(Some(1));
     sqlx::query(
         "INSERT INTO gateway_transaction_logs
          (tenant_id, request_id, method, path, status, duration_ms, client_ip, api_key_masked, client_key_id, outcome, reason, upstream,
           route_id, upstream_url, req_headers, req_body, req_bytes, req_truncated, resp_headers, resp_body, resp_bytes, resp_truncated)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16, $17, $18, $19::jsonb, $20, $21, $22)",
     )
-    .bind(tenant_id)
+    .bind(tenant)
     .bind(request_id)
     .bind(method)
     .bind(path)
@@ -1344,28 +1345,33 @@ pub struct ClientTrafficTopRow {
     pub client_key_id: i64,
     pub name: String,
     pub total: i64,
+    pub success: i64,
+    pub errors: i64,
 }
 
 pub async fn client_traffic_top(
     pool: &PgPool,
     tenant_id: i64,
-    hours: i32,
+    range: DashRange,
     limit: i64,
 ) -> Result<Vec<ClientTrafficTopRow>, sqlx::Error> {
-    let hours = hours.clamp(1, 744);
     let lim = limit.clamp(1, 20);
     sqlx::query_as(
-        "SELECT k.id AS client_key_id, k.name, COUNT(*)::bigint AS total
+        "SELECT k.id AS client_key_id, k.name,
+                COUNT(*)::bigint AS total,
+                COALESCE(SUM(CASE WHEN t.outcome = 'success' THEN 1 ELSE 0 END), 0)::bigint AS success,
+                COALESCE(SUM(CASE WHEN t.outcome IN ('denied', 'upstream_error') THEN 1 ELSE 0 END), 0)::bigint AS errors
          FROM gateway_transaction_logs t
          INNER JOIN gateway_client_keys k ON k.id = t.client_key_id
-         WHERE t.tenant_id = $1 AND t.client_key_id IS NOT NULL
-           AND t.created_at >= NOW() - ($2::bigint * INTERVAL '1 hour')
+         WHERE (t.tenant_id = $1 OR t.tenant_id IS NULL) AND t.client_key_id IS NOT NULL
+           AND t.created_at >= $2 AND t.created_at < $3
          GROUP BY k.id, k.name
          ORDER BY total DESC
-         LIMIT $3",
+         LIMIT $4",
     )
     .bind(tenant_id)
-    .bind(i64::from(hours))
+    .bind(range.from)
+    .bind(range.to)
     .bind(lim)
     .fetch_all(pool)
     .await
@@ -2817,29 +2823,51 @@ pub async fn list_clients_for_route(
     })
 }
 
-/// Shared filter: $1 = tenant_id, $2 = hours (window length as bigint).
-fn tx_log_window_filter() -> &'static str {
-    "tenant_id = $1 AND created_at >= NOW() - ($2::bigint * INTERVAL '1 hour')"
+/// Shared filter: $1 = tenant_id, $2 = from (timestamptz), $3 = to (timestamptz, exclusive).
+/// Include NULL tenant_id rows (legacy logs before tenant was always set).
+fn tx_log_range_filter() -> &'static str {
+    " (tenant_id = $1 OR tenant_id IS NULL) AND created_at >= $2 AND created_at < $3 "
+}
+
+/// Absolute time window for dashboard aggregations (calendar month or rolling hours).
+#[derive(Debug, Clone, Copy)]
+pub struct DashRange {
+    pub from: chrono::DateTime<chrono::Utc>,
+    pub to: chrono::DateTime<chrono::Utc>,
+}
+
+impl DashRange {
+    pub fn from_hours_ago(hours: i32) -> Self {
+        let hours = hours.clamp(1, 8760);
+        let to = chrono::Utc::now();
+        let from = to - chrono::Duration::hours(i64::from(hours));
+        Self { from, to }
+    }
+
+    pub fn duration_hours(&self) -> i32 {
+        let secs = (self.to - self.from).num_seconds().max(1);
+        ((secs + 3599) / 3600).clamp(1, 8760) as i32
+    }
 }
 
 pub async fn traffic_denial_reasons(
     pool: &PgPool,
     tenant_id: i64,
-    hours: i32,
+    range: DashRange,
     limit: i64,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
-    let hours = hours.clamp(1, 744);
     sqlx::query_as(&format!(
         "SELECT COALESCE(NULLIF(reason, ''), 'unknown') AS reason, COUNT(*) AS cnt
          FROM gateway_transaction_logs
          WHERE {} AND outcome = 'denied'
          GROUP BY reason
          ORDER BY cnt DESC
-         LIMIT $3",
-        tx_log_window_filter()
+         LIMIT $4",
+        tx_log_range_filter()
     ))
     .bind(tenant_id)
-    .bind(i64::from(hours))
+    .bind(range.from)
+    .bind(range.to)
     .bind(limit)
     .fetch_all(pool)
     .await
@@ -2858,33 +2886,35 @@ pub async fn count_client_keys_for_tenant(
 pub async fn audit_counts(
     pool: &PgPool,
     tenant_id: i64,
-    hours: i32,
+    range: DashRange,
 ) -> Result<(i64, i64, i64), sqlx::Error> {
-    let hours = hours.clamp(1, 744);
     let total: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM audit_logs
-         WHERE tenant_id = $1 AND created_at >= NOW() - ($2::bigint * INTERVAL '1 hour')",
+         WHERE (tenant_id = $1 OR tenant_id IS NULL) AND created_at >= $2 AND created_at < $3",
     )
     .bind(tenant_id)
-    .bind(i64::from(hours))
+    .bind(range.from)
+    .bind(range.to)
     .fetch_one(pool)
     .await?;
     let success: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM audit_logs
-         WHERE tenant_id = $1 AND created_at >= NOW() - ($2::bigint * INTERVAL '1 hour')
+         WHERE (tenant_id = $1 OR tenant_id IS NULL) AND created_at >= $2 AND created_at < $3
            AND result = 'success'",
     )
     .bind(tenant_id)
-    .bind(i64::from(hours))
+    .bind(range.from)
+    .bind(range.to)
     .fetch_one(pool)
     .await?;
     let failure: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM audit_logs
-         WHERE tenant_id = $1 AND created_at >= NOW() - ($2::bigint * INTERVAL '1 hour')
+         WHERE (tenant_id = $1 OR tenant_id IS NULL) AND created_at >= $2 AND created_at < $3
            AND result = 'failure'",
     )
     .bind(tenant_id)
-    .bind(i64::from(hours))
+    .bind(range.from)
+    .bind(range.to)
     .fetch_one(pool)
     .await?;
     Ok((total, success, failure))
@@ -2920,20 +2950,20 @@ pub async fn delete_client_key(pool: &PgPool, id: i64, tenant_id: i64) -> Result
 pub async fn audit_top_actions(
     pool: &PgPool,
     tenant_id: i64,
-    hours: i32,
+    range: DashRange,
     limit: i64,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
-    let hours = hours.clamp(1, 744);
     sqlx::query_as::<_, (String, i64)>(
         "SELECT action, COUNT(*) AS cnt
          FROM audit_logs
-         WHERE tenant_id = $1 AND created_at >= NOW() - ($2::bigint * INTERVAL '1 hour')
+         WHERE (tenant_id = $1 OR tenant_id IS NULL) AND created_at >= $2 AND created_at < $3
          GROUP BY action
          ORDER BY cnt DESC
-         LIMIT $3",
+         LIMIT $4",
     )
     .bind(tenant_id)
-    .bind(i64::from(hours))
+    .bind(range.from)
+    .bind(range.to)
     .bind(limit)
     .fetch_all(pool)
     .await
@@ -2953,21 +2983,21 @@ fn series_bucket_parts(hours: i32) -> (&'static str, &'static str) {
 pub async fn audit_series(
     pool: &PgPool,
     tenant_id: i64,
-    hours: i32,
+    range: DashRange,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
-    let hours = hours.clamp(1, 744);
-    let (trunc, fmt) = series_bucket_parts(hours);
+    let (trunc, fmt) = series_bucket_parts(range.duration_hours());
     let sql = format!(
         "SELECT to_char(date_trunc('{trunc}', created_at AT TIME ZONE 'UTC'), '{fmt}') AS bucket,
                 COUNT(*) AS cnt
          FROM audit_logs
-         WHERE tenant_id = $1 AND created_at >= NOW() - ($2::bigint * INTERVAL '1 hour')
+         WHERE (tenant_id = $1 OR tenant_id IS NULL) AND created_at >= $2 AND created_at < $3
          GROUP BY date_trunc('{trunc}', created_at AT TIME ZONE 'UTC')
          ORDER BY date_trunc('{trunc}', created_at AT TIME ZONE 'UTC')"
     );
     sqlx::query_as::<_, (String, i64)>(&sql)
         .bind(tenant_id)
-        .bind(i64::from(hours))
+        .bind(range.from)
+        .bind(range.to)
         .fetch_all(pool)
         .await
 }
@@ -2975,9 +3005,8 @@ pub async fn audit_series(
 pub async fn traffic_outcome_counts(
     pool: &PgPool,
     tenant_id: i64,
-    hours: i32,
+    range: DashRange,
 ) -> Result<(i64, i64, i64, i64, i64, f64), sqlx::Error> {
-    let hours = hours.clamp(1, 744);
     let row: (i64, i64, i64, i64, i64, Option<f64>) = sqlx::query_as(&format!(
         "SELECT
             COUNT(*) AS total,
@@ -2988,21 +3017,48 @@ pub async fn traffic_outcome_counts(
             AVG(duration_ms::double precision)
          FROM gateway_transaction_logs
          WHERE {}",
-        tx_log_window_filter()
+        tx_log_range_filter()
     ))
     .bind(tenant_id)
-    .bind(i64::from(hours))
+    .bind(range.from)
+    .bind(range.to)
     .fetch_one(pool)
     .await?;
     Ok((row.0, row.1, row.2, row.3, row.4, row.5.unwrap_or(0.0)))
 }
 
+/// P50 / P95 / P99 latency (ms) over the window.
+pub async fn traffic_latency_percentiles(
+    pool: &PgPool,
+    tenant_id: i64,
+    range: DashRange,
+) -> Result<(f64, f64, f64), sqlx::Error> {
+    let row: (Option<f64>, Option<f64>, Option<f64>) = sqlx::query_as(&format!(
+        "SELECT
+            percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms)::float8,
+            percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)::float8,
+            percentile_cont(0.99) WITHIN GROUP (ORDER BY duration_ms)::float8
+         FROM gateway_transaction_logs
+         WHERE {}",
+        tx_log_range_filter()
+    ))
+    .bind(tenant_id)
+    .bind(range.from)
+    .bind(range.to)
+    .fetch_one(pool)
+    .await?;
+    Ok((
+        row.0.unwrap_or(0.0),
+        row.1.unwrap_or(0.0),
+        row.2.unwrap_or(0.0),
+    ))
+}
+
 pub async fn traffic_status_buckets(
     pool: &PgPool,
     tenant_id: i64,
-    hours: i32,
+    range: DashRange,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
-    let hours = hours.clamp(1, 744);
     sqlx::query_as(&format!(
         "SELECT bucket, COUNT(*) AS cnt FROM (
             SELECT CASE
@@ -3015,10 +3071,11 @@ pub async fn traffic_status_buckets(
             FROM gateway_transaction_logs
             WHERE {}
         ) GROUP BY bucket ORDER BY bucket",
-        tx_log_window_filter()
+        tx_log_range_filter()
     ))
     .bind(tenant_id)
-    .bind(i64::from(hours))
+    .bind(range.from)
+    .bind(range.to)
     .fetch_all(pool)
     .await
 }
@@ -3026,10 +3083,9 @@ pub async fn traffic_status_buckets(
 pub async fn traffic_series(
     pool: &PgPool,
     tenant_id: i64,
-    hours: i32,
+    range: DashRange,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
-    let hours = hours.clamp(1, 744);
-    let (trunc, fmt) = series_bucket_parts(hours);
+    let (trunc, fmt) = series_bucket_parts(range.duration_hours());
     let sql = format!(
         "SELECT to_char(date_trunc('{trunc}', created_at AT TIME ZONE 'UTC'), '{fmt}') AS bucket,
                 COUNT(*) AS cnt
@@ -3037,33 +3093,96 @@ pub async fn traffic_series(
          WHERE {}
          GROUP BY date_trunc('{trunc}', created_at AT TIME ZONE 'UTC')
          ORDER BY date_trunc('{trunc}', created_at AT TIME ZONE 'UTC')",
-        tx_log_window_filter()
+        tx_log_range_filter()
     );
     sqlx::query_as::<_, (String, i64)>(&sql)
         .bind(tenant_id)
-        .bind(i64::from(hours))
+        .bind(range.from)
+        .bind(range.to)
         .fetch_all(pool)
         .await
+}
+
+/// Time buckets: total requests + errors (denied + upstream_error).
+pub async fn traffic_series_with_errors(
+    pool: &PgPool,
+    tenant_id: i64,
+    range: DashRange,
+) -> Result<Vec<(String, i64, i64)>, sqlx::Error> {
+    let (trunc, fmt) = series_bucket_parts(range.duration_hours());
+    let sql = format!(
+        "SELECT to_char(date_trunc('{trunc}', created_at AT TIME ZONE 'UTC'), '{fmt}') AS bucket,
+                COUNT(*)::bigint AS total,
+                COALESCE(SUM(CASE WHEN outcome IN ('denied', 'upstream_error') THEN 1 ELSE 0 END), 0)::bigint AS errors
+         FROM gateway_transaction_logs
+         WHERE {}
+         GROUP BY date_trunc('{trunc}', created_at AT TIME ZONE 'UTC')
+         ORDER BY date_trunc('{trunc}', created_at AT TIME ZONE 'UTC')",
+        tx_log_range_filter()
+    );
+    sqlx::query_as::<_, (String, i64, i64)>(&sql)
+        .bind(tenant_id)
+        .bind(range.from)
+        .bind(range.to)
+        .fetch_all(pool)
+        .await
+}
+
+/// Latency percentiles per time bucket.
+pub async fn traffic_latency_series(
+    pool: &PgPool,
+    tenant_id: i64,
+    range: DashRange,
+) -> Result<Vec<(String, f64, f64, f64)>, sqlx::Error> {
+    let (trunc, fmt) = series_bucket_parts(range.duration_hours());
+    let sql = format!(
+        "SELECT to_char(date_trunc('{trunc}', created_at AT TIME ZONE 'UTC'), '{fmt}') AS bucket,
+                COALESCE(percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms), 0)::float8 AS p50,
+                COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms), 0)::float8 AS p95,
+                COALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY duration_ms), 0)::float8 AS p99
+         FROM gateway_transaction_logs
+         WHERE {}
+         GROUP BY date_trunc('{trunc}', created_at AT TIME ZONE 'UTC')
+         ORDER BY date_trunc('{trunc}', created_at AT TIME ZONE 'UTC')",
+        tx_log_range_filter()
+    );
+    sqlx::query_as::<_, (String, f64, f64, f64)>(&sql)
+        .bind(tenant_id)
+        .bind(range.from)
+        .bind(range.to)
+        .fetch_all(pool)
+        .await
+}
+
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct PathTrafficRow {
+    pub path: String,
+    pub total: i64,
+    pub success: i64,
+    pub errors: i64,
 }
 
 pub async fn traffic_top_paths(
     pool: &PgPool,
     tenant_id: i64,
-    hours: i32,
+    range: DashRange,
     limit: i64,
-) -> Result<Vec<(String, i64)>, sqlx::Error> {
-    let hours = hours.clamp(1, 744);
+) -> Result<Vec<PathTrafficRow>, sqlx::Error> {
     sqlx::query_as(&format!(
-        "SELECT COALESCE(NULLIF(path, ''), '(không rõ)') AS path, COUNT(*) AS cnt
+        "SELECT COALESCE(NULLIF(path, ''), '(không rõ)') AS path,
+                COUNT(*)::bigint AS total,
+                COALESCE(SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END), 0)::bigint AS success,
+                COALESCE(SUM(CASE WHEN outcome IN ('denied', 'upstream_error') THEN 1 ELSE 0 END), 0)::bigint AS errors
          FROM gateway_transaction_logs
          WHERE {}
          GROUP BY path
-         ORDER BY cnt DESC
-         LIMIT $3",
-        tx_log_window_filter()
+         ORDER BY total DESC
+         LIMIT $4",
+        tx_log_range_filter()
     ))
     .bind(tenant_id)
-    .bind(i64::from(hours))
+    .bind(range.from)
+    .bind(range.to)
     .bind(limit)
     .fetch_all(pool)
     .await
@@ -3072,19 +3191,19 @@ pub async fn traffic_top_paths(
 pub async fn traffic_method_counts(
     pool: &PgPool,
     tenant_id: i64,
-    hours: i32,
+    range: DashRange,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
-    let hours = hours.clamp(1, 744);
     sqlx::query_as(&format!(
         "SELECT method, COUNT(*) AS cnt
          FROM gateway_transaction_logs
          WHERE {}
          GROUP BY method
          ORDER BY cnt DESC",
-        tx_log_window_filter()
+        tx_log_range_filter()
     ))
     .bind(tenant_id)
-    .bind(i64::from(hours))
+    .bind(range.from)
+    .bind(range.to)
     .fetch_all(pool)
     .await
 }

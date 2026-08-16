@@ -1878,7 +1878,7 @@ async fn mark_zoho_token_error(pool: &PgPool, tenant_id: i64, detail: &str) {
     let _ = db::set_integration_status(pool, tenant_id, ZOHO_PROVIDER, "error", Some(&msg)).await;
 }
 
-/// Refresh access token trước khi hết hạn (~1h Zoho) — tránh 401 khi Sync Now.
+/// Refresh access token trước khi hết hạn (~1h Zoho) — tránh 401 khi Đồng bộ ngay.
 async fn ensure_zoho_token_fresh(pool: &PgPool, tenant_id: i64) -> Result<ZohoTokenConfig, String> {
     let Some(st) = STATE.get() else {
         return Err("state not initialized".into());
@@ -3684,7 +3684,7 @@ pub async fn run_full_sync_pipeline(
 
 /// Đọc trạng thái project Zoho đã link; nếu «Đã hoàn tất» thì đánh dấu Opportunity trên Salesforce.
 ///
-/// Chạy trong Sync Now / worker định kỳ — phía Zoho chỉ cần đổi Trạng Thái.
+/// Chạy trong Đồng bộ ngay / worker định kỳ — phía Zoho chỉ cần đổi Trạng Thái.
 pub async fn pull_zoho_completions_to_salesforce(
     pool: &PgPool,
     tenant_id: i64,
@@ -4527,7 +4527,7 @@ fn build_pipeline_from_run(
         ),
         "need_both_connected" => (
             "skipped",
-            "Chỉ pull SF — chưa kết nối Zoho để push".to_string(),
+            "Đã lấy dữ liệu từ Salesforce, nhưng chưa kết nối Zoho để đồng bộ.".to_string(),
         ),
         _ => {
             let sum =
@@ -4572,7 +4572,7 @@ fn build_pipeline_from_run(
         step1,
         step2,
         step3,
-        build_step_sync_log(logs, "Chưa có log — chạy Sync Now"),
+        build_step_sync_log(logs, "Chưa có log — chạy Đồng bộ ngay"),
     ]
 }
 
@@ -4597,7 +4597,7 @@ fn build_pipeline_from_db(
         } else if opp_count > 0 {
             format!("{opp_count} Opportunity trong snapshot mới nhất")
         } else {
-            "Chưa có snapshot — bấm Sync Now".into()
+            "Chưa có snapshot — bấm Đồng bộ ngay".into()
         },
     };
 
@@ -4641,7 +4641,7 @@ fn build_pipeline_from_db(
     let (push_status, push_summary) = if !zoho_connected {
         ("idle", "Kết nối Zoho Projects".to_string())
     } else if logs.is_empty() {
-        ("idle", "Chờ Sync Now".to_string())
+        ("idle", "Chờ Đồng bộ ngay".to_string())
     } else if failed_push > 0 && success_push == 0 {
         ("failed", format!("{failed_push} deal FAILED"))
     } else if success_push > 0 {

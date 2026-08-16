@@ -21,8 +21,8 @@ export const NAV_ITEMS: NavItem[] = [
   { path: '/proxy-try', icon: FlaskConical, label: 'Thử gọi proxy' },
   { path: '/proxy-queue', icon: ListOrdered, label: 'Proxy Queue' },
   { path: '/integrations', icon: Plug, label: 'Tích hợp' },
-  { path: '/users', icon: Users, label: 'Quản lý Users' },
+  { path: '/users', icon: Users, label: 'Quản lý người dùng' },
   { path: '/logs', icon: ScrollText, label: 'Log vận hành' },
   { path: '/settings', icon: Settings, label: 'Cài đặt hệ thống' },
-  { path: '/api-docs', icon: FileCode, label: 'Docs' },
+  { path: '/api-docs', icon: FileCode, label: 'Tài liệu' },
 ];

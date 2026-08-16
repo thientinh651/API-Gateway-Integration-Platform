@@ -57,7 +57,7 @@ const RULES: Rule[] = [
   },
   {
     test: (p) => p.includes('/users'),
-    target: { route: '/users', label: 'Quản lý Users' },
+    target: { route: '/users', label: 'Quản lý người dùng' },
   },
   {
     test: (p) => p.includes('/dashboard/stats'),

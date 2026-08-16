@@ -460,7 +460,7 @@ function IntegrationsAdmin() {
       if (!res.portal_id && (res.portals_count ?? 0) === 0) {
         toast.warning('Zoho OK nhưng chưa thấy portal.');
       } else {
-        toast.success(res.portal_id ? `Zoho OK — portal_id=${res.portal_id}` : 'Zoho portals OK');
+        toast.success(res.portal_id ? 'Zoho OK — đã thấy portal' : 'Zoho portals OK');
       }
     } catch (e) {
       toastApiError(e);
@@ -475,7 +475,7 @@ function IntegrationsAdmin() {
     try {
       const res = await zohoProjects();
       setTestResult(JSON.stringify(res, null, 2));
-      toast.success(`Zoho projects OK — portal_id=${res.portal_id}`);
+      toast.success('Zoho projects OK');
     } catch (e) {
       toastApiError(e);
     } finally {
@@ -492,7 +492,7 @@ function IntegrationsAdmin() {
       if (!res.project_id) {
         toast.warning('Không có project_id — test projects trước.');
       } else {
-        toast.success(`Zoho tasks OK — project_id=${res.project_id}`);
+        toast.success('Zoho tasks OK');
       }
     } catch (e) {
       toastApiError(e);
@@ -516,7 +516,7 @@ function IntegrationsAdmin() {
   const handleResetSync = async () => {
     try {
       const res = await resetIntegrationSync();
-      toast.success(`Đã xóa ${res.entity_links_deleted} link đồng bộ cũ — Sync Now lại`);
+      toast.success(`Đã xóa ${res.entity_links_deleted} link đồng bộ cũ — Đồng bộ ngay lại`);
       await load();
     } catch (e) {
       toastApiError(e);
@@ -738,7 +738,7 @@ function IntegrationsAdmin() {
               onClick={() => void handleSyncNow()}
             >
               <RefreshCw className={`w-4 h-4 mr-2 ${syncingNow ? 'animate-spin' : ''}`} />
-              {syncingNow ? 'Đang đồng bộ…' : 'Sync Now'}
+              {syncingNow ? 'Đang đồng bộ…' : 'Đồng bộ ngay'}
             </Button>
           ) : null}
           <Button variant="outline" className="border-border" onClick={() => void load()}>

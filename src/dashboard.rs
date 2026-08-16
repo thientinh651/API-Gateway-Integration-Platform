@@ -15,12 +15,41 @@ use crate::{STATE, json_error};
 
 #[derive(Debug, Deserialize)]
 pub struct DashboardStatsQuery {
-    /// Window length: 1 | 24 | 72 | 168 (default 24).
+    /// Rolling window length in hours (default 24). Ignored when `from`+`to` set.
     pub hours: Option<i32>,
+    /// Inclusive start (RFC3339). With `to` → calendar / absolute range.
+    pub from: Option<String>,
+    /// Exclusive end (RFC3339).
+    pub to: Option<String>,
 }
 
 pub fn normalize_dashboard_hours(raw: Option<i32>) -> i32 {
     raw.unwrap_or(24).clamp(1, 8760)
+}
+
+fn resolve_dash_range(q: &DashboardStatsQuery) -> Result<db::DashRange, String> {
+    match (q.from.as_deref(), q.to.as_deref()) {
+        (Some(from_s), Some(to_s)) => {
+            let from = chrono::DateTime::parse_from_rfc3339(from_s.trim())
+                .map_err(|e| format!("invalid from: {e}"))?
+                .with_timezone(&chrono::Utc);
+            let to = chrono::DateTime::parse_from_rfc3339(to_s.trim())
+                .map_err(|e| format!("invalid to: {e}"))?
+                .with_timezone(&chrono::Utc);
+            if to <= from {
+                return Err("to must be after from".into());
+            }
+            let max = chrono::Duration::days(366);
+            if to - from > max {
+                return Err("range too large (max 366 days)".into());
+            }
+            Ok(db::DashRange { from, to })
+        }
+        (None, None) => Ok(db::DashRange::from_hours_ago(normalize_dashboard_hours(
+            q.hours,
+        ))),
+        _ => Err("from and to must both be set".into()),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -61,6 +90,9 @@ pub struct TrafficWindow {
     pub upstream_error: i64,
     pub queued: i64,
     pub avg_duration_ms: f64,
+    pub p50_ms: f64,
+    pub p95_ms: f64,
+    pub p99_ms: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -75,20 +107,49 @@ pub struct ClientTrafficTopPublic {
     pub client_key_id: i64,
     pub name: String,
     pub total: i64,
+    pub success: i64,
+    pub errors: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PathTrafficPublic {
+    pub label: String,
+    pub total: i64,
+    pub success: i64,
+    pub errors: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TrafficSeriesPoint {
+    pub label: String,
+    pub count: i64,
+    pub errors: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LatencySeriesPoint {
+    pub label: String,
+    pub p50_ms: f64,
+    pub p95_ms: f64,
+    pub p99_ms: f64,
 }
 
 #[derive(Debug, Serialize)]
 pub struct DashboardStats {
-    /// Selected window in hours (1 / 24 / 72 / 168 / 744).
+    /// Selected window in hours (rolling or calendar duration).
     pub window_hours: i32,
+    /// Absolute window bounds (RFC3339 UTC) — FE chart axis.
+    pub window_from: String,
+    pub window_to: String,
     pub routes_count: i64,
     pub client_keys_count: i64,
     pub client_registry: ClientRegistryStats,
     /// Kept as `traffic_24h` for API compatibility — counts match `window_hours`.
     pub traffic_24h: TrafficWindow,
     pub traffic_status_buckets: Vec<LabelCount>,
-    pub traffic_hourly: Vec<LabelCount>,
-    pub traffic_top_paths: Vec<LabelCount>,
+    pub traffic_hourly: Vec<TrafficSeriesPoint>,
+    pub traffic_latency_hourly: Vec<LatencySeriesPoint>,
+    pub traffic_top_paths: Vec<PathTrafficPublic>,
     pub traffic_methods: Vec<LabelCount>,
     pub traffic_denial_reasons: Vec<LabelCount>,
     pub client_traffic_top: Vec<ClientTrafficTopPublic>,
@@ -142,55 +203,80 @@ pub async fn build_dashboard_stats(
     pool: &PgPool,
     tenant_id: i64,
     include_integrations: bool,
-    hours: i32,
+    range: db::DashRange,
 ) -> Result<DashboardStats, sqlx::Error> {
-    let hours = normalize_dashboard_hours(Some(hours));
+    let hours = range.duration_hours();
     let routes = db::list_routes_for_tenant(pool, tenant_id).await?;
     let client_keys_count = db::count_client_keys_for_tenant(pool, tenant_id).await?;
     let (client_active, client_disabled) = db::count_client_keys_by_status(pool, tenant_id).await?;
-    let denial_rows = db::traffic_denial_reasons(pool, tenant_id, hours, 8).await?;
+    let denial_rows = db::traffic_denial_reasons(pool, tenant_id, range, 8).await?;
     let traffic_denial_reasons: Vec<LabelCount> = denial_rows
         .into_iter()
         .map(|(label, count)| LabelCount { label, count })
         .collect();
     let client_traffic_top: Vec<ClientTrafficTopPublic> =
-        db::client_traffic_top(pool, tenant_id, hours, 8)
+        db::client_traffic_top(pool, tenant_id, range, 8)
             .await?
             .into_iter()
             .map(|r| ClientTrafficTopPublic {
                 client_key_id: r.client_key_id,
                 name: r.name,
                 total: r.total,
+                success: r.success,
+                errors: r.errors,
             })
             .collect();
-    let audit_counts = db::audit_counts(pool, tenant_id, hours).await?;
-    let traffic_counts = db::traffic_outcome_counts(pool, tenant_id, hours).await?;
-    let traffic_status_rows = db::traffic_status_buckets(pool, tenant_id, hours).await?;
+    let audit_counts = db::audit_counts(pool, tenant_id, range).await?;
+    let traffic_counts = db::traffic_outcome_counts(pool, tenant_id, range).await?;
+    let latency_pct = db::traffic_latency_percentiles(pool, tenant_id, range).await?;
+    let traffic_status_rows = db::traffic_status_buckets(pool, tenant_id, range).await?;
     let traffic_status_buckets: Vec<LabelCount> = traffic_status_rows
         .into_iter()
         .map(|(label, count)| LabelCount { label, count })
         .collect();
-    let traffic_hourly_rows = db::traffic_series(pool, tenant_id, hours).await?;
-    let traffic_hourly: Vec<LabelCount> = traffic_hourly_rows
-        .into_iter()
-        .map(|(label, count)| LabelCount { label, count })
-        .collect();
-    let traffic_path_rows = db::traffic_top_paths(pool, tenant_id, hours, 8).await?;
-    let traffic_top_paths: Vec<LabelCount> = traffic_path_rows
-        .into_iter()
-        .map(|(label, count)| LabelCount { label, count })
-        .collect();
-    let traffic_method_rows = db::traffic_method_counts(pool, tenant_id, hours).await?;
+    let traffic_hourly: Vec<TrafficSeriesPoint> =
+        db::traffic_series_with_errors(pool, tenant_id, range)
+            .await?
+            .into_iter()
+            .map(|(label, count, errors)| TrafficSeriesPoint {
+                label,
+                count,
+                errors,
+            })
+            .collect();
+    let traffic_latency_hourly: Vec<LatencySeriesPoint> =
+        db::traffic_latency_series(pool, tenant_id, range)
+            .await?
+            .into_iter()
+            .map(|(label, p50_ms, p95_ms, p99_ms)| LatencySeriesPoint {
+                label,
+                p50_ms: (p50_ms * 10.0).round() / 10.0,
+                p95_ms: (p95_ms * 10.0).round() / 10.0,
+                p99_ms: (p99_ms * 10.0).round() / 10.0,
+            })
+            .collect();
+    let traffic_top_paths: Vec<PathTrafficPublic> =
+        db::traffic_top_paths(pool, tenant_id, range, 8)
+            .await?
+            .into_iter()
+            .map(|r| PathTrafficPublic {
+                label: r.path,
+                total: r.total,
+                success: r.success,
+                errors: r.errors,
+            })
+            .collect();
+    let traffic_method_rows = db::traffic_method_counts(pool, tenant_id, range).await?;
     let traffic_methods: Vec<LabelCount> = traffic_method_rows
         .into_iter()
         .map(|(label, count)| LabelCount { label, count })
         .collect();
-    let audit_action_rows = db::audit_top_actions(pool, tenant_id, hours, 8).await?;
+    let audit_action_rows = db::audit_top_actions(pool, tenant_id, range, 8).await?;
     let audit_top_actions: Vec<LabelCount> = audit_action_rows
         .into_iter()
         .map(|(label, count)| LabelCount { label, count })
         .collect();
-    let audit_hourly_rows = db::audit_series(pool, tenant_id, hours).await?;
+    let audit_hourly_rows = db::audit_series(pool, tenant_id, range).await?;
     let audit_hourly: Vec<LabelCount> = audit_hourly_rows
         .into_iter()
         .map(|(label, count)| LabelCount { label, count })
@@ -284,6 +370,8 @@ pub async fn build_dashboard_stats(
 
     Ok(DashboardStats {
         window_hours: hours,
+        window_from: range.from.to_rfc3339(),
+        window_to: range.to.to_rfc3339(),
         routes_count: routes.len() as i64,
         client_keys_count,
         client_registry: ClientRegistryStats {
@@ -298,9 +386,13 @@ pub async fn build_dashboard_stats(
             upstream_error: traffic_counts.3,
             queued: traffic_counts.4,
             avg_duration_ms: (traffic_counts.5 * 10.0).round() / 10.0,
+            p50_ms: (latency_pct.0 * 10.0).round() / 10.0,
+            p95_ms: (latency_pct.1 * 10.0).round() / 10.0,
+            p99_ms: (latency_pct.2 * 10.0).round() / 10.0,
         },
         traffic_status_buckets,
         traffic_hourly,
+        traffic_latency_hourly,
         traffic_top_paths,
         traffic_methods,
         traffic_denial_reasons,
@@ -321,7 +413,7 @@ pub async fn build_dashboard_stats(
     })
 }
 
-pub async fn api_dashboard_stats(ctx: &AdminCtx, hours: Option<i32>) -> Response {
+pub async fn api_dashboard_stats(ctx: &AdminCtx, q: DashboardStatsQuery) -> Response {
     let Some(st) = STATE.get() else {
         return json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -329,8 +421,13 @@ pub async fn api_dashboard_stats(ctx: &AdminCtx, hours: Option<i32>) -> Response
             "state not initialized",
         );
     };
-    let hours = normalize_dashboard_hours(hours);
-    match build_dashboard_stats(&st.pool, ctx.tenant_id, ctx.is_admin(), hours).await {
+    let range = match resolve_dash_range(&q) {
+        Ok(r) => r,
+        Err(msg) => {
+            return json_error(StatusCode::BAD_REQUEST, "invalid_query", &msg);
+        }
+    };
+    match build_dashboard_stats(&st.pool, ctx.tenant_id, ctx.is_admin(), range).await {
         Ok(stats) => (StatusCode::OK, Json(stats)).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -14,28 +14,28 @@ export function ClientRegistrySummary({ clients }: { clients: ClientRegistryRow[
     {
       label: 'Client đã đăng ký',
       value: total,
-      hint: total === 0 ? 'Chưa có system-to-system client' : `${active} đang active`,
+      hint: total === 0 ? 'Chưa có client hệ thống' : `${active} đang bật`,
       icon: Users,
       iconClass: 'text-primary bg-primary/10',
     },
     {
-      label: 'OAuth2 clients',
+      label: 'Client OAuth2',
       value: clients.filter((c) => c.authMode === 'oauth_client' || c.authMode === 'hmac').length,
-      hint: 'Client ID + Secret → JWT Bearer (OAuth2)',
+      hint: 'ID + Secret đổi lấy JWT',
       icon: KeyRound,
       iconClass: 'text-emerald-400 bg-emerald-500/10',
     },
     {
       label: 'Phân quyền route',
       value: restricted,
-      hint: restricted === 0 ? 'Mặc định: full tenant' : 'Client bị giới hạn route',
+      hint: restricted === 0 ? 'Mặc định: mọi route' : 'Client bị giới hạn route',
       icon: Lock,
       iconClass: 'text-sky-400 bg-sky-500/10',
     },
     {
-      label: 'Rate limit riêng',
+      label: 'Giới hạn tốc độ riêng',
       value: withClientRl,
-      hint: disabled > 0 ? `${disabled} client đã tắt` : '0',
+      hint: disabled > 0 ? `${disabled} client đã tắt` : 'Chưa gán giới hạn riêng',
       icon: Gauge,
       iconClass: 'text-amber-400 bg-amber-500/10',
     },
@@ -58,13 +58,13 @@ export function ClientRegistrySummary({ clients }: { clients: ClientRegistryRow[
                     total > 0 ? (
                       <>
                         <Link to="/auth?status=active" className="text-emerald-400 hover:underline">
-                          {active} active
+                          {active} Active
                         </Link>
                         {disabled > 0 ? (
                           <>
                             {' · '}
                             <Link to="/auth?status=disabled" className="text-amber-400 hover:underline">
-                              {disabled} tắt
+                              {disabled} Disabled
                             </Link>
                           </>
                         ) : null}

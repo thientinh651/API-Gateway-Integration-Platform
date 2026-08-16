@@ -946,6 +946,8 @@ export type DashboardStats = {
     disabled: number;
   };
   window_hours?: number;
+  window_from?: string;
+  window_to?: string;
   traffic_24h: {
     total: number;
     success: number;
@@ -953,13 +955,34 @@ export type DashboardStats = {
     upstream_error: number;
     queued: number;
     avg_duration_ms: number;
+    p50_ms?: number;
+    p95_ms?: number;
+    p99_ms?: number;
   };
   traffic_status_buckets: Array<{ label: string; count: number }>;
-  traffic_hourly: Array<{ label: string; count: number }>;
-  traffic_top_paths: Array<{ label: string; count: number }>;
+  traffic_hourly: Array<{ label: string; count: number; errors?: number }>;
+  traffic_latency_hourly?: Array<{
+    label: string;
+    p50_ms: number;
+    p95_ms: number;
+    p99_ms: number;
+  }>;
+  traffic_top_paths: Array<{
+    label: string;
+    count?: number;
+    total?: number;
+    success?: number;
+    errors?: number;
+  }>;
   traffic_methods: Array<{ label: string; count: number }>;
   traffic_denial_reasons: Array<{ label: string; count: number }>;
-  client_traffic_top: Array<{ client_key_id: number; name: string; total: number }>;
+  client_traffic_top: Array<{
+    client_key_id: number;
+    name: string;
+    total: number;
+    success?: number;
+    errors?: number;
+  }>;
   audit_24h: { total: number; success: number; failure: number };
   audit_top_actions: Array<{ label: string; count: number }>;
   audit_hourly: Array<{ label: string; count: number }>;
@@ -982,9 +1005,23 @@ export type DashboardStats = {
   total_snapshot_records: number;
 };
 
-export function fetchDashboardStats(hours = 24): Promise<DashboardStats> {
-  const h = [1, 24, 72, 168, 744].includes(hours) ? hours : 24;
-  return fetchJson<DashboardStats>(`/api/dashboard/stats?hours=${h}`);
+export type DashboardStatsParams = {
+  hours?: number;
+  from?: string;
+  to?: string;
+};
+
+export function fetchDashboardStats(params: DashboardStatsParams | number = 24): Promise<DashboardStats> {
+  const q = new URLSearchParams();
+  if (typeof params === 'number') {
+    q.set('hours', String(params));
+  } else if (params.from && params.to) {
+    q.set('from', params.from);
+    q.set('to', params.to);
+  } else {
+    q.set('hours', String(params.hours ?? 24));
+  }
+  return fetchJson<DashboardStats>(`/api/dashboard/stats?${q}`);
 }
 
 export type MiddlewareStatus = {

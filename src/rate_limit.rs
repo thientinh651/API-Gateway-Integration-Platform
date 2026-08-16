@@ -138,7 +138,6 @@ fn info_from_bucket(limit_header: u32, remaining_floor: u32, reset_unix: u64) ->
 /// - Burst (sức chứa): `min(per_min, global_burst_cap)` khi bật burst;
 ///   tắt burst → xô chỉ chứa 1 (strict drip)
 ///
-/// `global_burst_cap` là trần hệ thống (Settings → Burst), áp cả khi Global RPS tắt.
 pub fn per_min_to_bucket(per_min: i32, global_burst_cap: u32, burst_enabled: bool) -> (f64, u32) {
     let per_min = per_min.max(1) as u32;
     let burst = if burst_enabled {

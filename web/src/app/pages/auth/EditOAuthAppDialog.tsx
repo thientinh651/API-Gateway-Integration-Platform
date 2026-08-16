@@ -66,7 +66,7 @@ export function EditOAuthAppDialog({ app, open, onOpenChange, onSaved }: Props) 
         onOpenChange(false);
       }
     } catch (e) {
-      toastApiError(e, 'Cập nhật thất bại');
+      toastApiError(e);
     } finally {
       setPending(false);
     }

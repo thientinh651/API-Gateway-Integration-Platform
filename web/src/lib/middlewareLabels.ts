@@ -25,7 +25,7 @@ export const TRANSACTION_REASON_VI: Record<string, string> = {
   client_key_disabled: 'Client bị tắt trong registry',
   route_forbidden: 'Client không có quyền route này (ACL)',
   tenant_forbidden: 'Tenant key không khớp route',
-  rate_limit_exceeded: 'Vượt rate limit',
+  rate_limit_exceeded: 'Vượt giới hạn tốc độ',
   not_found: 'Không có route khớp path',
   forwarded: 'Đã chuyển tiếp upstream',
   forwarded_after_retry: 'Forward sau retry',

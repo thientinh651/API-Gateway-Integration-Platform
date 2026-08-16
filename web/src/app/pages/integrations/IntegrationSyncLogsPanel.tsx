@@ -35,7 +35,7 @@ export function IntegrationSyncLogsPanel({ logs, emptyHint }: Props) {
       </div>
       {logs.length === 0 ? (
         <p className="text-xs text-muted-foreground border border-dashed border-border rounded-lg p-4">
-          {emptyHint ?? 'Chưa có sự kiện — bấm Sync Now.'}
+          {emptyHint ?? 'Chưa có sự kiện — bấm Đồng bộ ngay.'}
         </p>
       ) : (
         <div className="space-y-2 max-h-80 overflow-auto pr-1">

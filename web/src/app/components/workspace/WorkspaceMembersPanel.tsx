@@ -78,7 +78,7 @@ export function WorkspaceMembersPanel() {
         <p className="text-sm text-muted-foreground">
           Quản lý thành viên nội bộ tại{' '}
           <Link to="/users" className="text-primary underline">
-            Quản lý Users
+            Quản lý người dùng
           </Link>
           .
         </p>

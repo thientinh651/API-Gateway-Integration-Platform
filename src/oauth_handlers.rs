@@ -864,9 +864,10 @@ fn consent_html(app: &ThirdPartyApp, q: &AuthorizeQuery, username: &str) -> Stri
         .as_deref()
         .unwrap_or(crate::pkce::METHOD_S256);
     let body = format!(
-        r#"<h1>Cho phép truy cập?</h1>
-<p><strong>{name}</strong> muốn quyền <code>{scope}</code> thay mặt <strong>{username}</strong>.</p>
-<p style="font-size:12px;color:#94a3b8">PKCE <code>{pkce_method}</code> — code challenge đã xác thực.</p>
+        r#"<h1>Cho phép ứng dụng truy cập?</h1>
+<p><strong>{name}</strong> đang yêu cầu quyền truy cập vào tài khoản <strong>{username}</strong>.</p>
+<p>Quyền được yêu cầu: <strong><code>{scope}</code></strong></p>
+<p style="font-size:12px;color:#94a3b8">Kết nối được bảo vệ bằng PKCE (<code>{pkce_method}</code>).</p>
 <form method="post" action="/oauth/consent">
 <input type="hidden" name="client_id" value="{cid}"/>
 <input type="hidden" name="redirect_uri" value="{uri}"/>
@@ -874,7 +875,7 @@ fn consent_html(app: &ThirdPartyApp, q: &AuthorizeQuery, username: &str) -> Stri
 <input type="hidden" name="state" value="{state}"/>
 <input type="hidden" name="code_challenge" value="{challenge}"/>
 <input type="hidden" name="code_challenge_method" value="{pkce_method}"/>
-<button class="approve" name="action" value="approve">Cho phép</button>
+<button class="approve" name="action" value="approve">Cho phép truy cập</button>
 <button class="deny" name="action" value="deny">Từ chối</button>
 </form>"#,
         name = html_escape(&app.name),

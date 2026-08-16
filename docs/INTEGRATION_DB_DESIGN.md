@@ -95,7 +95,7 @@ settings_encrypted  -- client_id, secret, redirect_uri, scopes
 | `event_type` | `pipeline_started`, `deal_filtered`, `entity_pushed`, … |
 | `flow_type` | `sales_to_delivery` / `delivery_to_sales` |
 | `source_provider` / `target_provider` | Ngữ cảnh event |
-| `correlation_id` | UUID — gom log 1 lần Sync Now |
+| `correlation_id` | UUID — gom log 1 lần Đồng bộ ngay |
 | `metadata_json` | `{ "source_id", "target_id", "amount" }` |
 
 API dashboard vẫn expose `/api/integrations/sync-logs` (product path).

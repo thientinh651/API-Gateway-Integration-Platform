@@ -21,6 +21,7 @@ import {
 
 type Props = {
   canManage: boolean;
+  refreshKey?: number;
 };
 
 function parseUris(json: string): string[] {
@@ -38,7 +39,7 @@ function pickDemoRedirectUri(uris: string[]): string {
   return uris[0] ?? demo;
 }
 
-export function OAuthThirdPartyAppsPanel({ canManage }: Props) {
+export function OAuthThirdPartyAppsPanel({ canManage, refreshKey = 0 }: Props) {
   const [apps, setApps] = useState<OAuthThirdPartyAppRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [authorizingId, setAuthorizingId] = useState<string | null>(null);
@@ -51,7 +52,7 @@ export function OAuthThirdPartyAppsPanel({ canManage }: Props) {
       const res = await fetchOAuthApps();
       setApps(res.apps);
     } catch (e) {
-      toastApiError(e, 'Không tải danh sách app');
+      toastApiError(e);
       setApps([]);
     } finally {
       setLoading(false);
@@ -60,7 +61,7 @@ export function OAuthThirdPartyAppsPanel({ canManage }: Props) {
 
   useEffect(() => {
     void reload();
-  }, [reload]);
+  }, [reload, refreshKey]);
 
   const buildAuthorizeUrl = (
     clientId: string,
@@ -110,7 +111,7 @@ export function OAuthThirdPartyAppsPanel({ canManage }: Props) {
       toast.success(`Đã xóa app "${app.name}"`);
       await reload();
     } catch (e) {
-      toastApiError(e, 'Xóa app thất bại');
+      toastApiError(e);
     }
   };
 
@@ -141,8 +142,9 @@ export function OAuthThirdPartyAppsPanel({ canManage }: Props) {
                 <li key={app.id} className="px-4 py-4 hover:bg-primary/5 space-y-2">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
-                      <p className="font-medium text-white">{app.name}</p>
-                      <p className="text-xs font-mono text-slate-400 mt-0.5">{app.client_id}</p>
+                      <p className="font-medium text-white" title={app.client_id}>
+                        {app.name}
+                      </p>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
                       <Badge variant="outline" className="text-slate-400 border-border">

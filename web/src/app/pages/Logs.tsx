@@ -29,7 +29,14 @@ export function Logs() {
     if (t === 'traffic' && showTraffic) return 'traffic';
     if (t === 'integration' && showIntegration) return 'integration';
     // legacy params imply traffic view
-    if ((clientKeyFilter != null || params.get('reason') || params.get('result')) && showTraffic) {
+    if (
+      (clientKeyFilter != null ||
+        params.get('reason') ||
+        params.get('result') ||
+        params.get('search') ||
+        params.get('q')) &&
+      showTraffic
+    ) {
       return 'traffic';
     }
     if (showTraffic) return 'traffic';

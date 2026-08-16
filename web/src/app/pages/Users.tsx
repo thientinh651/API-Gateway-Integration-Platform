@@ -316,7 +316,7 @@ function UsersAdmin() {
     <>
       <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Quản lý Users</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Quản lý người dùng</h1>
           <p className="text-sm text-muted-foreground max-w-2xl">
             Tạo và quản lý tài khoản dashboard.
             {isSaasMode(me?.deployment_mode) ? (
@@ -477,7 +477,7 @@ function UsersAdmin() {
       <Card className="rounded-2xl overflow-hidden bg-card/80 backdrop-blur-sm border-border">
         <div className="p-6 border-b border-border">
           <h3 className="font-bold text-white text-sm uppercase tracking-wider">
-            Quản lý Users ({loading ? '…' : users.length})
+            Quản lý người dùng ({loading ? '…' : users.length})
           </h3>
         </div>
         <div className="overflow-x-auto">
@@ -551,7 +551,7 @@ function UsersAdmin() {
 
 export function Users() {
   return (
-    <AdminOnly title="Quản lý Users" description="Đăng nhập admin để quản lý tài khoản dashboard.">
+    <AdminOnly title="Quản lý người dùng" description="Đăng nhập admin để quản lý tài khoản dashboard.">
       <UsersAdmin />
     </AdminOnly>
   );

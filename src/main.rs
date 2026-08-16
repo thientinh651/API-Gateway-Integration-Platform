@@ -2705,7 +2705,7 @@ async fn api_forgot_password(
         return json_error(
             StatusCode::BAD_REQUEST,
             "no_email",
-            "Tài khoản chưa có email — nhờ Admin cấp email trong Quản lý Users.",
+            "Tài khoản chưa có email — nhờ Admin cấp email trong Quản lý người dùng.",
         );
     };
 
@@ -3157,7 +3157,7 @@ async fn api_list_workspace_members(Extension(ctx): Extension<AdminCtx>) -> impl
         return json_error(
             StatusCode::FORBIDDEN,
             "on_prem_mode",
-            "Triển khai on-prem — dùng Quản lý Users",
+            "Triển khai on-prem — dùng Quản lý người dùng",
         );
     }
     if !ctx.is_admin() {
@@ -6251,7 +6251,7 @@ async fn api_dashboard_stats(
     Extension(ctx): Extension<AdminCtx>,
     Query(q): Query<dashboard::DashboardStatsQuery>,
 ) -> impl IntoResponse {
-    dashboard::api_dashboard_stats(&ctx, q.hours).await
+    dashboard::api_dashboard_stats(&ctx, q).await
 }
 
 #[derive(Debug, serde::Serialize)]

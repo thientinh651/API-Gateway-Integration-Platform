@@ -405,7 +405,7 @@ export function IntegrationLogPanel() {
           <p className="px-6 py-10 text-center text-muted-foreground">Đang tải…</p>
         ) : filtered.length === 0 ? (
           <p className="px-6 py-10 text-center text-muted-foreground">
-            Chưa có log tích hợp — chạy Sync Now trong trang Tích hợp.
+            Chưa có log tích hợp — chạy Đồng bộ ngay trong trang Tích hợp.
           </p>
         ) : (
           <div className={refreshing ? 'opacity-60 transition-opacity duration-150' : 'transition-opacity duration-150'}>

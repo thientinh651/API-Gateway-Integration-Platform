@@ -57,7 +57,7 @@ export function RoutesTable({
               <th className="px-6 py-4">Upstream</th>
               <th className="px-6 py-4">Timeout</th>
               <th className="px-6 py-4">Rate limit</th>
-              <th className="px-6 py-4">Client ACL</th>
+              <th className="px-6 py-4">Phân quyền client</th>
               <th className="px-6 py-4 text-right">Actions</th>
             </tr>
           </thead>

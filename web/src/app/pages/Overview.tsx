@@ -1,15 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { toast } from 'sonner';
 import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
   Line,
   LineChart,
-  Pie,
-  PieChart,
+  CartesianGrid,
   XAxis,
   YAxis,
 } from 'recharts';
@@ -19,9 +14,6 @@ import {
   subHours,
   eachDayOfInterval,
   eachHourOfInterval,
-  differenceInHours,
-  startOfMonth,
-  endOfMonth,
 } from 'date-fns';
 import { NavCard } from '../components/dashboard/NavCard';
 import { StatsCard } from '../components/dashboard/StatsCard';
@@ -41,15 +33,17 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from '../components/ui/chart';
+import { cn } from '../components/ui/utils';
 import {
   Activity,
-  AlertTriangle,
+  Gauge,
   Key,
   ListOrdered,
   RefreshCw,
   Route,
   ShieldX,
   Timer,
+  Workflow,
 } from 'lucide-react';
 import {
   ApiClientError,
@@ -72,6 +66,13 @@ import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { isSyncWorkerClient } from '../../lib/oauthClientId';
 
 const CHART_COLORS = ['#10b981', '#3b82f6', '#f97316', '#ef4444', '#a855f7', '#fb923c'];
+const STATUS_BAR_COLORS: Record<string, string> = {
+  '2xx': '#10b981',
+  '3xx': '#3b82f6',
+  '4xx': '#f97316',
+  '5xx': '#ef4444',
+  other: '#94a3b8',
+};
 
 const DASHBOARD_RANGES = [
   { hours: 1, label: '1 giờ' },
@@ -86,79 +87,102 @@ function rangeLabel(hours: number): string {
   return DASHBOARD_RANGES.find((r) => r.hours === hours)?.label ?? `${hours}h`;
 }
 
-function buildMonthOptions(): Array<{ value: string; label: string; hours: number }> {
+function buildMonthOptions(): Array<{
+  value: string;
+  label: string;
+  from: string;
+  to: string;
+}> {
   const now = new Date();
-  const result: Array<{ value: string; label: string; hours: number }> = [];
+  const result: Array<{ value: string; label: string; from: string; to: string }> = [];
   for (let i = 0; i < 6; i++) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const value = fmtDate(d, 'yyyy-MM');
-    const label = `Tháng ${d.getMonth() + 1}/${d.getFullYear()}`;
-    const from = startOfMonth(d);
-    const to = i === 0 ? now : endOfMonth(d);
-    const hours = Math.max(1, differenceInHours(to, from));
-    result.push({ value, label, hours });
+    const y = now.getUTCFullYear();
+    const m = now.getUTCMonth() - i;
+    const start = new Date(Date.UTC(y, m, 1, 0, 0, 0, 0));
+    const endExclusive =
+      i === 0 ? now : new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 1, 0, 0, 0, 0));
+    result.push({
+      value: fmtDate(start, 'yyyy-MM'),
+      label: `Tháng ${start.getUTCMonth() + 1}/${start.getUTCFullYear()}`,
+      from: start.toISOString(),
+      to: endExclusive.toISOString(),
+    });
   }
   return result;
 }
 
-
-function fillTimeSeries(
-  data: Array<{ time: string; count: number }>,
+function seriesKeys(
   hours: number,
-): Array<{ time: string; count: number }> {
+  windowFrom?: string | null,
+  windowTo?: string | null,
+): string[] {
+  if (windowFrom && windowTo && hours > 24) {
+    const start = new Date(windowFrom);
+    const end = new Date(windowTo);
+    const endInclusive = new Date(Math.max(start.getTime(), end.getTime() - 1));
+    return eachDayOfInterval({ start, end: endInclusive }).map((d) => fmtDate(d, 'dd/MM'));
+  }
   const now = new Date();
-  const map = new Map(data.map((d) => [d.time, d.count]));
-
-  if (hours <= 1) {
-    return data;
-  }
-
+  if (hours <= 1) return [];
   if (hours <= 24) {
-    const start = subHours(now, hours);
-    const allHours = eachHourOfInterval({ start, end: now });
-    return allHours.map((h) => {
-      const key = fmtDate(h, 'HH:00');
-      return { time: key, count: map.get(key) ?? 0 };
-    });
+    return eachHourOfInterval({ start: subHours(now, hours), end: now }).map((h) =>
+      fmtDate(h, 'HH:00'),
+    );
   }
+  return eachDayOfInterval({
+    start: subDays(now, Math.ceil(hours / 24)),
+    end: now,
+  }).map((d) => fmtDate(d, 'dd/MM'));
+}
 
-  const start = subDays(now, Math.ceil(hours / 24));
-  const allDays = eachDayOfInterval({ start, end: now });
-  return allDays.map((d) => {
-    const key = fmtDate(d, 'dd/MM');
-    return { time: key, count: map.get(key) ?? 0 };
-  });
+function fillTrafficSeries(
+  data: Array<{ time: string; requests: number; errors: number }>,
+  hours: number,
+  windowFrom?: string | null,
+  windowTo?: string | null,
+) {
+  const map = new Map(data.map((d) => [d.time, d]));
+  const keys = seriesKeys(hours, windowFrom, windowTo);
+  if (keys.length === 0) return data;
+  return keys.map((time) => ({
+    time,
+    requests: map.get(time)?.requests ?? 0,
+    errors: map.get(time)?.errors ?? 0,
+  }));
+}
+
+function fillLatencySeries(
+  data: Array<{ time: string; p50: number; p95: number; p99: number }>,
+  hours: number,
+  windowFrom?: string | null,
+  windowTo?: string | null,
+) {
+  const map = new Map(data.map((d) => [d.time, d]));
+  const keys = seriesKeys(hours, windowFrom, windowTo);
+  if (keys.length === 0) return data;
+  return keys.map((time) => ({
+    time,
+    p50: map.get(time)?.p50 ?? 0,
+    p95: map.get(time)?.p95 ?? 0,
+    p99: map.get(time)?.p99 ?? 0,
+  }));
 }
 
 const AXIS_TICK = '#94a3b8';
 const GRID_STROKE = '#334155';
 
-const countBarConfig = {
-  count: { label: 'Số lượng', color: CHART_COLORS[1] },
+const trafficSeriesConfig = {
+  requests: { label: 'Requests', color: CHART_COLORS[1] },
+  errors: { label: 'Errors', color: CHART_COLORS[3] },
 } satisfies ChartConfig;
 
-const trafficPieConfig = {
-  count: { label: 'Kết nối', color: CHART_COLORS[0] },
+const latencySeriesConfig = {
+  p50: { label: 'P50', color: CHART_COLORS[0] },
+  p95: { label: 'P95', color: CHART_COLORS[2] },
+  p99: { label: 'P99', color: CHART_COLORS[3] },
 } satisfies ChartConfig;
 
-const trafficHourlyConfig = {
-  count: { label: 'Kết nối', color: CHART_COLORS[1] },
-} satisfies ChartConfig;
-
-const STATUS_VI: Record<string, string> = {
-  '2xx': '2xx Thành công',
-  '3xx': '3xx Chuyển hướng',
-  '4xx': '4xx Client',
-  '5xx': '5xx Server',
-  other: 'Khác',
-};
-
-const OUTCOME_VI: Record<string, string> = {
-  success: 'Thành công',
-  denied: 'Từ chối',
-  upstream_error: 'Lỗi upstream',
-  queued: 'Xếp hàng DLQ',
-};
+const STATUS_ORDER = ['2xx', '3xx', '4xx', '5xx', 'other'] as const;
 
 const ACTIVE_INTEGRATION_PROVIDERS = new Set(['salesforce', 'zoho_projects']);
 
@@ -182,6 +206,142 @@ function integrationStatusBadge(status: string) {
   }
 }
 
+function pct(n: number, total: number): number | null {
+  if (total <= 0) return null;
+  return Math.round((n / total) * 1000) / 10;
+}
+
+function fmtNum(n: number): string {
+  return n.toLocaleString('vi-VN');
+}
+
+function fmtMs(n: number | undefined | null): string {
+  if (n == null || Number.isNaN(n)) return '—';
+  return `${(Math.round(n * 10) / 10).toLocaleString('vi-VN')} ms`;
+}
+
+function truncatePath(path: string, max = 32) {
+  if (path.length <= max) return path;
+  return `${path.slice(0, max - 1)}…`;
+}
+
+type HealthState = {
+  gateway: 'up' | 'down' | 'unknown';
+  database: 'up' | 'down' | 'unknown';
+  redis: 'up' | 'down' | 'unknown';
+};
+
+function useSystemHealth(): HealthState {
+  const [state, setState] = useState<HealthState>({
+    gateway: 'unknown',
+    database: 'unknown',
+    redis: 'unknown',
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const r = await fetch('/health', { credentials: 'same-origin' });
+        const j = (await r.json()) as {
+          status?: string;
+          components?: {
+            database?: { status?: string };
+            session_store?: { status?: string };
+          };
+        };
+        if (cancelled) return;
+        setState({
+          gateway: r.ok || j.status === 'degraded' ? 'up' : 'down',
+          database: j.components?.database?.status === 'up' ? 'up' : 'down',
+          redis: j.components?.session_store?.status === 'up' ? 'up' : 'down',
+        });
+      } catch {
+        if (!cancelled) {
+          setState({ gateway: 'down', database: 'unknown', redis: 'unknown' });
+        }
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+
+  return state;
+}
+
+function HealthDot({ label, status }: { label: string; status: HealthState[keyof HealthState] }) {
+  const color =
+    status === 'up' ? 'bg-emerald-400' : status === 'down' ? 'bg-red-500' : 'bg-slate-500';
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-300">
+      <span className={cn('h-1.5 w-1.5 rounded-full', color)} aria-hidden />
+      {label}
+    </span>
+  );
+}
+
+function PanelShell({
+  title,
+  action,
+  subtitle,
+  children,
+  className,
+}: {
+  title: string;
+  action?: ReactNode;
+  subtitle?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={cn('h-full flex flex-col', className)}>
+      <div className="flex items-start justify-between gap-2 mb-3 shrink-0 px-4 sm:px-5 pt-4 sm:pt-5">
+        <div className="min-w-0">
+          <h3 className="font-semibold text-white text-xs uppercase tracking-wider">{title}</h3>
+          {subtitle ? <div className="mt-1 text-[11px] text-muted-foreground">{subtitle}</div> : null}
+        </div>
+        {action}
+      </div>
+      <div className="flex-1 min-h-0 px-4 sm:px-5 pb-4 sm:pb-5">{children}</div>
+    </div>
+  );
+}
+
+function RankedBarList({
+  rows,
+  valueClassName = 'text-cyan-400',
+}: {
+  rows: Array<{ key: string; label: ReactNode; count: number; meta?: ReactNode }>;
+  valueClassName?: string;
+}) {
+  const max = Math.max(...rows.map((r) => r.count), 1);
+  return (
+    <ul className="space-y-2.5">
+      {rows.map((r) => (
+        <li key={r.key} className="space-y-1">
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="min-w-0 truncate text-slate-300">{r.label}</span>
+            <span className={cn('font-mono shrink-0 tabular-nums text-right', valueClassName)}>
+              {fmtNum(r.count)}
+              {r.meta ? <span className="text-muted-foreground font-sans"> {r.meta}</span> : null}
+            </span>
+          </div>
+          <div className="h-1.5 rounded-full bg-slate-800/80 overflow-hidden">
+            <div
+              className="h-full rounded-full bg-primary/75"
+              style={{ width: `${Math.max(4, Math.round((r.count / max) * 100))}%` }}
+            />
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function OverviewCrmIntegrationsCard({
   integrations,
   snapshotEntities,
@@ -190,72 +350,56 @@ function OverviewCrmIntegrationsCard({
   snapshotEntities: DashboardStats['snapshot_entities'];
 }) {
   return (
-    <NavCard to="/integrations" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Tích hợp CRM">
-      <div className="flex items-start justify-between gap-3 mb-4">
-        <h3 className="font-bold text-white text-sm uppercase tracking-wider">Tích hợp CRM</h3>
-        <span className="text-xs text-primary font-mono-tech shrink-0">Mở →</span>
-      </div>
-      {integrations.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Chưa kết nối provider.</p>
-      ) : (
-        <div className="space-y-3">
-          {integrations.map((row) => {
-            const snapshots = snapshotEntities.filter((s) => s.provider === row.provider);
-            return (
-              <div key={row.provider} className="rounded-xl border border-border bg-slate-900/35 p-4">
-                <div className="flex items-center justify-between gap-2 mb-2">
-                  <span className="font-medium text-white text-sm">{row.label}</span>
-                  <Badge className={`${integrationStatusBadge(row.status)} border text-xs shrink-0`}>
-                    {INTEGRATION_STATUS_VI[row.status] ?? row.status}
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {row.last_sync_at
-                    ? formatDbTimestamp(row.last_sync_at)
-                    : 'Chưa sync'}
-                </p>
-                {row.last_error && row.status === 'error' ? (
-                  <p className="text-xs text-red-300/90 mt-2 line-clamp-2" title={row.last_error}>
-                    {row.last_error}
-                  </p>
-                ) : null}
-                {snapshots.length > 0 ? (
-                  <div className="flex flex-wrap gap-1.5 mt-3">
-                    {snapshots.map((s) => (
-                      <Badge
-                        key={`${s.provider}-${s.entity_type}`}
-                        variant="outline"
-                        className="text-[10px] border-border/80 text-slate-400"
-                      >
-                        {s.label}: {s.record_count}
-                      </Badge>
-                    ))}
+    <NavCard to="/integrations" className="p-0 bg-card/80 border-border overflow-hidden" ariaLabel="Tích hợp CRM">
+      <PanelShell title="Tích hợp CRM" action={<span className="text-[11px] text-primary font-medium">Mở →</span>}>
+        {integrations.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Chưa kết nối provider.</p>
+        ) : (
+          <div className="space-y-3">
+            {integrations.map((row) => {
+              const snapshots = snapshotEntities.filter((s) => s.provider === row.provider);
+              return (
+                <div
+                  key={row.provider}
+                  className="rounded-lg border border-border/80 bg-slate-950/40 p-3 min-h-[7.25rem] flex flex-col"
+                >
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <span className="font-medium text-white text-sm truncate">{row.label}</span>
+                    <Badge className={`${integrationStatusBadge(row.status)} border text-[10px] shrink-0`}>
+                      {INTEGRATION_STATUS_VI[row.status] ?? row.status}
+                    </Badge>
                   </div>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-      )}
+                  <p className="text-[11px] text-muted-foreground">
+                    Lần đồng bộ cuối:{' '}
+                    {row.last_sync_at ? formatDbTimestamp(row.last_sync_at) : 'Chưa đồng bộ'}
+                  </p>
+                  {row.last_error && row.status === 'error' ? (
+                    <p className="text-[11px] text-red-300/90 mt-1 line-clamp-2" title={row.last_error}>
+                      ⚠ {row.last_error}
+                    </p>
+                  ) : null}
+                  <div className="flex flex-wrap gap-1.5 mt-auto pt-3 min-h-[1.75rem]">
+                    {snapshots.length > 0 ? (
+                      snapshots.slice(0, 4).map((s) => (
+                        <Badge
+                          key={`${s.provider}-${s.entity_type}`}
+                          variant="outline"
+                          className="text-[10px] border-border/80 text-slate-400"
+                        >
+                          {s.label}: {s.record_count}
+                        </Badge>
+                      ))
+                    ) : (
+                      <span className="text-[10px] text-muted-foreground">Chưa có snapshot</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </PanelShell>
     </NavCard>
-  );
-}
-
-function truncatePath(path: string, max = 28) {
-  if (path.length <= max) return path;
-  return `${path.slice(0, max - 1)}…`;
-}
-
-function MiniCountList({ rows }: { rows: Array<{ name: string; count: number }> }) {
-  return (
-    <ul className="space-y-2 text-xs">
-      {rows.map((r) => (
-        <li key={r.name} className="flex justify-between gap-2 text-slate-300">
-          <span className="truncate">{r.name}</span>
-          <span className="font-mono text-cyan-400 shrink-0">{r.count}</span>
-        </li>
-      ))}
-    </ul>
   );
 }
 
@@ -263,13 +407,23 @@ function OverviewAdmin() {
   const { user } = useAdminAuth();
   const isMobile = useMediaQuery('(max-width: 639px)');
   const showIntegrations = canManageIntegrations(user);
+  const health = useSystemHealth();
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [routes, setRoutes] = useState<GatewayRouteRow[]>([]);
   const [proxyQueueItems, setProxyQueueItems] = useState<ProxyQueueItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [rangeHours, setRangeHours] = useState<number>(24);
-  const [activeMonth, setActiveMonth] = useState<string | null>(null);
+  const [activeMonth, setActiveMonth] = useState<string | null>(() => {
+    const opts = buildMonthOptions();
+    return opts[0]?.value ?? null;
+  });
+  const [rangeBound, setRangeBound] = useState<{ from: string; to: string } | null>(() => {
+    const opts = buildMonthOptions();
+    const cur = opts[0];
+    return cur ? { from: cur.from, to: cur.to } : null;
+  });
   const monthOptions = useMemo(() => buildMonthOptions(), []);
   const win = activeMonth
     ? (monthOptions.find((m) => m.value === activeMonth)?.label ?? rangeLabel(rangeHours))
@@ -281,11 +435,15 @@ function OverviewAdmin() {
     const opt = opts.find((m) => m.value === value);
     if (!opt) return;
     setActiveMonth(value);
-    setRangeHours(opt.hours);
+    setRangeBound({ from: opt.from, to: opt.to });
+    setRangeHours(
+      Math.max(1, Math.ceil((new Date(opt.to).getTime() - new Date(opt.from).getTime()) / 3_600_000)),
+    );
   }, []);
 
   const selectPreset = useCallback((hours: number) => {
     setActiveMonth(null);
+    setRangeBound(null);
     setRangeHours(hours as DashboardRangeHours);
   }, []);
 
@@ -294,14 +452,18 @@ function OverviewAdmin() {
     setLoading(true);
     setLoadError(null);
     try {
+      const dashParams = rangeBound
+        ? { from: rangeBound.from, to: rangeBound.to }
+        : { hours: rangeHours };
       const [dash, routeRows, queue] = await Promise.all([
-        fetchDashboardStats(rangeHours),
+        fetchDashboardStats(dashParams),
         fetchGatewayRoutes(),
         fetchProxyQueue().catch(() => []),
       ]);
       setStats(dash);
       setRoutes(routeRows);
       setProxyQueueItems(queue);
+      setUpdatedAt(new Date());
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setLoadError(msg);
@@ -310,80 +472,24 @@ function OverviewAdmin() {
     } finally {
       setLoading(false);
     }
-  }, [user, rangeHours]);
+  }, [user, rangeHours, rangeBound]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const traffic = stats?.traffic_24h;
-
-  const httpStatusPieData = useMemo(
-    () =>
-      (stats?.traffic_status_buckets ?? [])
-        .filter((b) => b.count > 0)
-        .map((b) => ({
-          name: STATUS_VI[b.label] ?? b.label,
-          count: b.count,
-        })),
-    [stats]
-  );
-
-  const outcomePieData = useMemo(() => {
-    if (!traffic?.total) return [];
-    const rows = [
-      { key: 'success', count: traffic.success },
-      { key: 'denied', count: traffic.denied },
-      { key: 'upstream_error', count: traffic.upstream_error },
-      { key: 'queued', count: traffic.queued },
-    ];
-    return rows
-      .filter((r) => r.count > 0)
-      .map((r) => ({ name: OUTCOME_VI[r.key] ?? r.key, count: r.count }));
-  }, [traffic]);
-
-  const trafficHourlyData = useMemo(
-    () =>
-      fillTimeSeries(
-        (stats?.traffic_hourly ?? []).map((h) => ({ time: h.label, count: h.count })),
-        rangeHours,
-      ),
-    [stats, rangeHours]
-  );
-
-  const topPathsData = useMemo(
-    () =>
-      (stats?.traffic_top_paths ?? []).map((p) => ({
-        label: truncatePath(p.label),
-        fullPath: p.label,
-        count: p.count,
-      })),
-    [stats]
-  );
-
-  const methodData = useMemo(
-    () =>
-      (stats?.traffic_methods ?? []).map((m) => ({
-        label: m.label,
-        count: m.count,
-      })),
-    [stats]
-  );
-
-  const denialReasonData = useMemo(
-    () =>
-      (stats?.traffic_denial_reasons ?? []).map((r) => ({
-        code: r.label,
-        label: reasonLabel(r.label),
-        count: r.count,
-      })),
-    [stats],
-  );
-
-  const clientTrafficTop = useMemo(
-    () => stats?.client_traffic_top ?? [],
-    [stats],
-  );
+  const errorCount = (traffic?.denied ?? 0) + (traffic?.upstream_error ?? 0);
+  const successRate = traffic ? pct(traffic.success, traffic.total) : null;
+  const errorRate = traffic ? pct(errorCount, traffic.total) : null;
+  const windowSecs = useMemo(() => {
+    if (stats?.window_from && stats?.window_to) {
+      const ms = new Date(stats.window_to).getTime() - new Date(stats.window_from).getTime();
+      return Math.max(1, Math.round(ms / 1000));
+    }
+    return Math.max(1, rangeHours * 3600);
+  }, [stats, rangeHours]);
+  const rps = traffic && traffic.total > 0 ? traffic.total / windowSecs : 0;
 
   const dlqCounts = useMemo(() => countDlqByStatus(proxyQueueItems), [proxyQueueItems]);
 
@@ -391,9 +497,168 @@ function OverviewAdmin() {
     () => (stats?.integrations ?? []).filter((r) => ACTIVE_INTEGRATION_PROVIDERS.has(r.provider)),
     [stats?.integrations],
   );
+  const connectedIntegrations = integrationRows.filter((r) => r.status === 'connected').length;
 
-  const successRate =
-    traffic && traffic.total > 0 ? Math.round((traffic.success / traffic.total) * 100) : null;
+  const p50 = traffic?.p50_ms ?? traffic?.avg_duration_ms ?? 0;
+  const p95 = traffic?.p95_ms ?? 0;
+  const p99 = traffic?.p99_ms ?? 0;
+
+  const statusBars = useMemo(() => {
+    const map = new Map((stats?.traffic_status_buckets ?? []).map((b) => [b.label, b.count]));
+    const total = [...map.values()].reduce((a, b) => a + b, 0);
+    return STATUS_ORDER.filter((k) => (map.get(k) ?? 0) > 0 || k === '2xx' || k === '4xx' || k === '5xx').map(
+      (label) => ({
+        label,
+        count: map.get(label) ?? 0,
+        pct: total > 0 ? Math.round(((map.get(label) ?? 0) / total) * 100) : 0,
+      }),
+    );
+  }, [stats]);
+
+  const trafficSeriesData = useMemo(
+    () =>
+      fillTrafficSeries(
+        (stats?.traffic_hourly ?? []).map((h) => ({
+          time: h.label,
+          requests: h.count,
+          errors: h.errors ?? 0,
+        })),
+        rangeHours,
+        stats?.window_from ?? rangeBound?.from,
+        stats?.window_to ?? rangeBound?.to,
+      ),
+    [stats, rangeHours, rangeBound],
+  );
+
+  const latencySeriesData = useMemo(
+    () =>
+      fillLatencySeries(
+        (stats?.traffic_latency_hourly ?? []).map((h) => ({
+          time: h.label,
+          p50: h.p50_ms,
+          p95: h.p95_ms,
+          p99: h.p99_ms,
+        })),
+        rangeHours,
+        stats?.window_from ?? rangeBound?.from,
+        stats?.window_to ?? rangeBound?.to,
+      ),
+    [stats, rangeHours, rangeBound],
+  );
+
+  const denialRows = useMemo(() => {
+    const rows = stats?.traffic_denial_reasons ?? [];
+    return rows.map((r) => ({
+      key: r.label,
+      count: r.count,
+      label: (
+        <Link
+          to={`/logs?kind=traffic&reason=${encodeURIComponent(r.label)}`}
+          className="truncate hover:text-primary hover:underline"
+        >
+          {reasonLabel(r.label)}
+        </Link>
+      ),
+      meta: <span className="text-slate-500">→</span>,
+    }));
+  }, [stats]);
+
+  const denialTotal = useMemo(
+    () => (stats?.traffic_denial_reasons ?? []).reduce((s, r) => s + r.count, 0),
+    [stats],
+  );
+
+  const clientRows = useMemo(() => {
+    const list = stats?.client_traffic_top ?? [];
+    const total = traffic?.total ?? 0;
+    const mapped = list.map((c) => {
+      const share = pct(c.total, total);
+      const errPct = pct(c.errors ?? 0, c.total);
+      return { ...c, share, errPct };
+    });
+    const primary = mapped.filter((c, i) => (c.share ?? 0) >= 1 || i < 5);
+    const rest = mapped.filter((c) => !primary.includes(c));
+    const rows = primary.map((c) => ({
+      key: String(c.client_key_id),
+      count: c.total,
+      label: (
+        <span className="flex min-w-0 items-center gap-1.5">
+          <Link
+            to={`/logs?kind=traffic&client_key_id=${c.client_key_id}`}
+            className="truncate hover:text-primary hover:underline"
+            title={c.name}
+          >
+            {c.name}
+          </Link>
+          {isSyncWorkerClient(c.name) ? (
+            <Badge className="shrink-0 border border-violet-500/30 bg-violet-500/10 px-1.5 py-0 text-[10px] text-violet-300">
+              Sync Worker
+            </Badge>
+          ) : null}
+        </span>
+      ),
+      meta: (
+        <span>
+          · {c.share ?? 0}% traffic
+          {c.errPct != null ? (
+            <span className={c.errPct >= 20 ? ' text-red-400' : ' text-slate-500'}>
+              {' '}
+              · {c.errPct}% lỗi
+            </span>
+          ) : null}
+        </span>
+      ),
+    }));
+    if (rest.length > 0) {
+      const otherTotal = rest.reduce((s, c) => s + c.total, 0);
+      const otherErr = rest.reduce((s, c) => s + (c.errors ?? 0), 0);
+      rows.push({
+        key: '__other__',
+        count: otherTotal,
+        label: <span className="text-slate-400">Khác ({rest.length})</span>,
+        meta: (
+          <span>
+            · {pct(otherTotal, total) ?? 0}%
+            {otherTotal > 0 ? ` · ${pct(otherErr, otherTotal) ?? 0}% lỗi` : ''}
+          </span>
+        ),
+      });
+    }
+    return rows;
+  }, [stats, traffic]);
+
+  const pathRows = useMemo(() => {
+    return (stats?.traffic_top_paths ?? []).map((p) => {
+      const total = p.total ?? p.count ?? 0;
+      const errors = p.errors ?? 0;
+      const errPct = pct(errors, total);
+      return {
+        key: p.label,
+        count: total,
+        label: (
+          <Link
+            to={`/logs?kind=traffic&search=${encodeURIComponent(p.label)}`}
+            className="truncate font-mono text-[11px] hover:text-primary hover:underline"
+            title={p.label}
+          >
+            {truncatePath(p.label)}
+          </Link>
+        ),
+        meta: (
+          <span className={errPct != null && errPct >= 20 ? 'text-red-400' : 'text-slate-500'}>
+            · {errPct ?? 0}% lỗi
+          </span>
+        ),
+      };
+    });
+  }, [stats]);
+
+  const topRoutePreview = useMemo(() => {
+    return (stats?.traffic_top_paths ?? []).slice(0, 4).map((p) => p.label);
+  }, [stats]);
+
+  const errorTone: 'default' | 'danger' | 'warning' =
+    errorRate == null ? 'default' : errorRate >= 20 ? 'danger' : errorRate >= 5 ? 'warning' : 'default';
 
   return (
     <>
@@ -401,43 +666,53 @@ function OverviewAdmin() {
         codeLine={`// dashboard · ${win}`}
         title="Tổng quan"
         actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <Select
-              value={activeMonth ? `m:${activeMonth}` : String(rangeHours)}
-              onValueChange={(v) => {
-                if (v.startsWith('m:')) {
-                  selectMonth(v.slice(2));
-                } else {
-                  selectPreset(Number(v));
-                }
-              }}
-            >
-              <SelectTrigger className="w-[170px] bg-input border-border font-mono-tech text-xs h-9">
-                <SelectValue>{win}</SelectValue>
-              </SelectTrigger>
-              <SelectContent className="bg-card border-border">
-                {DASHBOARD_RANGES.map((r) => (
-                  <SelectItem key={r.hours} value={String(r.hours)} className="font-mono-tech text-xs">
-                    {r.label}
-                  </SelectItem>
-                ))}
-                <div className="border-t border-border my-1" />
-                {monthOptions.map((m) => (
-                  <SelectItem key={m.value} value={`m:${m.value}`} className="font-mono-tech text-xs">
-                    {m.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button
-              variant="outline"
-              className="border-border font-mono-tech text-xs"
-              onClick={() => void load()}
-              disabled={loading}
-            >
-              <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-              refresh
-            </Button>
+          <div className="flex flex-col items-stretch sm:items-end gap-2">
+            <div className="flex flex-wrap items-center gap-2 justify-end">
+              <Select
+                value={activeMonth ? `m:${activeMonth}` : String(rangeHours)}
+                onValueChange={(v) => {
+                  if (v.startsWith('m:')) selectMonth(v.slice(2));
+                  else selectPreset(Number(v));
+                }}
+              >
+                <SelectTrigger className="w-[170px] bg-input border-border font-mono-tech text-xs h-9">
+                  <SelectValue>{win}</SelectValue>
+                </SelectTrigger>
+                <SelectContent className="bg-card border-border">
+                  {DASHBOARD_RANGES.map((r) => (
+                    <SelectItem key={r.hours} value={String(r.hours)} className="font-mono-tech text-xs">
+                      {r.label}
+                    </SelectItem>
+                  ))}
+                  <div className="border-t border-border my-1" />
+                  {monthOptions.map((m) => (
+                    <SelectItem key={m.value} value={`m:${m.value}`} className="font-mono-tech text-xs">
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                className="border-border font-mono-tech text-xs"
+                onClick={() => void load()}
+                disabled={loading}
+              >
+                <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+                Làm mới
+              </Button>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 justify-end text-[11px] text-muted-foreground">
+              <HealthDot label="Gateway" status={health.gateway} />
+              <HealthDot label="PostgreSQL" status={health.database} />
+              <HealthDot label="Redis" status={health.redis} />
+              <span>
+                Cập nhật:{' '}
+                {updatedAt
+                  ? updatedAt.toLocaleTimeString('vi-VN', { hour12: false })
+                  : '—'}
+              </span>
+            </div>
           </div>
         }
       />
@@ -446,361 +721,308 @@ function OverviewAdmin() {
         <Card className="mb-6 p-4 border-amber-500/30 bg-amber-500/10 text-amber-200 text-sm">{loadError}</Card>
       ) : null}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+      {/* KPI row 1 — traffic health */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4 mb-3 items-stretch">
         <StatsCard
           to="/logs?kind=traffic"
-          icon={<Activity className="text-blue-500" />}
+          icon={<Activity className="text-blue-500 w-4 h-4" />}
           iconBg="bg-blue-500/10"
-          title="Kết nối API"
-          value={dataReady ? String(traffic?.total ?? 0) : '…'}
-          badge={
+          title="Requests"
+          value={dataReady ? fmtNum(traffic?.total ?? 0) : '…'}
+          hint={
             dataReady && successRate != null
-              ? {
-                  text: `${successRate}% thành công`,
-                  variant: successRate >= 90 ? 'success' : 'info',
-                }
+              ? `${successRate.toLocaleString('vi-VN')}% thành công`
               : undefined
           }
         />
         <StatsCard
           to="/logs?kind=traffic&result=success"
-          icon={<Route className="text-emerald-500" />}
+          icon={<Route className="text-emerald-500 w-4 h-4" />}
           iconBg="bg-emerald-500/10"
           title="Thành công"
-          value={dataReady ? String(traffic?.success ?? 0) : '…'}
+          value={dataReady ? fmtNum(traffic?.success ?? 0) : '…'}
+          hint={
+            dataReady && successRate != null
+              ? `${successRate.toLocaleString('vi-VN')}%`
+              : undefined
+          }
+          valueTone="success"
         />
         <StatsCard
           to="/logs?kind=traffic&result=failure"
-          icon={<ShieldX className="text-amber-500" />}
-          iconBg="bg-amber-500/10"
-          title="Từ chối / lỗi"
-          value={
+          icon={<ShieldX className="text-red-500 w-4 h-4" />}
+          iconBg="bg-red-500/10"
+          title="Error rate"
+          value={dataReady && errorRate != null ? `${errorRate.toLocaleString('vi-VN')}%` : dataReady ? '0%' : '…'}
+          hint={
             dataReady
-              ? String((traffic?.denied ?? 0) + (traffic?.upstream_error ?? 0))
-              : '…'
+              ? `${fmtNum(errorCount)} / ${fmtNum(traffic?.total ?? 0)} requests`
+              : undefined
+          }
+          valueTone={errorTone}
+          badge={
+            dataReady && errorRate != null && errorRate >= 20
+              ? { text: 'Cần chú ý', variant: 'danger' }
+              : undefined
           }
         />
         <StatsCard
           to="/proxy-queue"
-          icon={<ListOrdered className="text-red-500" />}
-          iconBg="bg-red-500/10"
-          title="DLQ / Queue"
+          icon={<ListOrdered className="text-amber-500 w-4 h-4" />}
+          iconBg="bg-amber-500/10"
+          title="DLQ"
           value={dataReady ? String(dlqCounts.total || (traffic?.queued ?? 0)) : '…'}
+          hint={
+            dataReady
+              ? `${dlqCounts.pending} đang chờ xử lý · ${dlqCounts.replayed} đã phát lại`
+              : undefined
+          }
           badge={
-            dataReady && dlqCounts.total > 0
-              ? {
-                  text: `${dlqCounts.pending} pending · ${dlqCounts.replayed} replayed`,
-                  variant: dlqCounts.pending > 0 ? 'warning' : 'success',
-                }
+            dataReady && dlqCounts.pending > 0
+              ? { text: 'Có pending', variant: 'warning' }
               : undefined
           }
         />
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8 items-stretch">
-        <NavCard to="/logs?kind=traffic" className="p-4 bg-card/80 border-border h-full flex flex-col" ariaLabel="Latency gateway">
-          <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
-            <Timer className="w-3.5 h-3.5 shrink-0" />
-            Latency TB
-          </div>
-          <p className="text-2xl font-bold text-white">
-            {dataReady ? `${traffic?.avg_duration_ms ?? 0} ms` : '…'}
-          </p>
-          <p className="text-xs text-muted-foreground mt-1 min-h-[1rem]" aria-hidden>
-            {'\u00a0'}
-          </p>
-        </NavCard>
-        <NavCard to="/routes" className="p-4 bg-card/80 border-border h-full flex flex-col" ariaLabel="Routes">
-          <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
-            <Route className="w-3.5 h-3.5" />
-            Routes
-          </div>
-          <p className="text-2xl font-bold text-white">
-            {dataReady ? String(stats?.routes_count ?? routes.length) : '…'}
-          </p>
-          <p className="text-xs text-muted-foreground mt-1 min-h-[1rem]" aria-hidden>
-            {'\u00a0'}
-          </p>
-        </NavCard>
-        <NavCard to="/auth" className="p-4 bg-card/80 border-border h-full flex flex-col" ariaLabel="Client Registry">
-          <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
-            <Key className="w-3.5 h-3.5" />
-            Client Registry
-          </div>
-          <p className="text-2xl font-bold text-white">
-            {dataReady ? String(stats?.client_keys_count ?? 0) : '…'}
-          </p>
-          <p className="text-xs text-muted-foreground mt-1 min-h-[1rem]">
-            {dataReady && stats?.client_registry
-              ? `${stats.client_registry.active} active · ${stats.client_registry.disabled} tắt`
-              : '\u00a0'}
-          </p>
-        </NavCard>
-        <NavCard to="/logs?kind=admin" className="p-4 bg-card/80 border-border h-full flex flex-col" ariaLabel="Audit admin">
-          <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wider mb-1">
-            <AlertTriangle className="w-3.5 h-3.5" />
-            Audit admin
-          </div>
-          <p className="text-2xl font-bold text-white">
-            {dataReady ? String(stats?.audit_24h.total ?? 0) : '…'}
-          </p>
-          <p className="text-xs text-muted-foreground mt-1 min-h-[1rem]" aria-hidden>
-            {'\u00a0'}
-          </p>
-        </NavCard>
+      {/* KPI row 2 — latency / capacity */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4 mb-3 items-stretch">
+        <StatsCard
+          to="/logs?kind=traffic"
+          icon={<Timer className="text-sky-400 w-4 h-4" />}
+          iconBg="bg-sky-500/10"
+          title="Latency P50"
+          value={dataReady ? fmtMs(p50) : '…'}
+        />
+        <StatsCard
+          to="/logs?kind=traffic"
+          icon={<Timer className="text-orange-400 w-4 h-4" />}
+          iconBg="bg-orange-500/10"
+          title="Latency P95"
+          value={dataReady ? fmtMs(p95) : '…'}
+          hint={dataReady ? `P99 ${fmtMs(p99)}` : undefined}
+          valueTone={p95 > 500 ? 'warning' : 'default'}
+        />
+        <StatsCard
+          to="/logs?kind=traffic"
+          icon={<Gauge className="text-cyan-400 w-4 h-4" />}
+          iconBg="bg-cyan-500/10"
+          title="RPS trung bình"
+          value={dataReady ? rps.toLocaleString('vi-VN', { maximumFractionDigits: 1 }) : '…'}
+          hint="req/s trong cửa sổ đã chọn"
+        />
+        <StatsCard
+          to="/routes"
+          icon={<Workflow className="text-indigo-400 w-4 h-4" />}
+          iconBg="bg-indigo-500/10"
+          title="Inventory"
+          value={
+            dataReady
+              ? `${stats?.routes_count ?? routes.length} / ${stats?.client_keys_count ?? 0}`
+              : '…'
+          }
+          hint={
+            dataReady
+              ? `Routes · Clients${showIntegrations ? ` · ${connectedIntegrations} tích hợp` : ''}`
+              : undefined
+          }
+        />
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 lg:gap-8 mb-8 min-w-0">
-        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border min-w-0" ariaLabel="HTTP status">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">HTTP status</h3>
-          {!dataReady ? (
-            <p className="text-sm text-muted-foreground">Đang tải…</p>
-          ) : httpStatusPieData.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Chưa có kết nối.</p>
-          ) : isMobile ? (
-            <MiniCountList rows={httpStatusPieData} />
-          ) : (
-            <ChartContainer key={`status-${rangeHours}`} config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full">
-              <PieChart>
-                <ChartTooltip content={<ChartTooltipContent nameKey="name" />} />
-                <Pie
-                  data={httpStatusPieData}
-                  dataKey="count"
-                  nameKey="name"
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={55}
-                  outerRadius={90}
-                  paddingAngle={3}
-                  stroke="#0f172a"
-                  strokeWidth={2}
-                >
-                  {httpStatusPieData.map((_, i) => (
-                    <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-                  ))}
-                </Pie>
-              </PieChart>
-            </ChartContainer>
-          )}
-        </NavCard>
-
-        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Kết quả kết nối">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">Kết quả kết nối</h3>
-          {!dataReady ? (
-            <p className="text-sm text-muted-foreground">Đang tải…</p>
-          ) : outcomePieData.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Chưa có dữ liệu.</p>
-          ) : isMobile ? (
-            <MiniCountList rows={outcomePieData} />
-          ) : (
-            <ChartContainer key={`outcome-${rangeHours}`} config={trafficPieConfig} className="h-[240px] sm:h-[260px] w-full">
-              <PieChart>
-                <ChartTooltip content={<ChartTooltipContent nameKey="name" />} />
-                <Pie
-                  data={outcomePieData}
-                  dataKey="count"
-                  nameKey="name"
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={55}
-                  outerRadius={90}
-                  paddingAngle={3}
-                  stroke="#0f172a"
-                  strokeWidth={2}
-                >
-                  {outcomePieData.map((_, i) => (
-                    <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-                  ))}
-                </Pie>
-              </PieChart>
-            </ChartContainer>
-          )}
-        </NavCard>
-
-        <NavCard to="/logs?kind=traffic&result=failure" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Từ chối middleware">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">Từ chối middleware</h3>
-          {!dataReady ? (
-            <p className="text-sm text-muted-foreground">Đang tải…</p>
-          ) : denialReasonData.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Không có từ chối.</p>
-          ) : (
-            <ul className="space-y-2 text-xs">
-              {denialReasonData.map((r) => (
-                <li key={r.code} className="flex justify-between gap-2 text-slate-300">
-                  <Link
-                    to={`/logs?kind=traffic&reason=${encodeURIComponent(r.code)}`}
-                    className="truncate hover:text-primary hover:underline"
-                  >
-                    {r.label}
-                  </Link>
-                  <span className="font-mono text-amber-400 shrink-0">{r.count}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </NavCard>
-
-        <NavCard to="/auth" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Top clients">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">Top client</h3>
-          {!dataReady ? (
-            <p className="text-sm text-muted-foreground">Đang tải…</p>
-          ) : clientTrafficTop.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Chưa có traffic.</p>
-          ) : (
-            <ul className="space-y-2 text-xs">
-              {clientTrafficTop.map((c) => {
-                const isSyncWorker = isSyncWorkerClient(c.name);
-                const pct =
-                  traffic && traffic.total > 0
-                    ? Math.round((c.total / traffic.total) * 100)
-                    : null;
-                return (
-                  <li key={c.client_key_id} className="flex justify-between gap-2 text-slate-300">
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      <Link
-                        to={`/logs?kind=traffic&client_key_id=${c.client_key_id}`}
-                        className="truncate hover:text-primary hover:underline"
-                        title={c.name}
-                      >
-                        {c.name}
-                      </Link>
-                      {isSyncWorker ? (
-                        <Badge className="shrink-0 border border-violet-500/30 bg-violet-500/10 px-1.5 py-0 text-[10px] text-violet-300">
-                          Sync Worker
-                        </Badge>
-                      ) : null}
-                    </span>
-                    <span className="font-mono text-cyan-400 shrink-0">
-                      {c.total}
-                      {pct != null ? ` · ${pct}%` : ''}
+      {/* Charts */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 lg:gap-5 mb-4 min-w-0 items-stretch">
+        <Card className="p-0 bg-card/80 border-border overflow-hidden min-w-0">
+          <PanelShell
+            title="Request / Error theo thời gian"
+            subtitle={dataReady ? `${fmtNum(traffic?.total ?? 0)} requests` : undefined}
+          >
+            {!dataReady ? (
+              <p className="text-sm text-muted-foreground">Đang tải…</p>
+            ) : trafficSeriesData.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Chưa có traffic.</p>
+            ) : isMobile ? (
+              <ul className="space-y-2 text-xs">
+                {trafficSeriesData.slice(-8).map((h) => (
+                  <li key={h.time} className="flex justify-between gap-2 text-slate-300">
+                    <span>{h.time}</span>
+                    <span className="font-mono tabular-nums">
+                      {h.requests}
+                      <span className="text-red-400"> / {h.errors}</span>
                     </span>
                   </li>
-                );
-              })}
-            </ul>
-          )}
-        </NavCard>
+                ))}
+              </ul>
+            ) : (
+              <ChartContainer
+                key={`req-err-${rangeHours}-${activeMonth ?? 'r'}`}
+                config={trafficSeriesConfig}
+                className="h-[240px] w-full"
+              >
+                <LineChart data={trafficSeriesData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                  <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
+                  <XAxis dataKey="time" tickLine={false} axisLine={false} fontSize={10} tick={{ fill: AXIS_TICK }} />
+                  <YAxis
+                    tickLine={false}
+                    axisLine={false}
+                    fontSize={11}
+                    allowDecimals={false}
+                    tick={{ fill: AXIS_TICK }}
+                    width={40}
+                  />
+                  <ChartTooltip content={<ChartTooltipContent />} />
+                  <Line
+                    type="monotone"
+                    dataKey="requests"
+                    stroke={CHART_COLORS[1]}
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="errors"
+                    stroke={CHART_COLORS[3]}
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                </LineChart>
+              </ChartContainer>
+            )}
+          </PanelShell>
+        </Card>
 
-        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Request">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">Request</h3>
-          {!dataReady ? (
-            <p className="text-sm text-muted-foreground">Đang tải…</p>
-          ) : trafficHourlyData.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Chưa có traffic.</p>
-          ) : isMobile ? (
-            <MiniCountList rows={trafficHourlyData.map((h) => ({ name: h.time, count: h.count }))} />
-          ) : (
-            <ChartContainer key={`series-${rangeHours}`} config={trafficHourlyConfig} className="h-[240px] sm:h-[260px] w-full">
-              <LineChart data={trafficHourlyData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
-                <XAxis
-                  dataKey="time"
-                  tickLine={false}
-                  axisLine={false}
-                  fontSize={10}
-                  tick={{ fill: AXIS_TICK }}
-                />
-                <YAxis
-                  tickLine={false}
-                  axisLine={false}
-                  fontSize={11}
-                  allowDecimals={false}
-                  tick={{ fill: AXIS_TICK }}
-                />
-                <ChartTooltip content={<ChartTooltipContent />} />
-                <Line
-                  type="monotone"
-                  dataKey="count"
-                  stroke={CHART_COLORS[1]}
-                  strokeWidth={2}
-                  dot={{ r: 3, fill: CHART_COLORS[1] }}
-                />
-              </LineChart>
-            </ChartContainer>
-          )}
-        </NavCard>
+        <Card className="p-0 bg-card/80 border-border overflow-hidden min-w-0">
+          <PanelShell title="Latency theo thời gian" subtitle="P50 · P95 · P99 (ms)">
+            {!dataReady ? (
+              <p className="text-sm text-muted-foreground">Đang tải…</p>
+            ) : latencySeriesData.every((d) => d.p50 === 0 && d.p95 === 0) ? (
+              <p className="text-sm text-muted-foreground">Chưa có dữ liệu latency.</p>
+            ) : isMobile ? (
+              <ul className="space-y-2 text-xs">
+                {latencySeriesData.slice(-6).map((h) => (
+                  <li key={h.time} className="flex justify-between gap-2 text-slate-300">
+                    <span>{h.time}</span>
+                    <span className="font-mono tabular-nums text-[10px]">
+                      {h.p50}/{h.p95}/{h.p99}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <ChartContainer
+                key={`lat-${rangeHours}-${activeMonth ?? 'r'}`}
+                config={latencySeriesConfig}
+                className="h-[240px] w-full"
+              >
+                <LineChart data={latencySeriesData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                  <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
+                  <XAxis dataKey="time" tickLine={false} axisLine={false} fontSize={10} tick={{ fill: AXIS_TICK }} />
+                  <YAxis
+                    tickLine={false}
+                    axisLine={false}
+                    fontSize={11}
+                    tick={{ fill: AXIS_TICK }}
+                    width={40}
+                  />
+                  <ChartTooltip content={<ChartTooltipContent />} />
+                  <Line type="monotone" dataKey="p50" stroke={CHART_COLORS[0]} strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="p95" stroke={CHART_COLORS[2]} strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="p99" stroke={CHART_COLORS[3]} strokeWidth={2} dot={false} />
+                </LineChart>
+              </ChartContainer>
+            )}
+          </PanelShell>
+        </Card>
 
-        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Top path">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">Top path</h3>
-          {!dataReady ? (
-            <p className="text-sm text-muted-foreground">Đang tải…</p>
-          ) : topPathsData.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Chưa có path.</p>
-          ) : isMobile ? (
-            <MiniCountList rows={topPathsData.map((p) => ({ name: p.fullPath, count: p.count }))} />
-          ) : (
-            <ChartContainer key={`paths-${rangeHours}`} config={countBarConfig} className="h-[240px] sm:h-[260px] w-full">
-              <BarChart data={topPathsData} margin={{ top: 8, right: 8, left: 0, bottom: 32 }}>
-                <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
-                <XAxis
-                  dataKey="label"
-                  tickLine={false}
-                  axisLine={false}
-                  fontSize={10}
-                  interval={0}
-                  angle={-25}
-                  textAnchor="end"
-                  height={56}
-                  tick={{ fill: AXIS_TICK }}
-                />
-                <YAxis
-                  tickLine={false}
-                  axisLine={false}
-                  fontSize={11}
-                  allowDecimals={false}
-                  tick={{ fill: AXIS_TICK }}
-                />
-                <ChartTooltip
-                  content={
-                    <ChartTooltipContent
-                      labelFormatter={(_, payload) =>
-                        payload?.[0]?.payload?.fullPath ?? payload?.[0]?.payload?.label
-                      }
-                    />
-                  }
-                />
-                <Bar dataKey="count" radius={[6, 6, 0, 0]} fill={CHART_COLORS[1]} />
-              </BarChart>
-            </ChartContainer>
-          )}
-        </NavCard>
+        <Card className="p-0 bg-card/80 border-border overflow-hidden">
+          <PanelShell title="HTTP Status">
+            {!dataReady ? (
+              <p className="text-sm text-muted-foreground">Đang tải…</p>
+            ) : statusBars.every((b) => b.count === 0) ? (
+              <p className="text-sm text-muted-foreground">Chưa có kết nối.</p>
+            ) : (
+              <ul className="space-y-3">
+                {statusBars.map((b) => (
+                  <li key={b.label} className="space-y-1.5">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-slate-300 font-mono">{b.label}</span>
+                      <span className="font-mono tabular-nums text-slate-400">
+                        {fmtNum(b.count)}
+                        <span className="text-muted-foreground"> · {b.pct}%</span>
+                      </span>
+                    </div>
+                    <div className="h-2 rounded-full bg-slate-800/80 overflow-hidden">
+                      <div
+                        className="h-full rounded-full"
+                        style={{
+                          width: `${Math.max(b.count > 0 ? 3 : 0, b.pct)}%`,
+                          backgroundColor: STATUS_BAR_COLORS[b.label] ?? CHART_COLORS[5],
+                        }}
+                      />
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </PanelShell>
+        </Card>
 
-        <NavCard to="/logs?kind=traffic" className="p-4 sm:p-6 bg-card/80 border-border" ariaLabel="Method HTTP">
-          <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">Method HTTP</h3>
-          {!dataReady ? (
-            <p className="text-sm text-muted-foreground">Đang tải…</p>
-          ) : methodData.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Chưa có dữ liệu.</p>
-          ) : isMobile ? (
-            <MiniCountList rows={methodData.map((m) => ({ name: m.label, count: m.count }))} />
-          ) : (
-            <ChartContainer key={`methods-${rangeHours}`} config={countBarConfig} className="h-[240px] sm:h-[260px] w-full">
-              <BarChart data={methodData} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
-                <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
-                <XAxis
-                  dataKey="label"
-                  tickLine={false}
-                  axisLine={false}
-                  fontSize={10}
-                  tick={{ fill: AXIS_TICK }}
-                />
-                <YAxis
-                  tickLine={false}
-                  axisLine={false}
-                  fontSize={11}
-                  allowDecimals={false}
-                  tick={{ fill: AXIS_TICK }}
-                />
-                <ChartTooltip content={<ChartTooltipContent />} />
-                <Bar dataKey="count" radius={[6, 6, 0, 0]}>
-                  {methodData.map((_, i) => (
-                    <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ChartContainer>
-          )}
-        </NavCard>
+        <Card className="p-0 bg-card/80 border-border overflow-hidden">
+          <PanelShell
+            title="Từ chối middleware"
+            subtitle={dataReady ? `${fmtNum(denialTotal)} requests` : undefined}
+            action={
+              <Link to="/logs?kind=traffic&result=failure" className="text-[11px] text-primary font-medium">
+                Logs →
+              </Link>
+            }
+          >
+            {!dataReady ? (
+              <p className="text-sm text-muted-foreground">Đang tải…</p>
+            ) : denialRows.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Không có từ chối.</p>
+            ) : (
+              <RankedBarList rows={denialRows} valueClassName="text-amber-400" />
+            )}
+          </PanelShell>
+        </Card>
+
+        <Card className="p-0 bg-card/80 border-border overflow-hidden">
+          <PanelShell
+            title="Top client"
+            action={
+              <Link to="/auth" className="text-[11px] text-primary font-medium">
+                Client →
+              </Link>
+            }
+          >
+            {!dataReady ? (
+              <p className="text-sm text-muted-foreground">Đang tải…</p>
+            ) : clientRows.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Chưa có traffic.</p>
+            ) : (
+              <RankedBarList rows={clientRows} />
+            )}
+          </PanelShell>
+        </Card>
+
+        <Card className="p-0 bg-card/80 border-border overflow-hidden">
+          <PanelShell
+            title="Top route"
+            action={
+              <Link to="/logs?kind=traffic" className="text-[11px] text-primary font-medium">
+                Logs →
+              </Link>
+            }
+          >
+            {!dataReady ? (
+              <p className="text-sm text-muted-foreground">Đang tải…</p>
+            ) : pathRows.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Chưa có path.</p>
+            ) : (
+              <RankedBarList rows={pathRows} />
+            )}
+          </PanelShell>
+        </Card>
 
         {showIntegrations ? (
           <OverviewCrmIntegrationsCard
@@ -808,45 +1030,65 @@ function OverviewAdmin() {
             snapshotEntities={stats?.snapshot_entities ?? []}
           />
         ) : null}
+
+        <Card className="p-0 bg-card/80 border-border overflow-hidden">
+          <PanelShell
+            title="DLQ / Hàng đợi"
+            action={
+              <Link to="/proxy-queue" className="text-[11px] text-primary font-medium">
+                Mở →
+              </Link>
+            }
+          >
+            {!dataReady ? (
+              <p className="text-sm text-muted-foreground">Đang tải…</p>
+            ) : (
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-lg border border-border/70 bg-slate-950/40 p-3">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Pending</p>
+                  <p className="text-xl font-mono font-bold text-amber-400 mt-1">{dlqCounts.pending}</p>
+                </div>
+                <div className="rounded-lg border border-border/70 bg-slate-950/40 p-3">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Failed</p>
+                  <p className="text-xl font-mono font-bold text-red-400 mt-1">{dlqCounts.failedPermanent}</p>
+                </div>
+                <div className="rounded-lg border border-border/70 bg-slate-950/40 p-3">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Replayed</p>
+                  <p className="text-xl font-mono font-bold text-emerald-400 mt-1">{dlqCounts.replayed}</p>
+                </div>
+              </div>
+            )}
+          </PanelShell>
+        </Card>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 lg:gap-8">
-        <div className={!showIntegrations && dlqCounts.total > 0 ? 'xl:col-span-2' : 'xl:col-span-full'}>
-          <NavCard to="/routes" className="rounded-2xl overflow-hidden bg-card/80 border-border" ariaLabel="Danh sách routes">
-            <div className="p-6 border-b border-border flex justify-between items-center">
-              <h3 className="font-bold text-white text-sm uppercase tracking-wider">Routes</h3>
-              <span className="text-xs text-primary font-mono-tech">Quản lý →</span>
-            </div>
-            <div className="overflow-x-auto max-h-64">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-slate-900/50 text-[10px] uppercase text-muted-foreground">
-                  <tr>
-                    <th className="px-6 py-3">Path</th>
-                    <th className="px-6 py-3">Target</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {routes.map((route) => (
-                    <tr key={route.id} className="border-b border-border/50">
-                      <td className="px-6 py-3 font-mono text-xs text-slate-300">{route.path}</td>
-                      <td className="px-6 py-3 text-slate-400 truncate max-w-xs">{route.target}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </NavCard>
-        </div>
-
-        {!showIntegrations && dlqCounts.total > 0 ? (
-          <NavCard to="/proxy-queue" className="rounded-2xl p-6 bg-card/80 border-border" ariaLabel="DLQ hàng đợi">
-            <h3 className="font-bold text-white text-sm uppercase tracking-wider mb-4">DLQ</h3>
-            <p className="text-sm text-amber-300">
-              {dlqCounts.pending} pending · {dlqCounts.replayed} replayed →
-            </p>
-          </NavCard>
-        ) : null}
-      </div>
+      {/* Compact routes */}
+      <Card className="p-0 bg-card/80 border-border overflow-hidden">
+        <PanelShell
+          title="Routes"
+          subtitle={dataReady ? `${stats?.routes_count ?? routes.length} routes` : undefined}
+          action={
+            <Link to="/routes" className="text-[11px] text-primary font-medium">
+              Quản lý →
+            </Link>
+          }
+        >
+          {!dataReady ? (
+            <p className="text-sm text-muted-foreground">Đang tải…</p>
+          ) : topRoutePreview.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Chưa có traffic path — xem cấu hình Routes.</p>
+          ) : (
+            <ul className="space-y-2 text-xs">
+              {topRoutePreview.map((path) => (
+                <li key={path} className="flex items-center gap-2 text-slate-300">
+                  <Key className="w-3 h-3 text-slate-500 shrink-0" />
+                  <span className="font-mono truncate">{path}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </PanelShell>
+      </Card>
     </>
   );
 }

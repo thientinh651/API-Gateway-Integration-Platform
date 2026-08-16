@@ -707,7 +707,7 @@ curl -sS -i "${DEMO_HOST}/v1/api/demo/get" \\
                   note: 'Kéo snapshot dữ liệu về cơ sở dữ liệu',
                 },
                 {
-                  field: 'Sync now',
+                  field: 'Đồng bộ ngay',
                   value: 'chạy pipeline ngay',
                   note: 'Quy trình: pull → lọc → đẩy → ghi log (SF → Zoho)',
                 },

@@ -178,17 +178,17 @@ export function ClientKeyConfigSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="bg-card border-border w-full sm:max-w-lg overflow-y-auto px-6 pb-6">
-        <SheetHeader className="text-left border-b border-border pb-4 px-0">
+      <SheetContent className="bg-card border-border w-full sm:max-w-lg p-0 gap-0 flex flex-col overflow-hidden">
+        <SheetHeader className="text-left border-b border-border shrink-0 px-6 py-4">
           <SheetTitle className="text-white">{name.trim() || client.name}</SheetTitle>
         </SheetHeader>
 
         <EnterSubmitForm
-          className="flex flex-col min-h-0"
+          className="flex flex-col flex-1 min-h-0"
           disabled={saving || !canManage}
           onSubmit={() => void handleSave()}
         >
-        <div className="space-y-6 py-6">
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 space-y-6 py-6">
           <section className="space-y-3">
             <div className="flex items-center gap-2 text-sm font-semibold text-white">
               <Shield className="w-4 h-4 text-emerald-400" />
@@ -205,9 +205,9 @@ export function ClientKeyConfigSheet({
                   placeholder="VD: weather-web-demo"
                 />
               </div>
-              <div className="flex justify-between gap-2">
-                <span className="text-muted-foreground">Client ID</span>
-                <code className="text-slate-300 font-mono truncate max-w-[200px]">
+              <div className="flex justify-between gap-2 items-start">
+                <span className="text-muted-foreground shrink-0">Client ID</span>
+                <code className="text-slate-300 font-mono text-right break-all" title={client.apiKey}>
                   {client.apiKey}
                 </code>
               </div>
@@ -449,7 +449,7 @@ export function ClientKeyConfigSheet({
         </div>
 
         {canManage ? (
-          <div className="flex gap-2 pt-4 border-t border-border px-0">
+          <div className="flex gap-2 shrink-0 border-t border-border px-6 py-4 bg-card">
             <Button
               type="submit"
               className="flex-1 bg-primary hover:bg-primary/90"

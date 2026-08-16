@@ -87,6 +87,7 @@ function AuthAdmin() {
   const [createPreset, setCreatePreset] = useState<string | null>(null);
   const [traffic24h, setTraffic24h] = useState<Map<string, number>>(new Map());
   const [middlewareRefreshKey, setMiddlewareRefreshKey] = useState(0);
+  const [panelRefreshKey, setPanelRefreshKey] = useState(0);
 
   const hiddenClientIds = pendingIdSet('client');
   const filteredClients = useMemo(() => {
@@ -242,26 +243,29 @@ function AuthAdmin() {
         <div className="min-w-0">
           <h1 className="text-2xl sm:text-3xl font-bold text-white">OAuth & Client Registry</h1>
         </div>
-        {activeTab === 'clients' ? (
-          <div className="flex flex-wrap gap-2 shrink-0">
-            <Button
-              variant="outline"
-              size="sm"
-              className="border-border"
-              onClick={() => void reload()}
-            >
-              <RefreshCw className="w-4 h-4 mr-2" />
-              Làm mới
+        <div className="flex flex-wrap gap-2 shrink-0">
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-border"
+            onClick={() => {
+              if (activeTab === 'clients') void reload();
+              else setPanelRefreshKey((k) => k + 1);
+            }}
+          >
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Làm mới
+          </Button>
+          {activeTab === 'clients' && allowProxyTry ? (
+            <Button asChild variant="outline" size="sm" className="border-border">
+              <Link to="/proxy-try">
+                <FlaskConical className="w-4 h-4 mr-2" />
+                Thử
+              </Link>
             </Button>
-            {allowProxyTry ? (
-              <Button asChild variant="outline" size="sm" className="border-border">
-                <Link to="/proxy-try">
-                  <FlaskConical className="w-4 h-4 mr-2" />
-                  Thử
-                </Link>
-              </Button>
-            ) : null}
-            {allowCreateKeys ? (
+          ) : null}
+          {activeTab === 'clients' ? (
+            allowCreateKeys ? (
               <CreateApiKeyDialog
                 onKeysChanged={() => void reload()}
                 presetIntegrationType={createPreset}
@@ -271,27 +275,27 @@ function AuthAdmin() {
               <p className="text-xs text-muted-foreground self-center flex items-center gap-1">
                 <Plus className="w-3 h-3" /> Viewer: không đăng ký client
               </p>
-            )}
-          </div>
-        ) : null}
+            )
+          ) : null}
+        </div>
       </div>
 
       <Tabs value={activeTab} onValueChange={(v) => setTab(v as AuthTab)} className="gap-6">
         <TabsList className="bg-slate-950/80 border border-border flex-wrap h-auto p-1">
           <TabsTrigger value="clients" className="data-[state=active]:text-primary gap-1.5">
             <KeyRound className="w-3.5 h-3.5" />
-            Machine clients
+            Client
           </TabsTrigger>
           {canViewTokens ? (
             <TabsTrigger value="tokens" className="data-[state=active]:text-primary gap-1.5">
               <Zap className="w-3.5 h-3.5" />
-              Token đang live
+              Token
             </TabsTrigger>
           ) : null}
           {canViewTokens ? (
             <TabsTrigger value="apps" className="data-[state=active]:text-primary gap-1.5">
               <AppWindow className="w-3.5 h-3.5" />
-              App bên thứ 3
+              App
             </TabsTrigger>
           ) : null}
         </TabsList>
@@ -345,13 +349,13 @@ function AuthAdmin() {
 
         {canViewTokens ? (
           <TabsContent value="tokens" className="mt-0">
-            <OAuthTokensPanel canRevoke={canRevokeTokens} />
+            <OAuthTokensPanel canRevoke={canRevokeTokens} refreshKey={panelRefreshKey} />
           </TabsContent>
         ) : null}
 
         {canViewTokens ? (
           <TabsContent value="apps" className="mt-0">
-            <OAuthThirdPartyAppsPanel canManage={canManageApps} />
+            <OAuthThirdPartyAppsPanel canManage={canManageApps} refreshKey={panelRefreshKey} />
           </TabsContent>
         ) : null}
       </Tabs>

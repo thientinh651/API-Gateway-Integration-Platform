@@ -60,7 +60,7 @@ export function CreateOAuthAppDialog({ onCreated }: Props) {
       onCreated();
       toast.success('Đã tạo app OAuth');
     } catch (e) {
-      toastApiError(e, 'Tạo app thất bại');
+      toastApiError(e);
     } finally {
       setPending(false);
     }
@@ -96,7 +96,7 @@ export function CreateOAuthAppDialog({ onCreated }: Props) {
                 </code>
               </div>
             ) : (
-              <p className="text-xs text-muted-foreground">Public app — không có secret (PKCE demo).</p>
+              <p className="text-xs text-muted-foreground">Public app — không có secret.</p>
             )}
             <div className="flex gap-2">
               <Button
@@ -117,15 +117,6 @@ export function CreateOAuthAppDialog({ onCreated }: Props) {
                 Đóng
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              Luồng PKCE: user đăng nhập dashboard →{' '}
-              <code className="text-slate-400">
-                GET /oauth/authorize?…&code_challenge=…&code_challenge_method=S256
-              </code>{' '}
-              → redirect <code className="text-slate-400">code</code> → đổi tại{' '}
-              <code className="text-slate-400">POST /api/oauth/token</code> kèm{' '}
-              <code className="text-slate-400">code_verifier</code>.
-            </p>
           </div>
         ) : (
           <EnterSubmitForm className="space-y-4" disabled={pending} onSubmit={() => void handleCreate()}>

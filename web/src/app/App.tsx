@@ -109,7 +109,7 @@ export default function App() {
               path="users"
               element={
                 <NavAccessGuard path="/users">
-                  <AdminOnly title="Quản lý Users" description="Đăng nhập để quản lý tài khoản quản trị.">
+                  <AdminOnly title="Quản lý người dùng" description="Đăng nhập để quản lý tài khoản quản trị.">
                     <Users />
                   </AdminOnly>
                 </NavAccessGuard>

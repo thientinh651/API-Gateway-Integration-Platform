@@ -25,7 +25,7 @@ function initials(name: string) {
 
 const GUEST_LINKS = [
   { to: '/', label: 'Tổng quan', icon: LayoutDashboard },
-  { to: '/api-docs', label: 'Docs', icon: FileCode },
+  { to: '/api-docs', label: 'Tài liệu', icon: FileCode },
 ];
 
 type Props = {

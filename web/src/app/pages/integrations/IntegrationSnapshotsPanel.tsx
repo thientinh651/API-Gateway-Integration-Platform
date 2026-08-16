@@ -33,7 +33,7 @@ export function IntegrationSnapshotsPanel({ snapshots }: Props) {
       </div>
       {sorted.length === 0 ? (
         <p className="text-xs text-muted-foreground border border-dashed border-border rounded-lg p-4">
-          Chưa có snapshot — Sync Now sẽ pull Salesforce.
+          Chưa có snapshot — Đồng bộ ngay sẽ pull Salesforce.
         </p>
       ) : (
         <div className="grid gap-2">
