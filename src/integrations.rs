@@ -3175,6 +3175,137 @@ pub async fn reconcile_entity_links_with_zoho(
     Ok(deleted)
 }
 
+/// Xóa entity link khi Opportunity không còn trong snapshot Salesforce mới nhất.
+pub async fn reconcile_entity_links_with_salesforce(
+    pool: &PgPool,
+    tenant_id: i64,
+) -> Result<i64, String> {
+    let opp_snap =
+        db::fetch_latest_integration_snapshot(pool, tenant_id, SF_PROVIDER, "opportunity")
+            .await
+            .map_err(|e| format!("db: {e}"))?;
+    let Some(snap) = opp_snap else {
+        return Ok(0);
+    };
+    let opps: Vec<serde_json::Value> = serde_json::from_str(&snap.payload_json).unwrap_or_default();
+    let valid: std::collections::HashSet<String> = opps
+        .iter()
+        .filter_map(|o| bridge_field_str(o, "id").filter(|id| !id.is_empty()))
+        .collect();
+    if valid.is_empty() {
+        // Snapshot rỗng / lỗi parse — không xóa hàng loạt để tránh mất link oan.
+        return Ok(0);
+    }
+
+    let links = db::list_entity_links(pool, tenant_id)
+        .await
+        .map_err(|e| format!("db list links: {e}"))?;
+    let mut deleted = 0_i64;
+    for link in links {
+        if link.source_provider != SF_PROVIDER || link.source_entity_type != "opportunity" {
+            continue;
+        }
+        if valid.contains(&link.source_id) {
+            continue;
+        }
+        db::delete_entity_link(
+            pool,
+            tenant_id,
+            &link.flow_type,
+            &link.source_provider,
+            &link.source_entity_type,
+            &link.source_id,
+        )
+        .await
+        .map_err(|e| format!("db delete link: {e}"))?;
+        log_sync(
+            pool,
+            tenant_id,
+            "SKIPPED",
+            &format!(
+                "Đã xóa entity link cũ: Opportunity {} không còn trong snapshot Salesforce (Zoho project {})",
+                link.source_id, link.target_id,
+            ),
+            None,
+            SyncEventOpts::sales_to_delivery(None)
+                .with_event(IntegrationEventType::EntityLinkStale)
+                .with_metadata(serde_json::json!({
+                    "source_id": link.source_id,
+                    "target_id": link.target_id,
+                    "reason": "opportunity_missing_from_snapshot",
+                })),
+        )
+        .await;
+        deleted += 1;
+    }
+    Ok(deleted)
+}
+
+/// Dọn link ma: Zoho project mất và/hoặc SF Opportunity mất. Gọi mỗi Sync Now.
+pub async fn reconcile_stale_entity_links(
+    pool: &PgPool,
+    tenant_id: i64,
+    correlation_id: Option<&str>,
+) -> serde_json::Value {
+    let zoho_deleted = match reconcile_entity_links_with_zoho(pool, tenant_id).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(error = %e, "reconcile zoho entity links failed");
+            log_sync(
+                pool,
+                tenant_id,
+                "FAILED",
+                "Reconcile Zoho entity links thất bại",
+                Some(&e),
+                SyncEventOpts::sales_to_delivery(correlation_id)
+                    .with_event(IntegrationEventType::EntityLinkStale),
+            )
+            .await;
+            0
+        }
+    };
+    let sf_deleted = match reconcile_entity_links_with_salesforce(pool, tenant_id).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(error = %e, "reconcile salesforce entity links failed");
+            log_sync(
+                pool,
+                tenant_id,
+                "FAILED",
+                "Reconcile Salesforce entity links thất bại",
+                Some(&e),
+                SyncEventOpts::sales_to_delivery(correlation_id)
+                    .with_event(IntegrationEventType::EntityLinkStale),
+            )
+            .await;
+            0
+        }
+    };
+    if zoho_deleted + sf_deleted > 0 {
+        log_sync(
+            pool,
+            tenant_id,
+            "SUCCESS",
+            &format!(
+                "Reconcile: đã xóa {zoho_deleted} link (Zoho mất project) + {sf_deleted} link (SF mất Opportunity)"
+            ),
+            None,
+            SyncEventOpts::sales_to_delivery(correlation_id)
+                .with_event(IntegrationEventType::EntityLinkStale)
+                .with_metadata(serde_json::json!({
+                    "zoho_deleted": zoho_deleted,
+                    "sf_deleted": sf_deleted,
+                })),
+        )
+        .await;
+    }
+    serde_json::json!({
+        "zoho_deleted": zoho_deleted,
+        "sf_deleted": sf_deleted,
+        "deleted": zoho_deleted + sf_deleted,
+    })
+}
+
 async fn create_zoho_project(
     pool: &PgPool,
     tenant_id: i64,
@@ -3395,6 +3526,8 @@ pub async fn push_salesforce_to_zoho(
         reject_integration_demo_token(token.demo)?;
     }
     let event_base = || SyncEventOpts::sales_to_delivery(correlation_id);
+    // Dọn stale trước khi lọc Closed Won — tránh return sớm bỏ qua reconcile.
+    let _ = reconcile_stale_entity_links(pool, tenant_id, correlation_id).await;
     let items = collect_push_items(pool, tenant_id, correlation_id).await?;
     if items.is_empty() {
         log_sync(
@@ -3422,8 +3555,6 @@ pub async fn push_salesforce_to_zoho(
     }
 
     let portal_id = ensure_zoho_portal_id_sync(pool, tenant_id).await?;
-
-    let _ = reconcile_entity_links_with_zoho(pool, tenant_id).await;
 
     let existing = list_zoho_project_names(pool, tenant_id, &portal_id).await?;
     let live_zoho_ids: std::collections::HashSet<String> =
@@ -3637,12 +3768,16 @@ pub async fn run_full_sync_pipeline(
 
     refresh_integration_tokens_if_needed(pool, tenant_id).await;
     let sf = sync_salesforce_snapshots(pool, tenant_id).await?;
+    // Luôn dọn link ma sau snapshot — kể cả khi không có Closed Won để push.
+    let reconcile =
+        reconcile_stale_entity_links(pool, tenant_id, Some(&correlation_id)).await;
     if !integration_both_connected(pool, tenant_id).await {
         return Ok(serde_json::json!({
             "status": "ok",
             "correlation_id": correlation_id,
             "flow_type": FLOW_SALES_TO_DELIVERY,
             "salesforce": sf,
+            "reconcile": reconcile,
             "push": {
                 "status": "skipped",
                 "reason": "need_both_connected",
@@ -3669,7 +3804,11 @@ pub async fn run_full_sync_pipeline(
         None,
         SyncEventOpts::sales_to_delivery(Some(&correlation_id))
             .with_event(IntegrationEventType::PipelineCompleted)
-            .with_metadata(serde_json::json!({ "push": push, "delivery": delivery })),
+            .with_metadata(serde_json::json!({
+                "reconcile": reconcile,
+                "push": push,
+                "delivery": delivery
+            })),
     )
     .await;
     Ok(serde_json::json!({
@@ -3677,6 +3816,7 @@ pub async fn run_full_sync_pipeline(
         "correlation_id": correlation_id,
         "flow_type": FLOW_SALES_TO_DELIVERY,
         "salesforce": sf,
+        "reconcile": reconcile,
         "push": push,
         "delivery": delivery,
     }))

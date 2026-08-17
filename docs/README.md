@@ -9,6 +9,7 @@ Production: https://thientinh.io.vn
 | File | Vai trò |
 |------|---------|
 | [`TaiLieuBaoCao/README.md`](TaiLieuBaoCao/README.md) | Sổ tay: kiến trúc, DB, quy trình, jump code, Q&A |
+| [`.cursor/rules/avaso-system-facts.mdc`](../.cursor/rules/avaso-system-facts.mdc) | Fact sheet agent — code thắng docs lệch |
 
 ---
 

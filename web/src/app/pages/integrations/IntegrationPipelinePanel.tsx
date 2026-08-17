@@ -4,26 +4,36 @@ import { Card } from '../../components/ui/card';
 import { Badge } from '../../components/ui/badge';
 import type { PipelineStep, PipelineStepStatus } from '../../../lib/integrationPipeline';
 
+function friendlyStepLabel(label: string): string {
+  const map: Record<string, string> = {
+    'Snapshot SF': 'Kéo dữ liệu Salesforce',
+    'Lọc Closed Won': 'Lọc Closed Won',
+    'Push Zoho': 'Tạo Project Zoho',
+    'Sync Log': 'Ghi lịch sử',
+  };
+  return map[label] ?? label;
+}
+
 function statusMeta(status: PipelineStepStatus) {
   switch (status) {
     case 'ok':
       return {
         icon: CheckCircle2,
-        badge: 'OK',
+        badge: 'Xong',
         className: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/35',
         iconClass: 'text-emerald-400',
       };
     case 'skipped':
       return {
         icon: AlertTriangle,
-        badge: 'SKIPPED',
+        badge: 'Bỏ qua',
         className: 'bg-amber-500/15 text-amber-300 border-amber-500/35',
         iconClass: 'text-amber-400',
       };
     case 'failed':
       return {
         icon: XCircle,
-        badge: 'FAILED',
+        badge: 'Lỗi',
         className: 'bg-red-500/15 text-red-300 border-red-500/35',
         iconClass: 'text-red-400',
       };
@@ -47,9 +57,9 @@ export function IntegrationPipelinePanel({ steps, onScrollLogs }: Props) {
     <Card className="p-5 sm:p-6 bg-card/80 border-primary/20 border scroll-mt-24" id="section-pipeline">
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-5">
         <div>
-          <h2 className="text-sm font-bold text-white uppercase tracking-wider">Pipeline đồng bộ</h2>
+          <h2 className="text-sm font-bold text-white">Các bước đồng bộ</h2>
           <p className="text-xs text-muted-foreground mt-1">
-            Snapshot SF → Lọc Closed Won → Push Zoho → Sync Log (qua gateway loopback)
+            Kéo dữ liệu Salesforce → lọc Closed Won → tạo Project Zoho → ghi lịch sử
           </p>
         </div>
         {onScrollLogs ? (
@@ -58,7 +68,7 @@ export function IntegrationPipelinePanel({ steps, onScrollLogs }: Props) {
             className="text-xs text-primary hover:underline shrink-0 text-left"
             onClick={onScrollLogs}
           >
-            Xem chi tiết Sync Log ↓
+            Xem lịch sử đồng bộ
           </button>
         ) : null}
       </div>
@@ -74,7 +84,9 @@ export function IntegrationPipelinePanel({ steps, onScrollLogs }: Props) {
                   <Icon className={`w-5 h-5 shrink-0 mt-0.5 ${meta.iconClass}`} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap mb-1">
-                      <span className="text-sm font-semibold text-white">{step.label}</span>
+                      <span className="text-sm font-semibold text-white">
+                        {friendlyStepLabel(step.label)}
+                      </span>
                       <Badge variant="outline" className={`text-[10px] px-1.5 py-0 ${meta.className}`}>
                         {meta.badge}
                       </Badge>

@@ -42,26 +42,26 @@ export function buildPipelineFromSyncNow(res: SyncNowResult, syncLogs: SyncLogRo
 
   const step1: PipelineStep = {
     key: 'snapshot',
-    label: 'Snapshot SF',
+    label: 'Kéo dữ liệu Salesforce',
     status: opp > 0 ? 'ok' : 'skipped',
     summary:
       opp > 0
-        ? `${opp} Opportunity — pull qua gateway loopback`
-        : 'Snapshot rỗng — kiểm tra kết nối Salesforce',
+        ? `${opp} Opportunity đã kéo về`
+        : 'Chưa có dữ liệu — kiểm tra kết nối Salesforce',
   };
 
   let filterStatus: PipelineStepStatus = 'ok';
-  let filterSummary = 'Lọc Stage = Closed Won + Amount ≥ ngưỡng';
+  let filterSummary = 'Lọc Opportunity Closed Won đủ điều kiện';
   if (push.reason === 'no_items') {
     filterStatus = 'skipped';
-    filterSummary = 'Không có deal đạt điều kiện — xem Sync Log (SKIPPED)';
+    filterSummary = 'Không có deal đạt điều kiện — xem lịch sử đồng bộ';
   } else if (push.reason === 'need_both_connected') {
     filterStatus = 'skipped';
-    filterSummary = 'Chỉ pull SF — chưa kết nối Zoho để push';
+    filterSummary = 'Chỉ kéo Salesforce — chưa kết nối Zoho';
   } else {
     const created = push.created ?? 0;
     const skipped = push.skipped ?? 0;
-    filterSummary = `Sau lọc: ${created} đẩy mới · ${skipped} bỏ qua (đã link / không đạt)`;
+    filterSummary = `Sau lọc: ${created} đẩy mới · ${skipped} bỏ qua`;
     if (created === 0 && skipped === 0) {
       filterStatus = 'skipped';
     }
@@ -75,10 +75,10 @@ export function buildPipelineFromSyncNow(res: SyncNowResult, syncLogs: SyncLogRo
   };
 
   let pushStatus: PipelineStepStatus = 'idle';
-  let pushSummary = 'Tạo Project + Task trên Zoho Projects';
+  let pushSummary = 'Tạo Project và công việc trên Zoho';
   if (push.reason === 'need_both_connected') {
     pushStatus = 'skipped';
-    pushSummary = 'Bỏ qua — cần Zoho connected';
+    pushSummary = 'Bỏ qua — cần kết nối Zoho';
   } else if (push.reason === 'no_items') {
     pushStatus = 'skipped';
     pushSummary = 'Không có deal để đẩy';
@@ -87,22 +87,22 @@ export function buildPipelineFromSyncNow(res: SyncNowResult, syncLogs: SyncLogRo
     const created = push.created ?? 0;
     if (failed > 0 && created === 0) {
       pushStatus = 'failed';
-      pushSummary = `${failed} deal FAILED — xem Sync Log`;
+      pushSummary = `${failed} deal lỗi — xem lịch sử đồng bộ`;
     } else if (created > 0) {
       pushStatus = 'ok';
-      pushSummary = `Tạo ${created} dự án · ${push.tasks_created ?? 0} task`;
+      pushSummary = `Tạo ${created} dự án · ${push.tasks_created ?? 0} công việc`;
     } else if ((push.skipped ?? 0) > 0) {
       pushStatus = 'skipped';
-      pushSummary = `${push.skipped} deal đã đồng bộ trước đó (idempotent)`;
+      pushSummary = `${push.skipped} deal đã đồng bộ trước đó`;
     } else {
       pushStatus = 'ok';
-      pushSummary = 'Push hoàn tất — không có deal mới';
+      pushSummary = 'Hoàn tất — không có deal mới';
     }
   }
 
   const step3: PipelineStep = {
     key: 'push',
-    label: 'Push Zoho',
+    label: 'Tạo Project Zoho',
     status: pushStatus,
     summary: pushSummary,
   };
@@ -113,12 +113,12 @@ export function buildPipelineFromSyncNow(res: SyncNowResult, syncLogs: SyncLogRo
 
   const step4: PipelineStep = {
     key: 'log',
-    label: 'Sync Log',
+    label: 'Ghi lịch sử',
     status: syncLogs.length > 0 ? 'ok' : 'idle',
     summary:
       syncLogs.length > 0
-        ? `${success} OK · ${skipped} SKIPPED · ${failed} FAILED`
-        : 'Chưa có log — chạy Đồng bộ ngay',
+        ? `${success} thành công · ${skipped} bỏ qua · ${failed} lỗi`
+        : 'Chưa có lịch sử — chạy Đồng bộ ngay',
   };
 
   return [step1, step2, step3, step4];
@@ -137,13 +137,13 @@ export function buildPipelineFromState(
 
   const step1: PipelineStep = {
     key: 'snapshot',
-    label: 'Snapshot SF',
+    label: 'Kéo dữ liệu Salesforce',
     status: !sfConnected ? 'idle' : oppCount > 0 ? 'ok' : 'skipped',
     summary: !sfConnected
       ? 'Kết nối Salesforce trước'
       : oppCount > 0
-        ? `${oppCount} Opportunity trong snapshot mới nhất`
-        : 'Chưa có snapshot — bấm Đồng bộ ngay',
+        ? `${oppCount} Opportunity đã kéo về`
+        : 'Chưa có dữ liệu — bấm Đồng bộ ngay',
   };
 
   const routerSkipped = syncLogs.filter(
@@ -161,17 +161,17 @@ export function buildPipelineFromState(
   const failedPush = syncLogs.filter((l) => l.status === 'FAILED').length;
 
   let filterStatus: PipelineStepStatus = 'idle';
-  let filterSummary = 'Chờ pipeline chạy';
+  let filterSummary = 'Chờ đồng bộ chạy';
   if (syncLogs.length > 0) {
     if (successPush > 0 || idempotentSkipped > 0 || failedPush > 0) {
       filterStatus = 'ok';
-      filterSummary = `Đã lọc — ${routerSkipped + amountSkipped} deal bị loại trước push`;
+      filterSummary = `Đã lọc — ${routerSkipped + amountSkipped} deal bị loại trước khi đẩy`;
     } else if (routerSkipped > 0 || amountSkipped > 0) {
       filterStatus = 'skipped';
-      filterSummary = `${routerSkipped + amountSkipped} deal SKIPPED (stage/amount)`;
+      filterSummary = `${routerSkipped + amountSkipped} deal bỏ qua (giai đoạn / giá trị)`;
     } else {
       filterStatus = 'skipped';
-      filterSummary = 'Chưa có deal đạt Closed Won + ngưỡng';
+      filterSummary = 'Chưa có deal đạt Closed Won và đủ điều kiện';
     }
   }
 
@@ -187,33 +187,33 @@ export function buildPipelineFromState(
   if (zohoConnected && syncLogs.length > 0) {
     if (failedPush > 0 && successPush === 0) {
       pushStatus = 'failed';
-      pushSummary = `${failedPush} deal FAILED`;
+      pushSummary = `${failedPush} deal lỗi`;
     } else if (successPush > 0) {
       pushStatus = 'ok';
-      pushSummary = `${successPush} deal đã push lên Zoho`;
+      pushSummary = `${successPush} deal đã tạo Project trên Zoho`;
     } else if (idempotentSkipped > 0) {
       pushStatus = 'skipped';
-      pushSummary = `${idempotentSkipped} deal đã có entity link`;
+      pushSummary = `${idempotentSkipped} deal đã đồng bộ trước đó`;
     } else {
       pushStatus = 'skipped';
-      pushSummary = 'Chưa push deal mới';
+      pushSummary = 'Chưa đẩy deal mới';
     }
   }
 
   const step3: PipelineStep = {
     key: 'push',
-    label: 'Push Zoho',
+    label: 'Tạo Project Zoho',
     status: pushStatus,
     summary: pushSummary,
   };
 
   const step4: PipelineStep = {
     key: 'log',
-    label: 'Sync Log',
+    label: 'Ghi lịch sử',
     status: syncLogs.length > 0 ? 'ok' : 'idle',
     summary:
       syncLogs.length > 0
-        ? `${countLogs(syncLogs, 'SUCCESS')} OK · ${countLogs(syncLogs, 'SKIPPED')} SKIPPED · ${countLogs(syncLogs, 'FAILED')} FAILED`
+        ? `${countLogs(syncLogs, 'SUCCESS')} thành công · ${countLogs(syncLogs, 'SKIPPED')} bỏ qua · ${countLogs(syncLogs, 'FAILED')} lỗi`
         : 'Chưa có bản ghi',
   };
 

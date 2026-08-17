@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { toast } from 'sonner';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, LayoutDashboard, ListChecks, Settings2 } from 'lucide-react';
 import { AdminOnly } from '../components/auth/AdminOnly';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import {
@@ -16,8 +16,6 @@ import {
   zohoSync,
   zohoProjects,
   zohoTasks,
-  fetchIntegrationSnapshots,
-  fetchIntegrationPipelineStatus,
   fetchIntegrationSyncSchedule,
   fetchSyncLogs,
   fetchEntityLinks,
@@ -28,8 +26,6 @@ import {
   fetchSfConfig,
   updateSfConfig,
   type IntegrationRow,
-  type IntegrationSnapshotSummary,
-  type IntegrationPipelineStatus,
   type IntegrationSyncSchedule,
   type EntityLinkRow,
   type SyncLogRow,
@@ -50,14 +46,11 @@ import {
   INTEGRATION_PROVIDER_META,
   type ProviderKind,
 } from './integrations/IntegrationConnectorCard';
-import { IntegrationPipelinePanel } from './integrations/IntegrationPipelinePanel';
 import { IntegrationAutoSyncPanel } from './integrations/IntegrationAutoSyncPanel';
 import { EnterSubmitForm } from '../components/forms/EnterSubmitForm';
 import { IntegrationStatusStrip } from './integrations/IntegrationStatusStrip';
 import { IntegrationEntityLinksPanel } from './integrations/IntegrationEntityLinksPanel';
 import { IntegrationSyncLogsPanel } from './integrations/IntegrationSyncLogsPanel';
-import { IntegrationSnapshotsPanel } from './integrations/IntegrationSnapshotsPanel';
-import { resolvePipelineSteps } from '../../lib/integrationPipeline';
 
 type FieldErrors = Record<string, string>;
 type TabId = 'overview' | 'results' | 'config';
@@ -139,10 +132,8 @@ function IntegrationsAdmin() {
   const [testingProvider, setTestingProvider] = useState<string | null>(null);
   const [syncingProvider, setSyncingProvider] = useState<string | null>(null);
   const [syncingNow, setSyncingNow] = useState(false);
-  const [snapshots, setSnapshots] = useState<IntegrationSnapshotSummary[]>([]);
   const [syncLogs, setSyncLogs] = useState<SyncLogRow[]>([]);
   const [entityLinks, setEntityLinks] = useState<EntityLinkRow[]>([]);
-  const [pipelineStatus, setPipelineStatus] = useState<IntegrationPipelineStatus | null>(null);
   const [syncSchedule, setSyncSchedule] = useState<IntegrationSyncSchedule | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [cfgLoading, setCfgLoading] = useState<Partial<Record<ProviderKind, boolean>>>({});
@@ -174,16 +165,12 @@ function IntegrationsAdmin() {
       const list = await fetchIntegrations();
       setRows(list);
       if (isAdmin) {
-        const [snaps, logs, pipeline, links, schedule] = await Promise.all([
-          fetchIntegrationSnapshots(),
+        const [logs, links, schedule] = await Promise.all([
           fetchSyncLogs().catch(() => [] as SyncLogRow[]),
-          fetchIntegrationPipelineStatus().catch(() => null),
           fetchEntityLinks().catch(() => [] as EntityLinkRow[]),
           fetchIntegrationSyncSchedule().catch(() => null),
         ]);
-        setSnapshots(snaps);
         setSyncLogs(logs);
-        setPipelineStatus(pipeline);
         setEntityLinks(links);
         setSyncSchedule(schedule);
       }
@@ -369,9 +356,9 @@ function IntegrationsAdmin() {
       const saved =
         kind === 'salesforce' ? await persistSfConfig() : await persistZohoConfig();
       if (!saved) return;
-      const url =
-        kind === 'salesforce' ? await salesforceConnectUrl() : await zohoConnectUrl();
-      window.location.href = url.url;
+      // salesforceConnectUrl / zohoConnectUrl return path string, not { url }
+      window.location.href =
+        kind === 'salesforce' ? salesforceConnectUrl() : zohoConnectUrl();
     } catch (e) {
       toastApiError(e);
     } finally {
@@ -411,21 +398,25 @@ function IntegrationsAdmin() {
     setSyncingNow(true);
     try {
       const res = await integrationSyncNow();
-      if (res.pipeline) setPipelineStatus(res.pipeline);
       const delivery = res.delivery as
         | { updated?: number; invoices?: { created?: number } }
         | undefined;
-      const push = res.push as { created?: number; skipped?: number } | undefined;
-      const opp = (res.opportunity as { count?: number } | undefined)?.count;
-      if (!res.zoho_connected) {
-        toast.message('Đã sync Salesforce — kết nối Zoho Projects để đẩy dự án');
+      const push = res.push as
+        | { created?: number; skipped?: number; reason?: string }
+        | undefined;
+      const opp = res.salesforce?.opportunity;
+      // API để zoho_connected trong pipeline — không ở root
+      const zohoMissing =
+        push?.reason === 'need_both_connected' || res.pipeline?.zoho_connected === false;
+      if (zohoMissing) {
+        toast.message('Đã kéo dữ liệu Salesforce — kết nối Zoho Projects để đẩy dự án');
       } else {
         const created = push?.created ?? 0;
         const skipped = push?.skipped ?? 0;
         const completed = delivery?.updated ?? 0;
         const inv = delivery?.invoices?.created ?? 0;
         toast.success(
-          `Sync xong: SF→Zoho: ${opp ?? '—'} Opportunity · tạo ${created} dự án (${skipped} bỏ qua) · Zoho→SF: ${completed} hoàn thành · ${inv} hóa đơn`,
+          `Đồng bộ xong: ${opp ?? '—'} Opportunity · tạo ${created} dự án (${skipped} bỏ qua) · ${completed} hoàn thành cập nhật Salesforce · ${inv} hóa đơn`,
         );
       }
       await load();
@@ -529,18 +520,6 @@ function IntegrationsAdmin() {
   const zohoConnected = zoho?.status === 'connected';
   const inDemoMode = Boolean(sf?.is_demo || zoho?.is_demo);
   const showPipeline = sfConnected;
-
-  const pipelineSteps = useMemo(
-    () => resolvePipelineSteps(pipelineStatus, snapshots, syncLogs, sfConnected, zohoConnected),
-    [pipelineStatus, snapshots, syncLogs, sfConnected, zohoConnected],
-  );
-
-  const scrollToSyncLogs = () => {
-    setTab('results');
-    requestAnimationFrame(() => {
-      document.getElementById('section-sync-logs')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-  };
 
   const renderSfConfigForm = () => (
     <div className="space-y-3">
@@ -729,6 +708,9 @@ function IntegrationsAdmin() {
       <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Tích hợp</h1>
+          <p className="text-sm text-muted-foreground max-w-2xl">
+            Theo dõi quá trình đồng bộ dữ liệu giữa Salesforce và Zoho.
+          </p>
         </div>
         <div className="flex flex-wrap gap-2 shrink-0">
           {isAdmin && showPipeline ? (
@@ -752,10 +734,19 @@ function IntegrationsAdmin() {
         <p className="text-muted-foreground">Đang tải…</p>
       ) : (
         <Tabs value={tab} onValueChange={(v) => setTab(v as TabId)} className="space-y-6">
-          <TabsList className="bg-slate-900/60 border border-border">
-            <TabsTrigger value="overview">Tổng quan</TabsTrigger>
-            <TabsTrigger value="results">Kết quả</TabsTrigger>
-            <TabsTrigger value="config">Cấu hình</TabsTrigger>
+          <TabsList className="bg-slate-950/80 border border-border flex-wrap h-auto p-1">
+            <TabsTrigger value="overview" className="data-[state=active]:text-primary gap-1.5">
+              <LayoutDashboard className="w-3.5 h-3.5" />
+              Tổng quan
+            </TabsTrigger>
+            <TabsTrigger value="results" className="data-[state=active]:text-primary gap-1.5">
+              <ListChecks className="w-3.5 h-3.5" />
+              Kết quả
+            </TabsTrigger>
+            <TabsTrigger value="config" className="data-[state=active]:text-primary gap-1.5">
+              <Settings2 className="w-3.5 h-3.5" />
+              Cấu hình
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="space-y-6 mt-0">
@@ -772,22 +763,7 @@ function IntegrationsAdmin() {
             ) : (
               <>
                 <IntegrationEntityLinksPanel links={entityLinks} />
-                <div className="grid lg:grid-cols-2 gap-4 items-stretch">
-                  <IntegrationSyncLogsPanel logs={syncLogs} />
-                  <IntegrationSnapshotsPanel snapshots={snapshots} />
-                </div>
-                {showPipeline ? (
-                  <details className="group rounded-xl border border-border/70 bg-background/30 p-4">
-                    <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
-                      <h3 className="text-sm font-semibold text-white">Chi tiết pipeline</h3>
-                      <span className="shrink-0 text-xs text-primary group-open:hidden">Mở</span>
-                      <span className="shrink-0 text-xs text-primary hidden group-open:inline">Ẩn</span>
-                    </summary>
-                    <div className="mt-4">
-                      <IntegrationPipelinePanel steps={pipelineSteps} onScrollLogs={scrollToSyncLogs} />
-                    </div>
-                  </details>
-                ) : null}
+                <IntegrationSyncLogsPanel logs={syncLogs} />
               </>
             )}
           </TabsContent>

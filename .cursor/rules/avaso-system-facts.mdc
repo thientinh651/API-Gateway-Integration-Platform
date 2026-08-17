@@ -1,0 +1,41 @@
+---
+description: AVASO Gateway — fact sheet hiện tại (code thắng docs lệch)
+alwaysApply: true
+---
+
+# AVASO — sự thật hệ thống
+
+**Authority:** code trong `src/`, `web/`, `migrations/` thắng mọi markdown/slide lệch.
+
+**Bản đồ đầy đủ (đưa AI khác đọc):** `docs/diagrams/Dia/Lưu lại cách làm/project.md`
+
+## Định vị
+
+- Sản phẩm trung tâm: API Gateway (Rust/Axum) — routing, JWT/OAuth2 subset, ACL, rate limit, retry/DLQ, admin RBAC, multi-tenant.
+- Salesforce ↔ Zoho: minh họa integration hub trên Gateway, không phải sản phẩm chính.
+- Demo: https://thientinh.io.vn
+
+## Integration (hai chiều, một Sync Now)
+
+`run_full_sync_pipeline` (`src/integrations.rs`):
+
+1. `sales_to_delivery`: SF Closed Won + Amount ≥ ngưỡng → Zoho Project + tasks → `integration_entity_links`
+2. `delivery_to_sales`: Zoho status «Đã hoàn tất» → SF `Project_Completed__c` + tạo `Invoice__c` (idempotent)
+
+Self-dogfood: sync worker gọi SF/Zoho qua gateway loopback JWT.
+
+## Admin phụ trợ
+
+- Quên mật khẩu: OTP Redis `gw:pwdreset:*` → ticket → reset; gửi mail **Brevo API** (HTTPS), SMTP fallback, hoặc `PASSWORD_RESET_DEV_LOG`.
+- Redis còn: session admin, JWT revoke, rate limit bucket, OTP.
+- `tenant_memberships`: schema SaaS có sẵn; đồ án hiện tại chủ yếu on-prem single org — không claim đang dùng đa workspace production.
+
+## Data plane (thứ tự code)
+
+JWT verify → route match → ACL → rate limit → transform → proxy (+ retry) → DLQ nếu fail → transaction log.
+
+## Cấm nói sai
+
+- Không nói “chỉ SF → Zoho một chiều”.
+- Không bỏ OTP/Brevo khi hỏi quên mật khẩu / mail.
+- Không claim full IdP, iPaaS, circuit breaker, Kafka DLQ, OTel tracing.

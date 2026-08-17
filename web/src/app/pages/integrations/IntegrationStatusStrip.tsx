@@ -35,17 +35,17 @@ function ConnectorPill({
                 : 'text-[10px] bg-slate-500/10 text-slate-400 border-slate-500/25'
             }
           >
-            {connected ? 'connected' : 'chưa kết nối'}
+            {connected ? 'Đã kết nối' : 'Chưa kết nối'}
           </Badge>
           {isDemo ? (
             <Badge variant="outline" className="text-[10px] bg-amber-500/10 text-amber-400 border-amber-500/20">
-              demo
+              Demo
             </Badge>
           ) : null}
         </div>
         {connected && lastSync ? (
           <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
-            Sync: {formatDbTimestamp(lastSync)}
+            Đồng bộ gần nhất: {formatDbTimestamp(lastSync)}
           </p>
         ) : null}
       </div>
@@ -76,14 +76,14 @@ export function IntegrationStatusStrip({ sf, zoho }: Props) {
       </div>
       <div className="rounded-lg border border-border/70 bg-slate-950/40 px-3 py-2.5 text-xs text-slate-300 space-y-1.5">
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-white font-medium">SF Closed Won</span>
+          <span className="text-white font-medium">Salesforce Closed Won</span>
           <ArrowRight className="w-3.5 h-3.5 text-primary shrink-0" />
-          <span>Zoho Project + tasks</span>
+          <span>Tạo Project và công việc trên Zoho</span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-white font-medium">Zoho hoàn tất</span>
           <ArrowRight className="w-3.5 h-3.5 text-primary shrink-0" />
-          <span>SF Project Completed + Invoice</span>
+          <span>Cập nhật Salesforce và tạo hóa đơn</span>
         </div>
       </div>
     </Card>
