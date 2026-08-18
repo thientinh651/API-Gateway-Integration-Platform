@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { toast } from 'sonner';
-import { RefreshCw, LayoutDashboard, ListChecks, Settings2 } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import { AdminOnly } from '../components/auth/AdminOnly';
 import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import {
@@ -64,6 +64,29 @@ function FieldHint({ error }: { error?: string }) {
 
 function fieldInputClass(hasError: boolean) {
   return hasError ? 'border-red-500 focus-visible:ring-red-500/50' : '';
+}
+
+function nestedArray(value: unknown, key: string): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === 'object') {
+    const inner = (value as Record<string, unknown>)[key];
+    if (Array.isArray(inner)) return inner;
+  }
+  return [];
+}
+
+function zohoPortalCount(portals: unknown): number {
+  return nestedArray(portals, 'portals').length;
+}
+
+function firstZohoProjectId(projects: unknown): string | null {
+  const first = nestedArray(projects, 'projects')[0];
+  if (!first || typeof first !== 'object') return null;
+  const rec = first as Record<string, unknown>;
+  const id = rec.id ?? rec.id_string ?? rec.project_id;
+  if (typeof id === 'string' && id.trim()) return id;
+  if (typeof id === 'number') return String(id);
+  return null;
 }
 
 function validateSfConfig(cfg: {
@@ -448,7 +471,7 @@ function IntegrationsAdmin() {
     try {
       const res = await zohoTest();
       setTestResult(JSON.stringify(res, null, 2));
-      if (!res.portal_id && (res.portals_count ?? 0) === 0) {
+      if (!res.portal_id && zohoPortalCount(res.portals) === 0) {
         toast.warning('Zoho OK nhưng chưa thấy portal.');
       } else {
         toast.success(res.portal_id ? 'Zoho OK — đã thấy portal' : 'Zoho portals OK');
@@ -478,13 +501,16 @@ function IntegrationsAdmin() {
     setTestingProvider('zoho_projects');
     setTestResult(null);
     try {
-      const res = await zohoTasks();
-      setTestResult(JSON.stringify(res, null, 2));
-      if (!res.project_id) {
+      const projectsRes = await zohoProjects();
+      const projectId = firstZohoProjectId(projectsRes.projects);
+      if (!projectId) {
+        setTestResult(JSON.stringify(projectsRes, null, 2));
         toast.warning('Không có project_id — test projects trước.');
-      } else {
-        toast.success('Zoho tasks OK');
+        return;
       }
+      const res = await zohoTasks(projectId);
+      setTestResult(JSON.stringify(res, null, 2));
+      toast.success('Zoho tasks OK');
     } catch (e) {
       toastApiError(e);
     } finally {
@@ -735,16 +761,13 @@ function IntegrationsAdmin() {
       ) : (
         <Tabs value={tab} onValueChange={(v) => setTab(v as TabId)} className="space-y-6">
           <TabsList className="bg-slate-950/80 border border-border flex-wrap h-auto p-1">
-            <TabsTrigger value="overview" className="data-[state=active]:text-primary gap-1.5">
-              <LayoutDashboard className="w-3.5 h-3.5" />
+            <TabsTrigger value="overview" className="data-[state=active]:text-primary">
               Tổng quan
             </TabsTrigger>
-            <TabsTrigger value="results" className="data-[state=active]:text-primary gap-1.5">
-              <ListChecks className="w-3.5 h-3.5" />
+            <TabsTrigger value="results" className="data-[state=active]:text-primary">
               Kết quả
             </TabsTrigger>
-            <TabsTrigger value="config" className="data-[state=active]:text-primary gap-1.5">
-              <Settings2 className="w-3.5 h-3.5" />
+            <TabsTrigger value="config" className="data-[state=active]:text-primary">
               Cấu hình
             </TabsTrigger>
           </TabsList>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { ConfirmDangerButton } from '../components/forms/ConfirmDangerButton';
@@ -90,8 +91,9 @@ function UsersAdmin() {
   const editingSelf = editingUser != null && me?.user_id === editingUser.id;
   const hiddenUserIds = pendingIdSet('user');
   const visibleUsers = useMemo(
-    () => users.filter((u) => !hiddenUserIds.has(String(u.id))),
-    [users, hiddenUserIds],
+    () =>
+      users.filter((u) => !hiddenUserIds.has(String(u.id)) && u.id !== me?.user_id),
+    [users, hiddenUserIds, me?.user_id],
   );
 
   const load = useCallback(async () => {
@@ -318,7 +320,11 @@ function UsersAdmin() {
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Quản lý người dùng</h1>
           <p className="text-sm text-muted-foreground max-w-2xl">
-            Tạo và quản lý tài khoản dashboard.
+            Tạo và quản lý tài khoản dashboard. Tài khoản đang đăng nhập không hiện ở đây — sửa tại{' '}
+            <Link to="/profile" className="text-primary hover:underline">
+              Tài khoản của tôi
+            </Link>
+            .
             {isSaasMode(me?.deployment_mode) ? (
               <>
                 {' '}
@@ -477,7 +483,7 @@ function UsersAdmin() {
       <Card className="rounded-2xl overflow-hidden bg-card/80 backdrop-blur-sm border-border">
         <div className="p-6 border-b border-border">
           <h3 className="font-bold text-white text-sm uppercase tracking-wider">
-            Quản lý người dùng ({loading ? '…' : users.length})
+            Quản lý người dùng ({loading ? '…' : visibleUsers.length})
           </h3>
         </div>
         <div className="overflow-x-auto">
@@ -493,6 +499,17 @@ function UsersAdmin() {
               </tr>
             </thead>
             <tbody className="text-sm">
+              {!loading && visibleUsers.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-6 py-10 text-center text-sm text-muted-foreground">
+                    Chưa có user khác. Tài khoản của bạn quản lý tại{' '}
+                    <Link to="/profile" className="text-primary hover:underline">
+                      Tài khoản của tôi
+                    </Link>
+                    .
+                  </td>
+                </tr>
+              ) : null}
               {visibleUsers.map((user) => (
                 <tr key={user.id} className="border-b border-border/50 hover:bg-primary/5">
                   <td className="px-6 py-4 text-slate-300 font-medium">{user.username}</td>
