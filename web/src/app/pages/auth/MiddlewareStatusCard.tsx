@@ -32,13 +32,13 @@ export function MiddlewareStatusCard({ clients, refreshKey = 0 }: Props) {
   if (!status) return null;
 
   const rl = status.rate_limit_global_enabled
-    ? `${status.rate_limit_global_rps} rps`
+    ? `${status.rate_limit_global_per_min}/phút`
     : 'tắt';
 
   return (
       <Card className="mb-6 p-4 rounded-2xl bg-slate-950/40 border-border border-dashed scroll-mt-24" id="section-middleware-status">
       <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-3">
-        Trạng thái middleware
+        Trạng thái
       </p>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
         <div className="flex items-start gap-2">
@@ -47,7 +47,7 @@ export function MiddlewareStatusCard({ clients, refreshKey = 0 }: Props) {
             <p className="text-slate-400">Client OAuth</p>
             <p className="text-white font-mono">{clientStats.total}</p>
             <p className="text-[10px] text-muted-foreground mt-0.5">
-              {clientStats.active} bật · {clientStats.disabled} tắt
+              {clientStats.active} On · {clientStats.disabled} Off
             </p>
           </div>
         </div>
@@ -64,7 +64,7 @@ export function MiddlewareStatusCard({ clients, refreshKey = 0 }: Props) {
         <div className="flex items-start gap-2">
           <Gauge className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
           <div>
-            <p className="text-slate-400">Giới hạn tốc độ chung</p>
+            <p className="text-slate-400">Ratelimit global</p>
             <p className="text-white font-mono">{rl}</p>
             <Link to="/settings" className="text-[10px] text-primary hover:underline">
               Cài đặt

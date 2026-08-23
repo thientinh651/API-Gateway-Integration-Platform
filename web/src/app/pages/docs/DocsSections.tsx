@@ -725,7 +725,7 @@ curl -sS -i "${DEMO_HOST}/v1/api/demo/get" \\
 
           <DocProse>
             <p className="text-xs text-slate-400">
-              Đây là luồng tích hợp CRM trên dashboard — tách biệt với data plane JWT. Proxy connector qua{' '}
+              Đây là luồng tích hợp trên dashboard — tách biệt với data plane JWT. Proxy connector qua{' '}
               <code className="font-mono-tech">/v1/api/…</code> vẫn yêu cầu route và client như các hướng
               dẫn trước.
             </p>

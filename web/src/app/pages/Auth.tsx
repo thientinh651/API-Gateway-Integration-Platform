@@ -241,7 +241,7 @@ function AuthAdmin() {
     <>
       <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4">
         <div className="min-w-0">
-          <h1 className="text-2xl sm:text-3xl font-bold text-white">OAuth & Client Registry</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold text-white">OAuth & Client</h1>
         </div>
         <div className="flex flex-wrap gap-2 shrink-0">
           <Button
@@ -375,7 +375,7 @@ function AuthAdmin() {
 export function Auth() {
   return (
     <AdminOnly
-      title="OAuth & Client Registry"
+      title="OAuth & Client"
       description="Machine clients, audit JWT live, Authorization Code cho app bên thứ 3."
     >
       <AuthAdmin />

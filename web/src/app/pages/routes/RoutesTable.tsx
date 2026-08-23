@@ -57,7 +57,7 @@ export function RoutesTable({
               <th className="px-6 py-4">Upstream</th>
               <th className="px-6 py-4">Timeout</th>
               <th className="px-6 py-4">Rate limit</th>
-              <th className="px-6 py-4">Phân quyền client</th>
+              <th className="px-6 py-4">Authorization</th>
               <th className="px-6 py-4 text-right">Actions</th>
             </tr>
           </thead>
@@ -90,7 +90,7 @@ export function RoutesTable({
                     {(() => {
                       const acl = aclMap.get(Number(route.id));
                       if (!acl || acl.client_count === 0) {
-                        return <span className="text-muted-foreground">Mọi client tenant</span>;
+                        return <span className="text-muted-foreground">All clients</span>;
                       }
                       return (
                         <button

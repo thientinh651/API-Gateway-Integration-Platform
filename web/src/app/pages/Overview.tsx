@@ -2,19 +2,14 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import { Link } from 'react-router';
 import { toast } from 'sonner';
 import {
+  Bar,
+  BarChart,
   Line,
   LineChart,
   CartesianGrid,
   XAxis,
   YAxis,
 } from 'recharts';
-import {
-  format as fmtDate,
-  subDays,
-  subHours,
-  eachDayOfInterval,
-  eachHourOfInterval,
-} from 'date-fns';
 import { NavCard } from '../components/dashboard/NavCard';
 import { StatsCard } from '../components/dashboard/StatsCard';
 import { Card } from '../components/ui/card';
@@ -36,14 +31,11 @@ import {
 import { cn } from '../components/ui/utils';
 import {
   Activity,
-  Gauge,
   Key,
   ListOrdered,
   RefreshCw,
   Route,
   ShieldX,
-  Timer,
-  Workflow,
 } from 'lucide-react';
 import {
   ApiClientError,
@@ -58,6 +50,19 @@ import { useAdminAuth } from '../../contexts/AdminAuthContext';
 import { canManageIntegrations } from '../../lib/rbac';
 import type { GatewayRouteRow } from '../../lib/gatewayRoutes';
 import { formatDbTimestamp } from '../../lib/formatDbTimestamp';
+import {
+  DASHBOARD_PRESETS,
+  DEFAULT_PRESET_ID,
+  buildLatencySeries,
+  buildTrafficSeries,
+  findPreset,
+  hasLatencySamples,
+  presetWindow,
+  sumRequests,
+  tickInterval,
+  type BucketUnit,
+  type DashboardPresetId,
+} from '../../lib/dashboardSeries';
 import { reasonLabel } from '../../lib/middlewareLabels';
 import { OverviewGuest } from './OverviewGuest';
 import { TechPageHeader } from '../components/tech/TechPageHeader';
@@ -74,106 +79,25 @@ const STATUS_BAR_COLORS: Record<string, string> = {
   other: '#94a3b8',
 };
 
-const DASHBOARD_RANGES = [
-  { hours: 1, label: '1 giờ' },
-  { hours: 24, label: '1 ngày' },
-  { hours: 72, label: '3 ngày' },
-  { hours: 168, label: '1 tuần' },
-] as const;
-
-type DashboardRangeHours = (typeof DASHBOARD_RANGES)[number]['hours'];
-
-function rangeLabel(hours: number): string {
-  return DASHBOARD_RANGES.find((r) => r.hours === hours)?.label ?? `${hours}h`;
-}
-
-function buildMonthOptions(): Array<{
-  value: string;
-  label: string;
-  from: string;
-  to: string;
-}> {
-  const now = new Date();
-  const result: Array<{ value: string; label: string; from: string; to: string }> = [];
-  for (let i = 0; i < 6; i++) {
-    const y = now.getUTCFullYear();
-    const m = now.getUTCMonth() - i;
-    const start = new Date(Date.UTC(y, m, 1, 0, 0, 0, 0));
-    const endExclusive =
-      i === 0 ? now : new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 1, 0, 0, 0, 0));
-    result.push({
-      value: fmtDate(start, 'yyyy-MM'),
-      label: `Tháng ${start.getUTCMonth() + 1}/${start.getUTCFullYear()}`,
-      from: start.toISOString(),
-      to: endExclusive.toISOString(),
-    });
-  }
-  return result;
-}
-
-function seriesKeys(
-  hours: number,
-  windowFrom?: string | null,
-  windowTo?: string | null,
-): string[] {
-  if (windowFrom && windowTo && hours > 24) {
-    const start = new Date(windowFrom);
-    const end = new Date(windowTo);
-    const endInclusive = new Date(Math.max(start.getTime(), end.getTime() - 1));
-    return eachDayOfInterval({ start, end: endInclusive }).map((d) => fmtDate(d, 'dd/MM'));
-  }
-  const now = new Date();
-  if (hours <= 1) return [];
-  if (hours <= 24) {
-    return eachHourOfInterval({ start: subHours(now, hours), end: now }).map((h) =>
-      fmtDate(h, 'HH:00'),
-    );
-  }
-  return eachDayOfInterval({
-    start: subDays(now, Math.ceil(hours / 24)),
-    end: now,
-  }).map((d) => fmtDate(d, 'dd/MM'));
-}
-
-function fillTrafficSeries(
-  data: Array<{ time: string; requests: number; errors: number }>,
-  hours: number,
-  windowFrom?: string | null,
-  windowTo?: string | null,
-) {
-  const map = new Map(data.map((d) => [d.time, d]));
-  const keys = seriesKeys(hours, windowFrom, windowTo);
-  if (keys.length === 0) return data;
-  return keys.map((time) => ({
-    time,
-    requests: map.get(time)?.requests ?? 0,
-    errors: map.get(time)?.errors ?? 0,
-  }));
-}
-
-function fillLatencySeries(
-  data: Array<{ time: string; p50: number; p95: number; p99: number }>,
-  hours: number,
-  windowFrom?: string | null,
-  windowTo?: string | null,
-) {
-  const map = new Map(data.map((d) => [d.time, d]));
-  const keys = seriesKeys(hours, windowFrom, windowTo);
-  if (keys.length === 0) return data;
-  return keys.map((time) => ({
-    time,
-    p50: map.get(time)?.p50 ?? 0,
-    p95: map.get(time)?.p95 ?? 0,
-    p99: map.get(time)?.p99 ?? 0,
-  }));
-}
-
 const AXIS_TICK = '#94a3b8';
 const GRID_STROKE = '#334155';
 
+const BUCKET_NOTE: Record<BucketUnit, string> = {
+  minute: 'mỗi cột 1 phút',
+  hour: 'mỗi cột 1 giờ',
+  day: 'mỗi cột 1 ngày',
+};
+
+function bucketTooltipLabel(
+  _value: unknown,
+  payload?: Array<{ payload?: { fullLabel?: string } }>,
+): string {
+  return payload?.[0]?.payload?.fullLabel ?? '';
+}
+
 const trafficSeriesConfig = {
-  requests: { label: 'Requests', color: CHART_COLORS[1] },
-  errors: { label: 'Errors', color: CHART_COLORS[3] },
+  ok: { label: 'Thành công', color: CHART_COLORS[1] },
+  errors: { label: 'Lỗi', color: CHART_COLORS[3] },
 } satisfies ChartConfig;
 
 const latencySeriesConfig = {
@@ -213,11 +137,6 @@ function pct(n: number, total: number): number | null {
 
 function fmtNum(n: number): string {
   return n.toLocaleString('vi-VN');
-}
-
-function fmtMs(n: number | undefined | null): string {
-  if (n == null || Number.isNaN(n)) return '—';
-  return `${(Math.round(n * 10) / 10).toLocaleString('vi-VN')} ms`;
 }
 
 function truncatePath(path: string, max = 32) {
@@ -351,7 +270,7 @@ function OverviewCrmIntegrationsCard({
 }) {
   return (
     <NavCard to="/integrations" className="p-0 bg-card/80 border-border overflow-hidden" ariaLabel="Tích hợp CRM">
-      <PanelShell title="Tích hợp CRM" action={<span className="text-[11px] text-primary font-medium">Mở →</span>}>
+      <PanelShell title="Tích hợp" action={<span className="text-[11px] text-primary font-medium">Mở →</span>}>
         {integrations.length === 0 ? (
           <p className="text-sm text-muted-foreground">Chưa kết nối provider.</p>
         ) : (
@@ -414,49 +333,31 @@ function OverviewAdmin() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
-  const [rangeHours, setRangeHours] = useState<number>(24);
-  const [activeMonth, setActiveMonth] = useState<string | null>(() => {
-    const opts = buildMonthOptions();
-    return opts[0]?.value ?? null;
-  });
-  const [rangeBound, setRangeBound] = useState<{ from: string; to: string } | null>(() => {
-    const opts = buildMonthOptions();
-    const cur = opts[0];
-    return cur ? { from: cur.from, to: cur.to } : null;
-  });
-  const monthOptions = useMemo(() => buildMonthOptions(), []);
-  const win = activeMonth
-    ? (monthOptions.find((m) => m.value === activeMonth)?.label ?? rangeLabel(rangeHours))
-    : rangeLabel(rangeHours);
+  const [presetId, setPresetId] = useState<DashboardPresetId>(DEFAULT_PRESET_ID);
+  /** Cửa sổ chỉ đổi khi chọn preset hoặc bấm Làm mới — tránh bucket nhảy giữa các lần render. */
+  const [window_, setWindow] = useState(() => presetWindow(findPreset(DEFAULT_PRESET_ID)));
+  const preset = findPreset(presetId);
+  const win = preset.label;
   const dataReady = !loading && stats != null;
 
-  const selectMonth = useCallback((value: string) => {
-    const opts = buildMonthOptions();
-    const opt = opts.find((m) => m.value === value);
-    if (!opt) return;
-    setActiveMonth(value);
-    setRangeBound({ from: opt.from, to: opt.to });
-    setRangeHours(
-      Math.max(1, Math.ceil((new Date(opt.to).getTime() - new Date(opt.from).getTime()) / 3_600_000)),
-    );
+  const selectPreset = useCallback((id: string) => {
+    const next = findPreset(id);
+    setPresetId(next.id);
+    setWindow(presetWindow(next));
   }, []);
 
-  const selectPreset = useCallback((hours: number) => {
-    setActiveMonth(null);
-    setRangeBound(null);
-    setRangeHours(hours as DashboardRangeHours);
-  }, []);
+  /** Dựng lại cửa sổ tới thời điểm hiện tại — đổi state nên `load` chạy lại. */
+  const refresh = useCallback(() => {
+    setWindow(presetWindow(findPreset(presetId)));
+  }, [presetId]);
 
   const load = useCallback(async () => {
     if (!user) return;
     setLoading(true);
     setLoadError(null);
     try {
-      const dashParams = rangeBound
-        ? { from: rangeBound.from, to: rangeBound.to }
-        : { hours: rangeHours };
       const [dash, routeRows, queue] = await Promise.all([
-        fetchDashboardStats(dashParams),
+        fetchDashboardStats({ from: window_.from, to: window_.to }),
         fetchGatewayRoutes(),
         fetchProxyQueue().catch(() => []),
       ]);
@@ -472,7 +373,7 @@ function OverviewAdmin() {
     } finally {
       setLoading(false);
     }
-  }, [user, rangeHours, rangeBound]);
+  }, [user, window_]);
 
   useEffect(() => {
     void load();
@@ -482,26 +383,12 @@ function OverviewAdmin() {
   const errorCount = (traffic?.denied ?? 0) + (traffic?.upstream_error ?? 0);
   const successRate = traffic ? pct(traffic.success, traffic.total) : null;
   const errorRate = traffic ? pct(errorCount, traffic.total) : null;
-  const windowSecs = useMemo(() => {
-    if (stats?.window_from && stats?.window_to) {
-      const ms = new Date(stats.window_to).getTime() - new Date(stats.window_from).getTime();
-      return Math.max(1, Math.round(ms / 1000));
-    }
-    return Math.max(1, rangeHours * 3600);
-  }, [stats, rangeHours]);
-  const rps = traffic && traffic.total > 0 ? traffic.total / windowSecs : 0;
-
   const dlqCounts = useMemo(() => countDlqByStatus(proxyQueueItems), [proxyQueueItems]);
 
   const integrationRows = useMemo(
     () => (stats?.integrations ?? []).filter((r) => ACTIVE_INTEGRATION_PROVIDERS.has(r.provider)),
     [stats?.integrations],
   );
-  const connectedIntegrations = integrationRows.filter((r) => r.status === 'connected').length;
-
-  const p50 = traffic?.p50_ms ?? traffic?.avg_duration_ms ?? 0;
-  const p95 = traffic?.p95_ms ?? 0;
-  const p99 = traffic?.p99_ms ?? 0;
 
   const statusBars = useMemo(() => {
     const map = new Map((stats?.traffic_status_buckets ?? []).map((b) => [b.label, b.count]));
@@ -515,35 +402,41 @@ function OverviewAdmin() {
     );
   }, [stats]);
 
+  /** Ưu tiên cửa sổ backend đã dùng để chart mô tả đúng dữ liệu vừa nhận. */
+  const seriesWindow = useMemo(
+    () => ({
+      from: stats?.window_from ?? window_.from,
+      to: stats?.window_to ?? window_.to,
+      unit: window_.unit,
+    }),
+    [stats?.window_from, stats?.window_to, window_],
+  );
+
   const trafficSeriesData = useMemo(
     () =>
-      fillTrafficSeries(
+      buildTrafficSeries(
         (stats?.traffic_hourly ?? []).map((h) => ({
           time: h.label,
           requests: h.count,
           errors: h.errors ?? 0,
         })),
-        rangeHours,
-        stats?.window_from ?? rangeBound?.from,
-        stats?.window_to ?? rangeBound?.to,
+        seriesWindow,
       ),
-    [stats, rangeHours, rangeBound],
+    [stats?.traffic_hourly, seriesWindow],
   );
 
   const latencySeriesData = useMemo(
     () =>
-      fillLatencySeries(
+      buildLatencySeries(
         (stats?.traffic_latency_hourly ?? []).map((h) => ({
           time: h.label,
           p50: h.p50_ms,
           p95: h.p95_ms,
           p99: h.p99_ms,
         })),
-        rangeHours,
-        stats?.window_from ?? rangeBound?.from,
-        stats?.window_to ?? rangeBound?.to,
+        seriesWindow,
       ),
-    [stats, rangeHours, rangeBound],
+    [stats?.traffic_latency_hourly, seriesWindow],
   );
 
   const denialRows = useMemo(() => {
@@ -668,26 +561,14 @@ function OverviewAdmin() {
         actions={
           <div className="flex flex-col items-stretch sm:items-end gap-2">
             <div className="flex flex-wrap items-center gap-2 justify-end">
-              <Select
-                value={activeMonth ? `m:${activeMonth}` : String(rangeHours)}
-                onValueChange={(v) => {
-                  if (v.startsWith('m:')) selectMonth(v.slice(2));
-                  else selectPreset(Number(v));
-                }}
-              >
+              <Select value={presetId} onValueChange={selectPreset}>
                 <SelectTrigger className="w-[170px] bg-input border-border font-mono-tech text-xs h-9">
                   <SelectValue>{win}</SelectValue>
                 </SelectTrigger>
                 <SelectContent className="bg-card border-border">
-                  {DASHBOARD_RANGES.map((r) => (
-                    <SelectItem key={r.hours} value={String(r.hours)} className="font-mono-tech text-xs">
-                      {r.label}
-                    </SelectItem>
-                  ))}
-                  <div className="border-t border-border my-1" />
-                  {monthOptions.map((m) => (
-                    <SelectItem key={m.value} value={`m:${m.value}`} className="font-mono-tech text-xs">
-                      {m.label}
+                  {DASHBOARD_PRESETS.map((p) => (
+                    <SelectItem key={p.id} value={p.id} className="font-mono-tech text-xs">
+                      {p.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -695,7 +576,7 @@ function OverviewAdmin() {
               <Button
                 variant="outline"
                 className="border-border font-mono-tech text-xs"
-                onClick={() => void load()}
+                onClick={refresh}
                 disabled={loading}
               >
                 <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
@@ -721,7 +602,6 @@ function OverviewAdmin() {
         <Card className="mb-6 p-4 border-amber-500/30 bg-amber-500/10 text-amber-200 text-sm">{loadError}</Card>
       ) : null}
 
-      {/* KPI row 1 — traffic health */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4 mb-3 items-stretch">
         <StatsCard
           to="/logs?kind=traffic"
@@ -774,7 +654,7 @@ function OverviewAdmin() {
           value={dataReady ? String(dlqCounts.total || (traffic?.queued ?? 0)) : '…'}
           hint={
             dataReady
-              ? `${dlqCounts.pending} đang chờ xử lý · ${dlqCounts.replayed} đã phát lại`
+              ? `${dlqCounts.pending} Pending · ${dlqCounts.replayed} Replayed`
               : undefined
           }
           badge={
@@ -785,66 +665,26 @@ function OverviewAdmin() {
         />
       </div>
 
-      {/* KPI row 2 — latency / capacity */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4 mb-3 items-stretch">
-        <StatsCard
-          to="/logs?kind=traffic"
-          icon={<Timer className="text-sky-400 w-4 h-4" />}
-          iconBg="bg-sky-500/10"
-          title="Latency P50"
-          value={dataReady ? fmtMs(p50) : '…'}
-        />
-        <StatsCard
-          to="/logs?kind=traffic"
-          icon={<Timer className="text-orange-400 w-4 h-4" />}
-          iconBg="bg-orange-500/10"
-          title="Latency P95"
-          value={dataReady ? fmtMs(p95) : '…'}
-          hint={dataReady ? `P99 ${fmtMs(p99)}` : undefined}
-          valueTone={p95 > 500 ? 'warning' : 'default'}
-        />
-        <StatsCard
-          to="/logs?kind=traffic"
-          icon={<Gauge className="text-cyan-400 w-4 h-4" />}
-          iconBg="bg-cyan-500/10"
-          title="RPS trung bình"
-          value={dataReady ? rps.toLocaleString('vi-VN', { maximumFractionDigits: 1 }) : '…'}
-          hint="req/s trong cửa sổ đã chọn"
-        />
-        <StatsCard
-          to="/routes"
-          icon={<Workflow className="text-indigo-400 w-4 h-4" />}
-          iconBg="bg-indigo-500/10"
-          title="Inventory"
-          value={
-            dataReady
-              ? `${stats?.routes_count ?? routes.length} / ${stats?.client_keys_count ?? 0}`
-              : '…'
-          }
-          hint={
-            dataReady
-              ? `Routes · Clients${showIntegrations ? ` · ${connectedIntegrations} tích hợp` : ''}`
-              : undefined
-          }
-        />
-      </div>
-
       {/* Charts */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 lg:gap-5 mb-4 min-w-0 items-stretch">
         <Card className="p-0 bg-card/80 border-border overflow-hidden min-w-0">
           <PanelShell
             title="Request / Error theo thời gian"
-            subtitle={dataReady ? `${fmtNum(traffic?.total ?? 0)} requests` : undefined}
+            subtitle={
+              dataReady
+                ? `${fmtNum(sumRequests(trafficSeriesData))} requests · ${trafficSeriesData.length} cột · ${BUCKET_NOTE[seriesWindow.unit]}`
+                : undefined
+            }
           >
             {!dataReady ? (
               <p className="text-sm text-muted-foreground">Đang tải…</p>
-            ) : trafficSeriesData.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Chưa có traffic.</p>
+            ) : sumRequests(trafficSeriesData) === 0 ? (
+              <p className="text-sm text-muted-foreground">Chưa có traffic trong khoảng này.</p>
             ) : isMobile ? (
               <ul className="space-y-2 text-xs">
                 {trafficSeriesData.slice(-8).map((h) => (
-                  <li key={h.time} className="flex justify-between gap-2 text-slate-300">
-                    <span>{h.time}</span>
+                  <li key={h.key} className="flex justify-between gap-2 text-slate-300">
+                    <span>{h.fullLabel}</span>
                     <span className="font-mono tabular-nums">
                       {h.requests}
                       <span className="text-red-400"> / {h.errors}</span>
@@ -854,13 +694,20 @@ function OverviewAdmin() {
               </ul>
             ) : (
               <ChartContainer
-                key={`req-err-${rangeHours}-${activeMonth ?? 'r'}`}
+                key={`req-err-${presetId}`}
                 config={trafficSeriesConfig}
                 className="h-[240px] w-full"
               >
-                <LineChart data={trafficSeriesData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                <BarChart data={trafficSeriesData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                   <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
-                  <XAxis dataKey="time" tickLine={false} axisLine={false} fontSize={10} tick={{ fill: AXIS_TICK }} />
+                  <XAxis
+                    dataKey="label"
+                    tickLine={false}
+                    axisLine={false}
+                    fontSize={10}
+                    tick={{ fill: AXIS_TICK }}
+                    interval={tickInterval(trafficSeriesData.length)}
+                  />
                   <YAxis
                     tickLine={false}
                     axisLine={false}
@@ -869,53 +716,53 @@ function OverviewAdmin() {
                     tick={{ fill: AXIS_TICK }}
                     width={40}
                   />
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                  <Line
-                    type="monotone"
-                    dataKey="requests"
-                    stroke={CHART_COLORS[1]}
-                    strokeWidth={2}
-                    dot={false}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="errors"
-                    stroke={CHART_COLORS[3]}
-                    strokeWidth={2}
-                    dot={false}
-                  />
-                </LineChart>
+                  <ChartTooltip content={<ChartTooltipContent labelFormatter={bucketTooltipLabel} />} />
+                  <Bar dataKey="ok" stackId="req" fill={CHART_COLORS[1]} />
+                  <Bar dataKey="errors" stackId="req" fill={CHART_COLORS[3]} radius={[2, 2, 0, 0]} />
+                </BarChart>
               </ChartContainer>
             )}
           </PanelShell>
         </Card>
 
         <Card className="p-0 bg-card/80 border-border overflow-hidden min-w-0">
-          <PanelShell title="Latency theo thời gian" subtitle="P50 · P95 · P99 (ms)">
+          <PanelShell
+            title="Độ trễ theo thời gian"
+          >
             {!dataReady ? (
               <p className="text-sm text-muted-foreground">Đang tải…</p>
-            ) : latencySeriesData.every((d) => d.p50 === 0 && d.p95 === 0) ? (
+            ) : !hasLatencySamples(latencySeriesData) ? (
               <p className="text-sm text-muted-foreground">Chưa có dữ liệu latency.</p>
             ) : isMobile ? (
               <ul className="space-y-2 text-xs">
-                {latencySeriesData.slice(-6).map((h) => (
-                  <li key={h.time} className="flex justify-between gap-2 text-slate-300">
-                    <span>{h.time}</span>
-                    <span className="font-mono tabular-nums text-[10px]">
-                      {h.p50}/{h.p95}/{h.p99}
-                    </span>
-                  </li>
-                ))}
+                {latencySeriesData
+                  .filter((h) => h.p50 != null)
+                  .slice(-6)
+                  .map((h) => (
+                    <li key={h.key} className="flex justify-between gap-2 text-slate-300">
+                      <span>{h.fullLabel}</span>
+                      <span className="font-mono tabular-nums text-[10px]">
+                        {h.p50}/{h.p95}/{h.p99}
+                      </span>
+                    </li>
+                  ))}
               </ul>
             ) : (
               <ChartContainer
-                key={`lat-${rangeHours}-${activeMonth ?? 'r'}`}
+                key={`lat-${presetId}`}
                 config={latencySeriesConfig}
                 className="h-[240px] w-full"
               >
                 <LineChart data={latencySeriesData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                   <CartesianGrid vertical={false} strokeDasharray="3 3" stroke={GRID_STROKE} />
-                  <XAxis dataKey="time" tickLine={false} axisLine={false} fontSize={10} tick={{ fill: AXIS_TICK }} />
+                  <XAxis
+                    dataKey="label"
+                    tickLine={false}
+                    axisLine={false}
+                    fontSize={10}
+                    tick={{ fill: AXIS_TICK }}
+                    interval={tickInterval(latencySeriesData.length)}
+                  />
                   <YAxis
                     tickLine={false}
                     axisLine={false}
@@ -923,10 +770,31 @@ function OverviewAdmin() {
                     tick={{ fill: AXIS_TICK }}
                     width={40}
                   />
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                  <Line type="monotone" dataKey="p50" stroke={CHART_COLORS[0]} strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="p95" stroke={CHART_COLORS[2]} strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="p99" stroke={CHART_COLORS[3]} strokeWidth={2} dot={false} />
+                  <ChartTooltip content={<ChartTooltipContent labelFormatter={bucketTooltipLabel} />} />
+                  <Line
+                    type="monotone"
+                    dataKey="p50"
+                    stroke={CHART_COLORS[0]}
+                    strokeWidth={2}
+                    dot={false}
+                    connectNulls={false}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="p95"
+                    stroke={CHART_COLORS[2]}
+                    strokeWidth={2}
+                    dot={false}
+                    connectNulls={false}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="p99"
+                    stroke={CHART_COLORS[3]}
+                    strokeWidth={2}
+                    dot={false}
+                    connectNulls={false}
+                  />
                 </LineChart>
               </ChartContainer>
             )}
@@ -968,7 +836,7 @@ function OverviewAdmin() {
 
         <Card className="p-0 bg-card/80 border-border overflow-hidden">
           <PanelShell
-            title="Từ chối middleware"
+            title="Từ chối"
             subtitle={dataReady ? `${fmtNum(denialTotal)} requests` : undefined}
             action={
               <Link to="/logs?kind=traffic&result=failure" className="text-[11px] text-primary font-medium">

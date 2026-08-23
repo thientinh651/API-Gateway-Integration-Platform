@@ -22,7 +22,6 @@ createRoot(document.getElementById('root')!).render(
             position="top-right"
             richColors
             closeButton
-            toastOptions={{ duration: 8000, closeButton: true }}
           />
           <Routes>
             <Route path="/login" element={<LoginPage />} />

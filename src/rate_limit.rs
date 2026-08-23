@@ -148,7 +148,7 @@ pub fn per_min_to_bucket(per_min: i32, global_burst_cap: u32, burst_enabled: boo
     (per_min as f64 / 60.0, burst)
 }
 
-/// Burst cho Global RPS path (Settings → rps + burst).
+/// Burst cho Global RPM path (Settings → per_min + burst).
 pub fn effective_burst(calculated_burst: u32, burst_enabled: bool) -> u32 {
     if burst_enabled {
         calculated_burst.max(1)

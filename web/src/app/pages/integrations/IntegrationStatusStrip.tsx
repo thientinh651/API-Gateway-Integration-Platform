@@ -1,4 +1,4 @@
-import { ArrowRight, CheckCircle2, Circle } from 'lucide-react';
+import { CheckCircle2, Circle } from 'lucide-react';
 import { Badge } from '../../components/ui/badge';
 import { Card } from '../../components/ui/card';
 import type { IntegrationRow } from '../../../lib/api';
@@ -58,7 +58,7 @@ export function IntegrationStatusStrip({ sf, zoho }: Props) {
   const zohoConnected = zoho?.status === 'connected';
 
   return (
-    <Card className="p-4 bg-card/50 border-border space-y-4">
+    <Card className="p-4 bg-card/50 border-border">
       <div className="flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-8">
         <ConnectorPill
           label="Salesforce CRM"
@@ -73,18 +73,6 @@ export function IntegrationStatusStrip({ sf, zoho }: Props) {
           lastSync={zoho?.last_sync_at}
           isDemo={zoho?.is_demo}
         />
-      </div>
-      <div className="rounded-lg border border-border/70 bg-slate-950/40 px-3 py-2.5 text-xs text-slate-300 space-y-1.5">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-white font-medium">Salesforce Closed Won</span>
-          <ArrowRight className="w-3.5 h-3.5 text-primary shrink-0" />
-          <span>Tạo Project và công việc trên Zoho</span>
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-white font-medium">Zoho hoàn tất</span>
-          <ArrowRight className="w-3.5 h-3.5 text-primary shrink-0" />
-          <span>Cập nhật Salesforce và tạo hóa đơn</span>
-        </div>
       </div>
     </Card>
   );

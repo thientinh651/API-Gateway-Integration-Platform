@@ -37,7 +37,6 @@ export default function App() {
           offset={{ top: '1.5rem', right: '2.5rem' }}
           richColors
           closeButton
-          toastOptions={{ duration: 8000, closeButton: true }}
         />
         <Routes>
           <Route path="/login" element={<LoginPage />} />

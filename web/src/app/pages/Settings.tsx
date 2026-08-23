@@ -17,6 +17,7 @@ import { Switch } from '../components/ui/switch';
 import { TechPageHeader } from '../components/tech/TechPageHeader';
 import {
   fetchGatewaySettings,
+  settingsRateLimitPerMin,
   updateGatewaySettings,
   type GatewaySettings,
 } from '../../lib/api';
@@ -37,7 +38,7 @@ import { defaultNumberHandlers, parseDefaultNumber } from '../../lib/zeroDefault
 type SettingsForm = {
   rateLimitEnabled: boolean;
   rateLimitBurstEnabled: boolean;
-  rateLimitRps: string;
+  rateLimitPerMin: string;
   rateLimitBurst: string;
   enableMetrics: boolean;
   enableHealthCheck: boolean;
@@ -86,7 +87,7 @@ function toForm(data: GatewaySettings): SettingsForm {
   return {
     rateLimitEnabled: data.rate_limit_enabled,
     rateLimitBurstEnabled: data.rate_limit_burst_enabled,
-    rateLimitRps: String(data.rate_limit_rps),
+    rateLimitPerMin: String(settingsRateLimitPerMin(data)),
     rateLimitBurst: String(data.rate_limit_burst),
     enableMetrics: data.enable_metrics,
     enableHealthCheck: data.enable_health_check,
@@ -156,14 +157,14 @@ export function Settings() {
 
   const handleSaveSettings = async () => {
     if (!settings || !snapshot) return;
-    const rpsDefault = String(snapshot.rate_limit_rps);
+    const rpmDefault = String(settingsRateLimitPerMin(snapshot));
     const burstDefault = String(snapshot.rate_limit_burst);
     const undoDefault = String(snapshot.undo_delete_seconds ?? 10);
-    const rateLimitRps = Number(parseDefaultNumber(settings.rateLimitRps, rpsDefault));
+    const rateLimitPerMin = Number(parseDefaultNumber(settings.rateLimitPerMin, rpmDefault));
     const rateLimitBurst = Number(parseDefaultNumber(settings.rateLimitBurst, burstDefault));
     const undoDeleteSeconds = Number(parseDefaultNumber(settings.undoDeleteSeconds, undoDefault));
     const clientErrors: Record<string, string> = {};
-    if (!Number.isFinite(rateLimitRps)) clientErrors.rate_limit_rps = 'Nhập số hợp lệ';
+    if (!Number.isFinite(rateLimitPerMin)) clientErrors.rate_limit_per_min = 'Nhập số hợp lệ';
     if (!Number.isFinite(rateLimitBurst)) clientErrors.rate_limit_burst = 'Nhập số hợp lệ';
     if (!Number.isFinite(undoDeleteSeconds) || undoDeleteSeconds < 0) {
       clientErrors.undo_delete_seconds = 'Nhập số ≥ 0';
@@ -178,10 +179,14 @@ export function Settings() {
     setSaving(true);
     setFieldErrors({});
     try {
+      // #region agent log
+      fetch('http://localhost:7630/ingest/67f9a07e-4e03-447d-aa95-57910f9fa859',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'cbbae3'},body:JSON.stringify({sessionId:'cbbae3',runId:'pre-fix',hypothesisId:'D',location:'Settings.tsx:handleSaveSettings',message:'save click rpm',data:{rateLimitPerMin,enabled:settings.rateLimitEnabled,origin:typeof location!=='undefined'?location.origin:''},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       const data = await updateGatewaySettings({
         rate_limit_enabled: settings.rateLimitEnabled,
         rate_limit_burst_enabled: settings.rateLimitBurstEnabled,
-        rate_limit_rps: rateLimitRps,
+        rate_limit_per_min: rateLimitPerMin,
+        rate_limit_rps: rateLimitPerMin,
         rate_limit_burst: rateLimitBurst,
         enable_metrics: settings.enableMetrics,
         enable_health_check: settings.enableHealthCheck,
@@ -240,10 +245,10 @@ export function Settings() {
             <div>
               <h3 className="text-sm font-semibold text-white">Rate limit toàn cục</h3>
               <p className="text-xs text-muted-foreground">
-  RPS được sử dụng khi Client/Route không cấu hình giới hạn riêng.
-  Burst tối đa xác định số request có thể xử lý liên tiếp trong thời gian ngắn,
-  áp dụng cho cả Client và Route, kể cả khi Global Rate Limit đang tắt.
-</p>
+                RPM dùng khi Client/Route không cấu hình giới hạn riêng.
+                Burst tối đa xác định số request có thể xử lý liên tiếp trong thời gian ngắn,
+                áp dụng cho cả Client và Route, kể cả khi Global Rate Limit đang tắt.
+              </p>
             </div>
           </div>
           <div className="p-5 sm:p-6">
@@ -253,7 +258,7 @@ export function Settings() {
               <div className="space-y-5">
                 <div className="flex items-center justify-between gap-4 rounded-lg border border-border/60 bg-slate-900/30 px-4 py-3">
                   <div>
-                    <p className="text-sm font-medium text-white">Global RPS</p>
+                    <p className="text-sm font-medium text-white">Global RPM</p>
                     <p className="text-xs text-muted-foreground mt-0.5">
                       Chỉ áp dụng khi client và route không set RPM.
                     </p>
@@ -282,26 +287,26 @@ Bật: Giới hạn request theo số lượng/phút được cấu hình bên d
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <Label className="text-foreground">RPS (global)</Label>
+                    <Label className="text-foreground">RPM (global)</Label>
                     <Input
-                      value={settings.rateLimitRps}
+                      value={settings.rateLimitPerMin}
                       onChange={(e) => {
-                        setSettings({ ...settings, rateLimitRps: e.target.value });
-                        clearOneFieldError(setFieldErrors, 'rate_limit_rps');
+                        setSettings({ ...settings, rateLimitPerMin: e.target.value });
+                        clearOneFieldError(setFieldErrors, 'rate_limit_per_min');
                       }}
                       {...defaultNumberHandlers(
-                        settings.rateLimitRps,
-                        (v) => setSettings({ ...settings, rateLimitRps: v }),
-                        String(snapshot.rate_limit_rps),
+                        settings.rateLimitPerMin,
+                        (v) => setSettings({ ...settings, rateLimitPerMin: v }),
+                        String(settingsRateLimitPerMin(snapshot)),
                       )}
-                      aria-invalid={Boolean(fieldErrors.rate_limit_rps)}
+                      aria-invalid={Boolean(fieldErrors.rate_limit_per_min)}
                       className={fieldInputErrorClass(
-                        Boolean(fieldErrors.rate_limit_rps),
+                        Boolean(fieldErrors.rate_limit_per_min),
                         'bg-input border-border text-foreground mt-1.5',
                       )}
                       disabled={readOnly || !settings.rateLimitEnabled}
                     />
-                    <FieldError message={fieldErrors.rate_limit_rps} />
+                    <FieldError message={fieldErrors.rate_limit_per_min} />
                   </div>
                   <div>
                     <Label className="text-foreground">Burst max</Label>
@@ -324,7 +329,8 @@ Bật: Giới hạn request theo số lượng/phút được cấu hình bên d
                       disabled={readOnly || !settings.rateLimitBurstEnabled}
                     />
                     <p className="text-[11px] text-muted-foreground mt-1">
-                    Client/Route: Burst tối đa được tính theo mức giới hạn RPM và giá trị Burst. Global RPS: Burst tối đa theo giá trị Burst đã cấu hình.                    </p>
+                      Client/Route/Global: burst tối đa = min(RPM, Burst max) khi bật burst.
+                    </p>
                     <FieldError message={fieldErrors.rate_limit_burst} />
                   </div>
                 </div>

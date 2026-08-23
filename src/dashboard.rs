@@ -138,7 +138,7 @@ pub struct LatencySeriesPoint {
 pub struct DashboardStats {
     /// Selected window in hours (rolling or calendar duration).
     pub window_hours: i32,
-    /// Absolute window bounds (RFC3339 UTC) — FE chart axis.
+    /// Absolute window bounds (RFC3339 UTC). FE formats local clock for chart axis.
     pub window_from: String,
     pub window_to: String,
     pub routes_count: i64,
@@ -370,8 +370,10 @@ pub async fn build_dashboard_stats(
 
     Ok(DashboardStats {
         window_hours: hours,
-        window_from: range.from.to_rfc3339(),
-        window_to: range.to.to_rfc3339(),
+        window_from: range
+            .from
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        window_to: range.to.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         routes_count: routes.len() as i64,
         client_keys_count,
         client_registry: ClientRegistryStats {

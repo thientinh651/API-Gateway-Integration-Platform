@@ -219,6 +219,17 @@ function adminFetchInit(init?: RequestInit): RequestInit {
 export async function fetchJson<T>(input: string, init?: RequestInit): Promise<T> {
   const r = await fetch(apiUrl(input), adminFetchInit(init));
   const t = await r.text().catch(() => '');
+  // #region agent log
+  if (input.includes('/api/settings') && (init?.method ?? 'GET').toUpperCase() === 'PUT') {
+    let sentKeys: string[] = [];
+    try {
+      sentKeys = Object.keys(JSON.parse(String(init?.body ?? '{}')));
+    } catch {
+      sentKeys = [];
+    }
+    fetch('http://localhost:7630/ingest/67f9a07e-4e03-447d-aa95-57910f9fa859',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'cbbae3'},body:JSON.stringify({sessionId:'cbbae3',runId:'pre-fix',hypothesisId:'A',location:'api.ts:fetchJson',message:'settings PUT response',data:{ok:r.ok,status:r.status,sentKeys,hasRps:sentKeys.includes('rate_limit_rps'),hasPerMin:sentKeys.includes('rate_limit_per_min'),errSnippet:t.slice(0,240),origin:typeof location!=='undefined'?location.origin:''},timestamp:Date.now()})}).catch(()=>{});
+  }
+  // #endregion
   if (!r.ok) {
     const err = parseApiError(r.status, t, input);
     if (r.status === 401 && shouldForceLogout(input)) {
@@ -565,7 +576,10 @@ export function fetchTransactionLogs(q?: TransactionLogsQuery): Promise<Transact
 export type GatewaySettings = {
   rate_limit_enabled: boolean;
   rate_limit_burst_enabled: boolean;
-  rate_limit_rps: number;
+  /** Canonical RPM. Old GET may omit this and only send `rate_limit_rps`. */
+  rate_limit_per_min?: number;
+  /** Legacy key — same RPM value as `rate_limit_per_min`. */
+  rate_limit_rps?: number;
   rate_limit_burst: number;
   enable_metrics: boolean;
   enable_health_check: boolean;
@@ -585,9 +599,11 @@ export type GatewaySettings = {
   };
 };
 
+/** Wire PUT: send both keys (same RPM) so old binary (`rate_limit_rps`) and new (`rate_limit_per_min`) deserialize. */
 export type GatewaySettingsWriteBody = {
   rate_limit_enabled: boolean;
   rate_limit_burst_enabled: boolean;
+  rate_limit_per_min: number;
   rate_limit_rps: number;
   rate_limit_burst: number;
   enable_metrics: boolean;
@@ -597,6 +613,22 @@ export type GatewaySettingsWriteBody = {
   queue_enabled?: boolean;
   undo_delete_seconds?: number;
 };
+
+/** GET/PUT may return either key depending on binary version. */
+export function settingsRateLimitPerMin(
+  data: Pick<GatewaySettings, 'rate_limit_per_min' | 'rate_limit_rps'>
+): number {
+  const a = data.rate_limit_per_min;
+  const b = data.rate_limit_rps;
+  if (typeof a === 'number' && Number.isFinite(a)) return a;
+  if (typeof b === 'number' && Number.isFinite(b)) return b;
+  return 0;
+}
+
+function normalizeGatewaySettings(raw: GatewaySettings): GatewaySettings {
+  const rpm = settingsRateLimitPerMin(raw);
+  return { ...raw, rate_limit_per_min: rpm, rate_limit_rps: rpm };
+}
 
 export type DlqItemStatus = 'pending' | 'replayed' | 'failed_permanent';
 
@@ -658,16 +690,27 @@ export function bulkDeleteProxyQueueItems(ids: string[]): Promise<{ deleted: num
   });
 }
 
-export function fetchGatewaySettings(): Promise<GatewaySettings> {
-  return fetchJson<GatewaySettings>('/api/settings');
+export async function fetchGatewaySettings(): Promise<GatewaySettings> {
+  const raw = await fetchJson<GatewaySettings>('/api/settings');
+  return normalizeGatewaySettings(raw);
 }
 
-export function updateGatewaySettings(body: GatewaySettingsWriteBody): Promise<GatewaySettings> {
-  return fetchJson<GatewaySettings>('/api/settings', {
+export async function updateGatewaySettings(body: GatewaySettingsWriteBody): Promise<GatewaySettings> {
+  const rpm = settingsRateLimitPerMin(body);
+  const payload = {
+    ...body,
+    rate_limit_per_min: rpm,
+    rate_limit_rps: rpm,
+  };
+  // #region agent log
+  fetch('http://localhost:7630/ingest/67f9a07e-4e03-447d-aa95-57910f9fa859',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'cbbae3'},body:JSON.stringify({sessionId:'cbbae3',runId:'pre-fix',hypothesisId:'B',location:'api.ts:updateGatewaySettings',message:'settings PUT payload',data:{rpm,rpmType:typeof rpm,keys:Object.keys(payload),hasRps:Object.prototype.hasOwnProperty.call(payload,'rate_limit_rps'),rpsValue:payload.rate_limit_rps,perMinValue:payload.rate_limit_per_min},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
+  const raw = await fetchJson<GatewaySettings>('/api/settings', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(payload),
   });
+  return normalizeGatewaySettings(raw);
 }
 
 export type IntegrationRow = {
@@ -1030,7 +1073,7 @@ export type MiddlewareStatus = {
   routes_count: number;
   oauth_clients_loaded: number;
   rate_limit_global_enabled: boolean;
-  rate_limit_global_rps: number;
+  rate_limit_global_per_min: number;
   integration_platform?: {
     connectors: string[];
     dlq_storage: string;

@@ -270,14 +270,14 @@ export function ClientRegistryTable({
                   />
                 </th>
               ) : null}
-              <th className="px-3 py-2.5">Client</th>
-              <th className="px-3 py-2.5">Xác thực</th>
-              <th className="px-3 py-2.5">Phân quyền</th>
-              <th className="px-3 py-2.5">Rate limit</th>
-              <th className="px-3 py-2.5">24h</th>
-              <th className="pl-3 pr-5 py-2.5">Lần dùng</th>
-              <th className="pl-5 pr-3 py-2.5">Trạng thái</th>
-              <th className="px-2 py-2.5 text-right">Thao tác</th>
+            <th className="px-3 py-2.5">Client</th>
+            <th className="px-3 py-2.5">Authentication</th>
+            <th className="px-3 py-2.5">Authorization</th>
+            <th className="px-3 py-2.5">Rate Limit</th>
+            <th className="px-3 py-2.5">24h</th>
+            <th className="pl-3 pr-5 py-2.5">Usage</th>
+            <th className="pl-5 pr-3 py-2.5">Status</th>
+            <th className="px-2 py-2.5 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="text-sm">

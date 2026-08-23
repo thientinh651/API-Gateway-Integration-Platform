@@ -28,6 +28,7 @@ Production: https://thientinh.io.vn
 | File | Nội dung |
 |------|----------|
 | [`TRIEN_KHAI.md`](TRIEN_KHAI.md) | VPS, systemd, Nginx |
+| [`CAI_DAT_SERVER_MOI.md`](CAI_DAT_SERVER_MOI.md) | Cài VPS mới (GitHub, DB trống, domain mới) |
 | [`TRIEN_KHAI_DOCKER.md`](TRIEN_KHAI_DOCKER.md) | Docker Compose |
 | [`VAN_HANH.md`](VAN_HANH.md) | Runbook production |
 | [`XU_LY_502_BAD_GATEWAY.md`](XU_LY_502_BAD_GATEWAY.md) | Xử lý 502 |

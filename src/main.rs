@@ -26,7 +26,7 @@ use admin_auth::{
 };
 use axum::{
     Router,
-    body::Body,
+    body::{Body, Bytes},
     extract::connect_info::ConnectInfo,
     extract::{Extension, Form, Json, Path, Query},
     http::{
@@ -45,10 +45,10 @@ use serde::{Deserialize, Serialize};
 use session::{SessionRecord, SessionStore, SessionStoreStatus};
 use sqlx::PgPool;
 use std::{
-    io::ErrorKind,
+    io::{ErrorKind, Write},
     net::SocketAddr,
     sync::{Arc, OnceLock},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::RwLock;
 use tower::ServiceExt;
@@ -179,8 +179,9 @@ struct RateLimitConfig {
     enabled: bool,
     #[serde(default = "default_rl_burst_enabled")]
     burst_enabled: bool,
-    #[serde(default = "default_rl_rps")]
-    rps: u32,
+    /// Global fallback — req/phút (cùng đơn vị client/route). YAML cũ: `rps`.
+    #[serde(default = "default_rl_per_min", alias = "rps")]
+    per_min: u32,
     #[serde(default = "default_rl_burst")]
     burst: u32,
 }
@@ -190,7 +191,7 @@ impl Default for RateLimitConfig {
         Self {
             enabled: default_rl_enabled(),
             burst_enabled: default_rl_burst_enabled(),
-            rps: default_rl_rps(),
+            per_min: default_rl_per_min(),
             burst: default_rl_burst(),
         }
     }
@@ -202,8 +203,9 @@ fn default_rl_enabled() -> bool {
 fn default_rl_burst_enabled() -> bool {
     true
 }
-fn default_rl_rps() -> u32 {
-    10
+/// 600/phút = 10 req/s — giữ sức chứa mặc định cũ (yaml `rps: 10`).
+fn default_rl_per_min() -> u32 {
+    600
 }
 fn default_rl_burst() -> u32 {
     20
@@ -250,6 +252,8 @@ struct SettingsSystemInfo {
 struct SettingsResponse {
     rate_limit_enabled: bool,
     rate_limit_burst_enabled: bool,
+    rate_limit_per_min: u32,
+    /// Same RPM as `rate_limit_per_min`. Old SPA/binary still read `rate_limit_rps`.
     rate_limit_rps: u32,
     rate_limit_burst: u32,
     enable_metrics: bool,
@@ -261,12 +265,17 @@ struct SettingsResponse {
     system_info: SettingsSystemInfo,
 }
 
+/// Wire body: accept `rate_limit_per_min`, legacy `rate_limit_rps`, or both (same RPM).
+/// Cannot use `#[serde(alias = "rate_limit_rps")]` alone — both keys present = duplicate-field error.
 #[derive(Debug, Deserialize)]
-struct UpdateSettingsBody {
+struct UpdateSettingsBodyRaw {
     rate_limit_enabled: bool,
     #[serde(default = "default_rl_burst_enabled")]
     rate_limit_burst_enabled: bool,
-    rate_limit_rps: u32,
+    #[serde(default)]
+    rate_limit_per_min: Option<u32>,
+    #[serde(default)]
+    rate_limit_rps: Option<u32>,
     rate_limit_burst: u32,
     enable_metrics: bool,
     enable_health_check: bool,
@@ -278,6 +287,44 @@ struct UpdateSettingsBody {
     queue_enabled: bool,
     #[serde(default = "default_undo_delete_seconds")]
     undo_delete_seconds: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "UpdateSettingsBodyRaw")]
+struct UpdateSettingsBody {
+    rate_limit_enabled: bool,
+    rate_limit_burst_enabled: bool,
+    rate_limit_per_min: u32,
+    rate_limit_burst: u32,
+    enable_metrics: bool,
+    enable_health_check: bool,
+    transform_enabled: bool,
+    retry_enabled: bool,
+    queue_enabled: bool,
+    undo_delete_seconds: u32,
+}
+
+impl TryFrom<UpdateSettingsBodyRaw> for UpdateSettingsBody {
+    type Error = &'static str;
+
+    fn try_from(raw: UpdateSettingsBodyRaw) -> Result<Self, Self::Error> {
+        let rate_limit_per_min = raw
+            .rate_limit_per_min
+            .or(raw.rate_limit_rps)
+            .ok_or("missing field `rate_limit_per_min`")?;
+        Ok(Self {
+            rate_limit_enabled: raw.rate_limit_enabled,
+            rate_limit_burst_enabled: raw.rate_limit_burst_enabled,
+            rate_limit_per_min,
+            rate_limit_burst: raw.rate_limit_burst,
+            enable_metrics: raw.enable_metrics,
+            enable_health_check: raw.enable_health_check,
+            transform_enabled: raw.transform_enabled,
+            retry_enabled: raw.retry_enabled,
+            queue_enabled: raw.queue_enabled,
+            undo_delete_seconds: raw.undo_delete_seconds,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -359,6 +406,31 @@ fn reject_non_api_path(path: &str) -> Response {
     )
 }
 
+fn agent_debug_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
+    // #region agent log
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let line = serde_json::json!({
+        "sessionId": "cbbae3",
+        "runId": "pre-fix",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": ts
+    });
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/root/avaso-gateway/.cursor/debug-cbbae3.log")
+    {
+        let _ = writeln!(f, "{line}");
+    }
+    // #endregion
+}
+
 fn json_error(status: StatusCode, error: &str, message: &str) -> Response {
     (
         status,
@@ -403,7 +475,7 @@ fn resolve_rate_limit(
     settings: &RuntimeSettings,
 ) -> ResolvedRateLimit {
     let burst_enabled = settings.rate_limit.burst_enabled;
-    // Trần burst hệ thống — áp client/route kể cả khi Global RPS tắt.
+    // Trần burst hệ thống — áp client/route kể cả khi Global RPM tắt.
     let global_burst_cap = settings.rate_limit.burst;
     if client.rate_limit_per_min > 0 {
         let (rps, burst) = rate_limit::per_min_to_bucket(
@@ -429,11 +501,16 @@ fn resolve_rate_limit(
         };
     }
     if settings.rate_limit.enabled {
+        let (rps, burst) = rate_limit::per_min_to_bucket(
+            settings.rate_limit.per_min as i32,
+            global_burst_cap,
+            burst_enabled,
+        );
         ResolvedRateLimit {
             active: true,
-            rps: settings.rate_limit.rps as f64,
-            burst: rate_limit::effective_burst(settings.rate_limit.burst, burst_enabled),
-            limit_header: settings.rate_limit.rps,
+            rps,
+            burst,
+            limit_header: settings.rate_limit.per_min,
         }
     } else {
         ResolvedRateLimit {
@@ -902,6 +979,33 @@ fn parse_u32_setting(raw: Option<String>, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
+/// Giá trị `runtime_rate_limit_rps` cũ = req/giây → req/phút.
+fn migrate_legacy_rps_to_per_min(legacy_rps: u32) -> u32 {
+    legacy_rps.saturating_mul(60)
+}
+
+async fn load_global_rate_limit_per_min(
+    pool: &PgPool,
+    yaml_default: u32,
+) -> Result<u32, sqlx::Error> {
+    if let Some(raw) = db::load_setting(pool, "runtime_rate_limit_per_min").await? {
+        return Ok(parse_u32_setting(Some(raw), yaml_default));
+    }
+    let Some(legacy_raw) = db::load_setting(pool, "runtime_rate_limit_rps").await? else {
+        return Ok(yaml_default);
+    };
+    let legacy_rps = parse_u32_setting(Some(legacy_raw), yaml_default);
+    let per_min = migrate_legacy_rps_to_per_min(legacy_rps);
+    db::upsert_setting(pool, "runtime_rate_limit_per_min", &per_min.to_string()).await?;
+    db::upsert_setting(pool, "runtime_rate_limit_unit", "per_min").await?;
+    tracing::info!(
+        legacy_rps,
+        per_min,
+        "migrated global rate limit from RPS to RPM"
+    );
+    Ok(per_min)
+}
+
 async fn load_runtime_settings(
     pool: &PgPool,
     yaml: &YamlBootstrap,
@@ -910,10 +1014,8 @@ async fn load_runtime_settings(
         db::load_setting(pool, "runtime_rate_limit_enabled").await?,
         yaml.rate_limit.enabled,
     );
-    let rate_limit_rps = parse_u32_setting(
-        db::load_setting(pool, "runtime_rate_limit_rps").await?,
-        yaml.rate_limit.rps,
-    );
+    let rate_limit_per_min =
+        load_global_rate_limit_per_min(pool, yaml.rate_limit.per_min).await?;
     let rate_limit_burst = parse_u32_setting(
         db::load_setting(pool, "runtime_rate_limit_burst").await?,
         yaml.rate_limit.burst,
@@ -951,7 +1053,7 @@ async fn load_runtime_settings(
         rate_limit: RateLimitConfig {
             enabled: rate_limit_enabled,
             burst_enabled: rate_limit_burst_enabled,
-            rps: rate_limit_rps,
+            per_min: rate_limit_per_min,
             burst: rate_limit_burst,
         },
         enable_metrics,
@@ -977,10 +1079,11 @@ async fn persist_runtime_settings(
     .await?;
     db::upsert_setting(
         pool,
-        "runtime_rate_limit_rps",
-        &body.rate_limit_rps.to_string(),
+        "runtime_rate_limit_per_min",
+        &body.rate_limit_per_min.to_string(),
     )
     .await?;
+    db::upsert_setting(pool, "runtime_rate_limit_unit", "per_min").await?;
     db::upsert_setting(
         pool,
         "runtime_rate_limit_burst",
@@ -1040,7 +1143,8 @@ fn settings_response_from_config(cfg: &AppConfig) -> SettingsResponse {
     SettingsResponse {
         rate_limit_enabled: cfg.settings.rate_limit.enabled,
         rate_limit_burst_enabled: cfg.settings.rate_limit.burst_enabled,
-        rate_limit_rps: cfg.settings.rate_limit.rps,
+        rate_limit_per_min: cfg.settings.rate_limit.per_min,
+        rate_limit_rps: cfg.settings.rate_limit.per_min,
         rate_limit_burst: cfg.settings.rate_limit.burst,
         enable_metrics: cfg.settings.enable_metrics,
         enable_health_check: cfg.settings.enable_health_check,
@@ -1066,23 +1170,23 @@ fn settings_response_from_config(cfg: &AppConfig) -> SettingsResponse {
 
 fn validate_settings_write(body: &UpdateSettingsBody) -> Option<Response> {
     let mut fields = serde_json::Map::new();
-    if body.rate_limit_enabled && body.rate_limit_rps == 0 {
+    if body.rate_limit_enabled && body.rate_limit_per_min == 0 {
         fields.insert(
-            "rate_limit_rps".into(),
-            serde_json::Value::String("Bật rate limit thì RPS phải > 0".into()),
+            "rate_limit_per_min".into(),
+            serde_json::Value::String("Bật rate limit thì RPM phải > 0".into()),
         );
     }
-    // Trần burst hệ thống dùng cho client/route — validate kể cả khi Global RPS tắt.
+    // Trần burst hệ thống dùng cho client/route — validate kể cả khi Global RPM tắt.
     if body.rate_limit_burst_enabled && body.rate_limit_burst == 0 {
         fields.insert(
             "rate_limit_burst".into(),
             serde_json::Value::String("Bật burst thì trần burst phải > 0".into()),
         );
     }
-    if body.rate_limit_rps > 100_000 {
+    if body.rate_limit_per_min > 100_000 {
         fields.insert(
-            "rate_limit_rps".into(),
-            serde_json::Value::String("RPS quá lớn".into()),
+            "rate_limit_per_min".into(),
+            serde_json::Value::String("RPM quá lớn".into()),
         );
     }
     if body.rate_limit_burst > 1_000_000 {
@@ -3521,8 +3625,44 @@ async fn api_get_settings() -> impl IntoResponse {
 async fn api_update_settings(
     headers: HeaderMap,
     Extension(ctx): Extension<AdminCtx>,
-    Json(body): Json<UpdateSettingsBody>,
+    body: Bytes,
 ) -> impl IntoResponse {
+    // #region agent log
+    let preview: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+    let keys: Vec<String> = preview
+        .as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default();
+    agent_debug_log(
+        "A",
+        "src/main.rs:api_update_settings",
+        "settings PUT raw keys",
+        serde_json::json!({
+            "keys": keys,
+            "has_rate_limit_rps": keys.iter().any(|k| k == "rate_limit_rps"),
+            "has_rate_limit_per_min": keys.iter().any(|k| k == "rate_limit_per_min"),
+            "body_len": body.len()
+        }),
+    );
+    // #endregion
+    let body: UpdateSettingsBody = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            // #region agent log
+            agent_debug_log(
+                "C",
+                "src/main.rs:api_update_settings",
+                "settings PUT deserialize fail",
+                serde_json::json!({ "error": e.to_string() }),
+            );
+            // #endregion
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                &format!("Failed to deserialize the JSON body into the target type: {e}"),
+            );
+        }
+    };
     let ip = admin_auth::client_ip(&headers);
     if !ctx.is_admin() {
         if let Some(st) = STATE.get() {
@@ -6261,7 +6401,7 @@ struct MiddlewareStatusResponse {
     routes_count: i64,
     oauth_clients_loaded: usize,
     rate_limit_global_enabled: bool,
-    rate_limit_global_rps: f64,
+    rate_limit_global_per_min: u32,
     integration_platform: IntegrationPlatformStatus,
 }
 
@@ -6315,7 +6455,7 @@ async fn api_middleware_status(Extension(ctx): Extension<AdminCtx>) -> impl Into
         routes_count,
         oauth_clients_loaded,
         rate_limit_global_enabled: cfg.settings.rate_limit.enabled,
-        rate_limit_global_rps: f64::from(cfg.settings.rate_limit.rps),
+        rate_limit_global_per_min: cfg.settings.rate_limit.per_min,
         integration_platform: IntegrationPlatformStatus {
             connectors: vec!["salesforce", "zoho_projects"],
             dlq_storage: "postgresql",
@@ -6981,6 +7121,34 @@ mod path_tests {
     }
 
     #[test]
+    fn migrate_legacy_rps_to_rpm() {
+        assert_eq!(migrate_legacy_rps_to_per_min(10), 600);
+        assert_eq!(migrate_legacy_rps_to_per_min(0), 0);
+    }
+
+    #[test]
+    fn global_fallback_uses_per_min_bucket() {
+        let client = jwt_auth::VerifiedClient {
+            key_id: 1,
+            tenant_id: 1,
+            rate_limit_per_min: 0,
+            allowed_route_ids: vec![],
+            subject: "c1".into(),
+            token_type: "access".into(),
+        };
+        let mut settings = RuntimeSettings::default();
+        settings.rate_limit.enabled = true;
+        settings.rate_limit.burst_enabled = true;
+        settings.rate_limit.per_min = 600;
+        settings.rate_limit.burst = 20;
+        let rl = resolve_rate_limit(&client, None, &settings);
+        assert!(rl.active);
+        assert!((rl.rps - 10.0).abs() < f64::EPSILON);
+        assert_eq!(rl.burst, 20);
+        assert_eq!(rl.limit_header, 600);
+    }
+
+    #[test]
     fn spa_fallback_skips_assets() {
         assert!(!spa_index_fallback_allowed("/assets/main-abc.js"));
         assert!(!spa_index_fallback_allowed("/assets/index.css"));
@@ -7040,5 +7208,34 @@ mod path_tests {
         assert_eq!(mask_subject_for_log("client:avaso_cid_ab"), "client:a…");
         assert_eq!(mask_subject_for_log("client:avaso_pk_ab"), "client:a…");
         assert_eq!(mask_subject_for_log(""), "(none)");
+    }
+
+    fn settings_write_json(rpm_fields: &str) -> String {
+        format!(
+            r#"{{"rate_limit_enabled":true,"rate_limit_burst_enabled":true,{rpm_fields},"rate_limit_burst":20,"enable_metrics":true,"enable_health_check":true}}"#
+        )
+    }
+
+    #[test]
+    fn update_settings_accepts_per_min_only() {
+        let body: UpdateSettingsBody =
+            serde_json::from_str(&settings_write_json(r#""rate_limit_per_min":600"#)).unwrap();
+        assert_eq!(body.rate_limit_per_min, 600);
+    }
+
+    #[test]
+    fn update_settings_accepts_legacy_rps_only() {
+        let body: UpdateSettingsBody =
+            serde_json::from_str(&settings_write_json(r#""rate_limit_rps":600"#)).unwrap();
+        assert_eq!(body.rate_limit_per_min, 600);
+    }
+
+    #[test]
+    fn update_settings_accepts_both_rpm_keys() {
+        let body: UpdateSettingsBody = serde_json::from_str(&settings_write_json(
+            r#""rate_limit_per_min":600,"rate_limit_rps":600"#,
+        ))
+        .unwrap();
+        assert_eq!(body.rate_limit_per_min, 600);
     }
 }

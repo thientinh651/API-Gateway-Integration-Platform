@@ -78,14 +78,14 @@ html[dir='ltr'],
 
 /* Gom stack: bỏ scale âm Sonner (gây giật), dùng peek nhẹ */
 .avaso-toaster[data-sonner-toaster]:not(.avaso-toast-expanded):not(.avaso-toast-collapsing)
-  [data-sonner-toast][data-expanded='false'][data-front='false'][data-mounted='true'] {
+  [data-sonner-toast][data-expanded='false'][data-front='false'][data-mounted='true']:not([data-removed='true']) {
   --peek-scale: calc(1 - min(var(--toasts-before, 0), 4) * 0.028);
   --y: translateY(calc(var(--lift-amount) * var(--toasts-before) * 0.9)) scale(var(--peek-scale)) !important;
 }
 
-/* Mở stack */
+/* Mở stack — không khóa toast đang dismiss */
 .avaso-toaster[data-sonner-toaster]:is(.avaso-toast-expanded, .avaso-toast-collapsing)
-  [data-sonner-toast][data-mounted='true'] {
+  [data-sonner-toast][data-mounted='true']:not([data-removed='true']) {
   --y: translateY(calc(var(--lift) * var(--offset))) !important;
   height: var(--initial-height) !important;
 }
@@ -96,7 +96,7 @@ html[dir='ltr'],
 }
 
 .avaso-toaster[data-sonner-toaster]:is(.avaso-toast-expanded, .avaso-toast-collapsing)
-  [data-sonner-toast][data-styled='true'] > * {
+  [data-sonner-toast][data-styled='true']:not([data-removed='true']) > * {
   opacity: 1 !important;
   transition-delay: calc(min(var(--index, 0), 4) * 28ms) !important;
 }

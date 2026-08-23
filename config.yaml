@@ -10,8 +10,9 @@ api_keys:
 
 rate_limit:
   enabled: true
-  rps: 10
-  # Trần burst hệ thống (cap). Client/route: min(RPM, burst) khi burst_enabled.
+  # Fallback khi client/route không set RPM. 600/phút = 10 req/s (trước đây field `rps`).
+  per_min: 600
+  # Trần burst hệ thống (cap). Client/route/global: min(RPM, burst) khi burst_enabled.
   burst: 20
   # burst_enabled mặc định true nếu thiếu key (xem RateLimitConfig).
 

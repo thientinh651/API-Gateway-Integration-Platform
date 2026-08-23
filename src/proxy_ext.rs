@@ -493,6 +493,7 @@ pub async fn forward_with_policy(
     apply_request_transform(&mut headers, policy, toggles.transform_enabled);
 
     // Tối đa 1+retry_max (retry_enabled + method idempotent)
+    //code retry 
     let retry_allowed = toggles.retry_enabled && policy.retry_max > 0 && method_idempotent(method);
     let max_attempts = if retry_allowed {
         1 + policy.retry_max

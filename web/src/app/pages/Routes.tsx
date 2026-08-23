@@ -360,7 +360,6 @@ function RoutesAdmin() {
         )}
         {!allowCreate && allowUpdate && (
           <p className="text-xs text-muted-foreground">
-            Operator: sửa route có sẵn — không tạo/xóa route mới.
           </p>
         )}
       </div>

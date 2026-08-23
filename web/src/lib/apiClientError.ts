@@ -1,4 +1,5 @@
 import { toast } from 'sonner';
+import { TOAST_DURATION_ERROR_MS } from './sonnerToast';
 import { normalizeApiPath, resolveApiErrorTarget, type ApiErrorTarget } from './apiErrorTarget';
 import { isSessionExpiredRedirect } from './sessionExpiry';
 import { goToApiErrorTarget } from './toastNavigation';
@@ -112,11 +113,12 @@ function showErrorToast(msg: string, target: ApiErrorTarget | null) {
   };
 
   if (!target) {
-    toast.error(msg);
+    toast.error(msg, { duration: TOAST_DURATION_ERROR_MS });
     return;
   }
 
   toast.error(msg, {
+    duration: TOAST_DURATION_ERROR_MS,
     classNames: { toast: 'cursor-pointer' },
     action: target
       ? {

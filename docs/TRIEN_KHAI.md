@@ -155,6 +155,7 @@ Migration SQL tự áp dụng khi gateway khởi động.
 
 | File | Nội dung |
 |------|----------|
+| [`CAI_DAT_SERVER_MOI.md`](CAI_DAT_SERVER_MOI.md) | Cài VPS mới — clone GitHub, DB trống |
 | [`TRIEN_KHAI_DOCKER.md`](TRIEN_KHAI_DOCKER.md) | Docker Compose Deployment |
 | [`VAN_HANH.md`](VAN_HANH.md) | Runbook vận hành production |
 | [`deploy/nginx/README.md`](../deploy/nginx/README.md) | Cấu hình Nginx host |

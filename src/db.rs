@@ -2969,15 +2969,28 @@ pub async fn audit_top_actions(
     .await
 }
 
-/// Bucket label format for time-series charts depending on window length.
-fn series_bucket_parts(hours: i32) -> (&'static str, &'static str) {
+/// Vietnam wall-clock for dashboard buckets so day/hour boundaries match local charts.
+/// Instants are still stored/compared as UTC; FE formats RFC3339 via `formatDbChartTick`.
+const DASHBOARD_SERIES_TZ: &str = "Asia/Ho_Chi_Minh";
+
+fn series_trunc(hours: i32) -> &'static str {
     if hours <= 1 {
-        ("minute", "HH24:MI")
+        "minute"
     } else if hours <= 24 {
-        ("hour", "HH24:00")
+        "hour"
     } else {
-        ("day", "DD/MM")
+        "day"
     }
+}
+
+fn series_bucket_sql(trunc: &str) -> String {
+    format!(
+        "date_trunc('{trunc}', created_at AT TIME ZONE '{DASHBOARD_SERIES_TZ}') AT TIME ZONE '{DASHBOARD_SERIES_TZ}'"
+    )
+}
+
+fn rfc3339_secs(ts: chrono::DateTime<chrono::Utc>) -> String {
+    ts.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 pub async fn audit_series(
@@ -2985,21 +2998,24 @@ pub async fn audit_series(
     tenant_id: i64,
     range: DashRange,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
-    let (trunc, fmt) = series_bucket_parts(range.duration_hours());
+    let bucket = series_bucket_sql(series_trunc(range.duration_hours()));
     let sql = format!(
-        "SELECT to_char(date_trunc('{trunc}', created_at AT TIME ZONE 'UTC'), '{fmt}') AS bucket,
-                COUNT(*) AS cnt
+        "SELECT {bucket} AS bucket, COUNT(*) AS cnt
          FROM audit_logs
          WHERE (tenant_id = $1 OR tenant_id IS NULL) AND created_at >= $2 AND created_at < $3
-         GROUP BY date_trunc('{trunc}', created_at AT TIME ZONE 'UTC')
-         ORDER BY date_trunc('{trunc}', created_at AT TIME ZONE 'UTC')"
+         GROUP BY 1
+         ORDER BY 1"
     );
-    sqlx::query_as::<_, (String, i64)>(&sql)
+    let rows: Vec<(chrono::DateTime<chrono::Utc>, i64)> = sqlx::query_as(&sql)
         .bind(tenant_id)
         .bind(range.from)
         .bind(range.to)
         .fetch_all(pool)
-        .await
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(ts, cnt)| (rfc3339_secs(ts), cnt))
+        .collect())
 }
 
 pub async fn traffic_outcome_counts(
@@ -3085,22 +3101,25 @@ pub async fn traffic_series(
     tenant_id: i64,
     range: DashRange,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
-    let (trunc, fmt) = series_bucket_parts(range.duration_hours());
+    let bucket = series_bucket_sql(series_trunc(range.duration_hours()));
     let sql = format!(
-        "SELECT to_char(date_trunc('{trunc}', created_at AT TIME ZONE 'UTC'), '{fmt}') AS bucket,
-                COUNT(*) AS cnt
+        "SELECT {bucket} AS bucket, COUNT(*) AS cnt
          FROM gateway_transaction_logs
          WHERE {}
-         GROUP BY date_trunc('{trunc}', created_at AT TIME ZONE 'UTC')
-         ORDER BY date_trunc('{trunc}', created_at AT TIME ZONE 'UTC')",
+         GROUP BY 1
+         ORDER BY 1",
         tx_log_range_filter()
     );
-    sqlx::query_as::<_, (String, i64)>(&sql)
+    let rows: Vec<(chrono::DateTime<chrono::Utc>, i64)> = sqlx::query_as(&sql)
         .bind(tenant_id)
         .bind(range.from)
         .bind(range.to)
         .fetch_all(pool)
-        .await
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(ts, cnt)| (rfc3339_secs(ts), cnt))
+        .collect())
 }
 
 /// Time buckets: total requests + errors (denied + upstream_error).
@@ -3109,23 +3128,27 @@ pub async fn traffic_series_with_errors(
     tenant_id: i64,
     range: DashRange,
 ) -> Result<Vec<(String, i64, i64)>, sqlx::Error> {
-    let (trunc, fmt) = series_bucket_parts(range.duration_hours());
+    let bucket = series_bucket_sql(series_trunc(range.duration_hours()));
     let sql = format!(
-        "SELECT to_char(date_trunc('{trunc}', created_at AT TIME ZONE 'UTC'), '{fmt}') AS bucket,
+        "SELECT {bucket} AS bucket,
                 COUNT(*)::bigint AS total,
                 COALESCE(SUM(CASE WHEN outcome IN ('denied', 'upstream_error') THEN 1 ELSE 0 END), 0)::bigint AS errors
          FROM gateway_transaction_logs
          WHERE {}
-         GROUP BY date_trunc('{trunc}', created_at AT TIME ZONE 'UTC')
-         ORDER BY date_trunc('{trunc}', created_at AT TIME ZONE 'UTC')",
+         GROUP BY 1
+         ORDER BY 1",
         tx_log_range_filter()
     );
-    sqlx::query_as::<_, (String, i64, i64)>(&sql)
+    let rows: Vec<(chrono::DateTime<chrono::Utc>, i64, i64)> = sqlx::query_as(&sql)
         .bind(tenant_id)
         .bind(range.from)
         .bind(range.to)
         .fetch_all(pool)
-        .await
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(ts, total, errors)| (rfc3339_secs(ts), total, errors))
+        .collect())
 }
 
 /// Latency percentiles per time bucket.
@@ -3134,24 +3157,28 @@ pub async fn traffic_latency_series(
     tenant_id: i64,
     range: DashRange,
 ) -> Result<Vec<(String, f64, f64, f64)>, sqlx::Error> {
-    let (trunc, fmt) = series_bucket_parts(range.duration_hours());
+    let bucket = series_bucket_sql(series_trunc(range.duration_hours()));
     let sql = format!(
-        "SELECT to_char(date_trunc('{trunc}', created_at AT TIME ZONE 'UTC'), '{fmt}') AS bucket,
+        "SELECT {bucket} AS bucket,
                 COALESCE(percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms), 0)::float8 AS p50,
                 COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms), 0)::float8 AS p95,
                 COALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY duration_ms), 0)::float8 AS p99
          FROM gateway_transaction_logs
          WHERE {}
-         GROUP BY date_trunc('{trunc}', created_at AT TIME ZONE 'UTC')
-         ORDER BY date_trunc('{trunc}', created_at AT TIME ZONE 'UTC')",
+         GROUP BY 1
+         ORDER BY 1",
         tx_log_range_filter()
     );
-    sqlx::query_as::<_, (String, f64, f64, f64)>(&sql)
+    let rows: Vec<(chrono::DateTime<chrono::Utc>, f64, f64, f64)> = sqlx::query_as(&sql)
         .bind(tenant_id)
         .bind(range.from)
         .bind(range.to)
         .fetch_all(pool)
-        .await
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(ts, p50, p95, p99)| (rfc3339_secs(ts), p50, p95, p99))
+        .collect())
 }
 
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]

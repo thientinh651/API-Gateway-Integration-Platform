@@ -83,12 +83,12 @@ Gateway: validate JWT → rate limit (token bucket) → match route → proxy up
 ### Rate limit data plane
 
 - Thuật toán: **Token Bucket** (tách **rate** nạp và **burst** sức chứa — kiểu AWS/Kong).
-- Ưu tiên limit: **client** `rate_limit_per_min` → **route** → **global RPS** (Settings).
+- Ưu tiên limit: **client** `rate_limit_per_min` → **route** → **global RPM** (Settings).
 - **Rate (nạp):** `RPM / 60` token/giây (vd RPM=60 → ~1 token/giây).
 - **Burst (sức chứa):**
-  - Bật «Cho phép burst»: client/route → `min(RPM, trần_burst)`; global RPS → = trần burst.
+  - Bật «Cho phép burst»: `min(RPM, trần_burst)`.
   - Tắt burst → xô chứa **1** (strict drip).
-- **Trần burst** (Settings) áp cho client/route **kể cả khi Global RPS tắt** — bảo vệ upstream khỏi spike.
+- **Trần burst** (Settings) áp cho client/route **kể cả khi Global RPM tắt** — bảo vệ upstream khỏi spike.
 - Ví dụ: RPM=60, trần=30, burst bật → xả tối đa 30 → 429 → +1/giây; nghỉ đủ lâu xô đầy lại ở **30** (không lên 60).
 - Lưu counter: **Redis** (`gw:rl:*`) khi có; fallback **RAM** nếu Redis lỗi.
 - Multi-instance: Redis đồng bộ quota giữa các gateway pod.

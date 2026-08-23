@@ -250,7 +250,7 @@ function ProxyQueueAdmin() {
                 <th className="px-4 py-3">Upstream</th>
                 <th className="px-4 py-3">Lý do fail</th>
                 <th className="px-4 py-3">Retry đã thử</th>
-                <th className="px-4 py-3 text-right">Thao tác</th>
+                <th className="px-4 py-3 text-right whitespace-nowrap w-[1%] min-w-[9.5rem]">Thao tác</th>
               </tr>
             </thead>
             <tbody>
@@ -311,13 +311,13 @@ function ProxyQueueAdmin() {
                     {item.failure_reason}
                   </td>
                   <td className="px-4 py-3 text-slate-400 font-mono">{item.retry_attempts}×</td>
-                  <td className="px-4 py-3 text-right space-x-2">
+                  <td className="px-4 py-3 text-right w-[1%] whitespace-nowrap">
                     {canMutate ? (
-                      <>
+                      <div className="inline-flex items-center justify-end gap-2">
                         <Button
                           size="sm"
                           variant="outline"
-                          className="border-border"
+                          className="h-8 shrink-0 border-border"
                           disabled={busyId === item.id || bulkBusy || !retryAllowed}
                           title={retryDisabledTitle(dlqStatus, canMutate, item.method)}
                           onClick={async () => {
@@ -339,13 +339,13 @@ function ProxyQueueAdmin() {
                             }
                           }}
                         >
-                          <RotateCw className="w-3 h-3 mr-1" />
+                          <RotateCw className="w-3 h-3" />
                           Retry
                         </Button>
                         <ConfirmDangerButton
-                          size="sm"
+                          size="icon"
                           variant="outline"
-                          className="border-destructive/50 text-destructive"
+                          className="size-8 shrink-0 border-destructive/50 text-destructive"
                           disabled={busyId === item.id || bulkBusy}
                           title="Xóa khỏi queue?"
                           description={
@@ -356,9 +356,9 @@ function ProxyQueueAdmin() {
                           confirmLabel="Xóa"
                           onConfirm={() => runDeleteOne(item)}
                         >
-                          <Trash2 className="w-3 h-3" />
+                          <Trash2 className="w-3.5 h-3.5" />
                         </ConfirmDangerButton>
-                      </>
+                      </div>
                     ) : (
                       <span className="text-xs text-muted-foreground">Viewer: chỉ xem</span>
                     )}

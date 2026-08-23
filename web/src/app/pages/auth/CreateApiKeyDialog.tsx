@@ -313,14 +313,6 @@ export function CreateApiKeyDialog({
             </div>
 
             <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-              <CollapsibleTrigger asChild>
-                <button
-                  type="button"
-                  className="text-xs text-muted-foreground hover:text-slate-300 underline-offset-2 hover:underline"
-                >
-                  Tùy chọn nâng cao (mã hóa RSA) {advancedOpen ? '▲' : '▼'}
-                </button>
-              </CollapsibleTrigger>
               <CollapsibleContent className="mt-3 space-y-2 rounded-lg border border-border/60 bg-slate-950/50 p-3">
                 <Label className="text-xs text-muted-foreground">Chế độ tạo</Label>
                 <RadioGroup

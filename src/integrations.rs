@@ -1156,7 +1156,7 @@ fn sf_product_type_custom_field() -> Option<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_'))
 }
-
+//Lấy oppo
 fn sf_opportunity_soql() -> String {
     let mut fields = vec![
         "Id".to_string(),
@@ -2915,7 +2915,7 @@ fn normalize_lines(lines: &[String]) -> Vec<String> {
         .map(|s| s.to_string())
         .collect()
 }
-
+//Ngưỡng tiền
 fn min_deal_amount_vnd() -> f64 {
     std::env::var("INTEGRATION_MIN_DEAL_AMOUNT")
         .ok()
@@ -3088,7 +3088,7 @@ async fn zoho_post_json_with_retry(
 fn zoho_project_name_from_opportunity(opportunity_name: &str) -> String {
     opportunity_name.trim().to_string()
 }
-
+//Chốt closed won
 fn is_closed_won_stage(stage: &str) -> bool {
     let s = stage.to_ascii_lowercase();
     s.contains("closed won") || s == "closedwon" || s.contains("đã ký") || s.contains("chốt")
@@ -3473,7 +3473,7 @@ async fn collect_push_items(
                 due_date,
             });
     }
-
+//lấy item pass
     for opp in opps {
         let sf_id = bridge_field_str(&opp, "id").unwrap_or_default();
         let name = bridge_field_str(&opp, "name").unwrap_or_default();
@@ -3528,6 +3528,7 @@ pub async fn push_salesforce_to_zoho(
     let event_base = || SyncEventOpts::sales_to_delivery(correlation_id);
     // Dọn stale trước khi lọc Closed Won — tránh return sớm bỏ qua reconcile.
     let _ = reconcile_stale_entity_links(pool, tenant_id, correlation_id).await;
+    //push lên zoho 
     let items = collect_push_items(pool, tenant_id, correlation_id).await?;
     if items.is_empty() {
         log_sync(
@@ -3785,6 +3786,7 @@ pub async fn run_full_sync_pipeline(
             },
         }));
     }
+    //lấy zoho hoàn thành
     let push = push_salesforce_to_zoho(pool, tenant_id, Some(&correlation_id)).await?;
     let delivery = pull_zoho_completions_to_salesforce(pool, tenant_id, Some(&correlation_id))
         .await
@@ -3936,6 +3938,7 @@ pub async fn pull_zoho_completions_to_salesforce(
             .get(&link.target_id)
             .cloned()
             .unwrap_or_default();
+            //check hoàn thành
         if !is_zoho_project_completed(&status_label) {
             skipped += 1;
             continue;

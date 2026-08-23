@@ -1,5 +1,8 @@
 import { useEffect } from 'react';
 import { Toaster, type ToasterProps } from 'sonner';
+import { applySonnerAutoDismiss, TOAST_DURATION_SUCCESS_MS } from '../../lib/sonnerToast';
+
+applySonnerAutoDismiss();
 
 const EXPANDED = 'avaso-toast-expanded';
 const COLLAPSING = 'avaso-toast-collapsing';
@@ -72,6 +75,8 @@ export function AppToaster(props: ToasterProps) {
     };
   }, []);
 
+  const { toastOptions, ...rest } = props;
+
   return (
     <Toaster
       className="avaso-toaster"
@@ -79,8 +84,14 @@ export function AppToaster(props: ToasterProps) {
       visibleToasts={4}
       offset={{ top: '1.5rem', right: '2.5rem' }}
       mobileOffset={{ top: '1rem', right: '1.25rem', left: '1.25rem' }}
-      toastOptions={{ duration: 6000, closeButton: true, ...(props.toastOptions ?? {}) }}
-      {...props}
+      {...rest}
+      duration={TOAST_DURATION_SUCCESS_MS}
+      closeButton
+      toastOptions={{
+        duration: TOAST_DURATION_SUCCESS_MS,
+        closeButton: true,
+        ...toastOptions,
+      }}
     />
   );
 }

@@ -1,5 +1,6 @@
 /** SQLite `datetime('now')` = UTC; PostgreSQL `::text` = `YYYY-MM-DD HH:MM:SS.µs+00`. */
-function parseDbTimestamp(value: string): Date | null {
+export function parseDbTimestamp(value: string | null | undefined): Date | null {
+  if (value == null) return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
   // SQLite UTC without timezone suffix
@@ -19,6 +20,23 @@ function parseDbTimestamp(value: string): Date | null {
   }
   const d = new Date(trimmed);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+/**
+ * Chart X-axis tick in the browser local clock (same as `toLocaleTimeString` / Cập nhật).
+ * `hours` is the selected dashboard window: ≤1 → `HH:mm`, ≤24 → `HH:00`, else `dd/MM`.
+ */
+export function formatDbChartTick(value: string | null | undefined, hours: number): string {
+  if (!value) return '';
+  const d = parseDbTimestamp(value);
+  if (!d) return value.trim();
+  if (hours <= 1) return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  if (hours <= 24) return `${pad2(d.getHours())}:00`;
+  return `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}`;
 }
 
 const VI_OPTS: Intl.DateTimeFormatOptions = {

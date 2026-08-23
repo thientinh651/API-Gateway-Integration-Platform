@@ -636,7 +636,7 @@ function IntegrationsAdmin() {
         <FieldHint error={zohoCfgErrors.redirect_uri} />
       </div>
       <div>
-        <Label className="text-slate-300">Scopes</Label>
+        <Label className="text-slate-300">Permissions</Label>
         <Input
           className={`mt-1 bg-slate-950 border-border ${fieldInputClass(Boolean(zohoCfgErrors.scopes))}`}
           value={zohoCfg.scopes}
@@ -655,7 +655,6 @@ function IntegrationsAdmin() {
         <div className="flex items-start justify-between gap-3 mb-4">
           <div>
             <h3 className="font-bold text-white">Cấu hình {PROVIDER_META[kind].label}</h3>
-            <p className="text-xs text-muted-foreground mt-1">Lưu rồi OAuth qua Connected App / API Console.</p>
           </div>
           <Button variant="ghost" size="sm" onClick={closeWorkspace}>
             Đóng

@@ -3,7 +3,7 @@ import { inferMiddlewareStage, isUpstreamProviderBody, reasonLabel } from './mid
 
 describe('reasonLabel', () => {
   it('maps known middleware reasons', () => {
-    expect(reasonLabel('rate_limit_exceeded')).toContain('rate limit');
+    expect(reasonLabel('rate_limit_exceeded')).toBe('Vượt giới hạn tốc độ');
     expect(reasonLabel('client_key_disabled')).toContain('tắt');
   });
 
