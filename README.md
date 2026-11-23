@@ -1,25 +1,11 @@
 # AVASO Gateway
 
-## Thông tin sinh viên
-
-| | |
-|---|---|
-| **Họ tên** | Nguyễn Phúc Thiên Tinh |
-| **MSSV** | DH52201572 |
-| **Lớp** | D22_TH11 |
 
 ---
 
 ## Giới thiệu
 
 **AVASO Gateway** là hệ thống API Gateway đa tích hợp, phát triển cho đồ án tốt nghiệp. Hệ thống gồm backend Rust (Axum), cơ sở dữ liệu PostgreSQL, Redis cho session admin, và giao diện quản trị React SPA.
-
-
-
-
-**Demo production:** [https://thientinh.io.vn](https://thientinh.io.vn)
-
-**Script Database:** [docs/schema_full_postgresql.sql](docs/schema_full_postgresql.sql)
 
 
 
